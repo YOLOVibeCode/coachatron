@@ -21,12 +21,18 @@ Coachatron does three things and refuses the rest:
 - **Find a second coach** — when a session fills past a threshold, text the
   backup roster in priority order until someone claims it
 
+Later, the coach runs all of it by texting the number in plain English.
+
 ## Status
 
 Pre-implementation. The specification is the current artifact.
 
 📄 **[SPEC.md](SPEC.md)** — full specification: scope, domain model, journeys,
 payments, messaging, data model, and the explicit non-goals.
+
+📄 **[docs/PLATFORM.md](docs/PLATFORM.md)** — what we *don't* build, because the
+Noctusoft relay already has it: email, SMS, inbound routing, and Square
+marketplace payments. Also the design for SMS natural-language control.
 
 ## Design constraints
 

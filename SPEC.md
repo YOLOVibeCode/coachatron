@@ -3,6 +3,7 @@
 **Status:** Draft v0.1 · 2026-09-21
 **Owner:** Ricardo Vega
 **Launch customer:** an independent goalkeeper coach
+**Companion doc:** [`docs/PLATFORM.md`](docs/PLATFORM.md) — relay integration, Connect Hub status, SMS natural-language control
 
 ---
 
@@ -246,11 +247,17 @@ record. Funds never enter a Noctusoft-controlled balance. This is a hard
 architectural constraint, not a preference — holding funds would make us a money
 transmitter.
 
-Coachatron should be the first consumer of Connect Hub Slice 1, which already
-covers both one-time and subscription charges on connected merchants with
-per-product and per-transaction fee override. If Connect Hub is not ready,
-Coachatron implements Square Connect directly behind the same interface and is
-migrated later.
+Connect Hub Slice 1 is **built and tested** (~1,050 LOC, 68 passing tests,
+mounted at `/connect/:productKey/*`) and already covers OAuth connect, a
+runtime-enforced versioned recipient agreement, one-time charges with
+`application_fee_money` and per-transaction override, and the full subscription
+lifecycle. **Build against it; do not implement Square directly.**
+
+What it has never done is run against a real Square Application. Eight
+out-of-code activation steps gate the first real charge, three of them legal
+(attorney review, recipient agreement, chargeback handoff). Those have no code
+dependency and must start in parallel with Slice 1 or they become the critical
+path to first revenue. Detail in `docs/PLATFORM.md` §2.
 
 ### 9.2 What an athlete can buy
 
@@ -308,9 +315,17 @@ marketing. Messages are short enough to read in a notification preview.
 | Slot opened from waitlist | Waitlisted athlete | SMS |
 | Payment failed (subscription) | Athlete/parent | SMS + email |
 
-**Inbound SMS** is parsed for a small fixed vocabulary only: `Y`/`YES`,
-`N`/`NO`, `STOP`. Anything else gets a single reply pointing at the web link.
-We are not building a chat interface (§3).
+**Inbound SMS** is parsed for a small fixed vocabulary only in Slice 1: `Y`/`YES`,
+`N`/`NO`, `STOP`, `HELP`. Anything else gets a single reply pointing at the web
+link.
+
+In Slice 2 this grows into **natural-language control** — the coach runs the
+business by texting in plain English, with a cheap model routed through the
+LiteLLM VM doing closed-set intent extraction only. Reads answer immediately;
+anything that moves money, cancels a session, or messages athletes requires a
+`Y` confirmation whose text is rendered by template code, never by the model.
+Full design, safety rules, and cost model in `docs/PLATFORM.md` §4. This is still
+not a chat interface (§3).
 
 `STOP` handling, quiet hours (no non-urgent SMS 9pm–8am local), and per-recipient
 rate limits are required, not optional.
@@ -412,9 +427,9 @@ Item 4 is the only one that matters. The others are how we get there.
 
 ## 15. Open questions
 
-1. **Connect Hub readiness.** Is Slice 1 of the relay's `connect/` module close
-   enough to build against, or does Coachatron implement Square Connect directly
-   first? This is the largest fork in the plan.
+1. ~~**Connect Hub readiness.**~~ **Answered 2026-09-21: build against it.** It
+   is implemented and tested, including subscriptions. The remaining risk moved
+   from engineering to legal/ops — see `docs/PLATFORM.md` §2.1.
 2. **No-show policy.** Does a no-show consume a package credit? Recommend yes by
    default, coach-overridable per booking — but confirm with the launch coach.
 3. **Assistant coach payment.** Coachatron tells the coach what they owe an
