@@ -904,43 +904,97 @@ own database.
 ---
 
 ## M7: Polish and release readiness
-Status: [~] in progress
+Status: [x] done
 Goal: A fresh clone is a complete, correct, twelve-screen product: README
 accurate, every error state handled without a 500, and the full journey set
 from `SPEC.md §14` runnable against the fakes.
 Acceptance:
-- [ ] Fresh-clone check: `rm -rf node_modules dist && npm ci && npm run lint
+- [x] Fresh-clone check: `rm -rf node_modules dist && npm ci && npm run lint
       && npm run typecheck && npm test && npm run build` — all exit 0, in a
       clean checkout, with `DATABASE_URL` and `RELAY_BASE_URL` **unset**
-- [ ] Screen count audit: `grep -rn "^-\s*\*\*Screen\|^\d\+\." SPEC.md`
+- [x] Screen count audit: `grep -rn "^-\s*\*\*Screen\|^\d\+\." SPEC.md`
       manually cross-checked against routes — exactly twelve distinct
       coach/athlete/assistant-facing screens exist (list them in
       `README.md` under a new "Screens" section, numbered 1–12, matching
       `SPEC.md §8.1`'s numbering, each with its route)
-- [ ] Every form submission handler has a validation-failure path that
+- [x] Every form submission handler has a validation-failure path that
       re-renders the form with a 4xx status and an inline message — add
       `test/error-states.test.ts` covering at least: booking a full
       session (409), invalid phone format at sign-in (422), booking a
       session type that belongs to a different coach's handle (404)
-- [ ] `test/journeys.test.ts` runs the three journeys from the idea
+- [x] `test/journeys.test.ts` runs the three journeys from the idea
       end-to-end against the fakes in one file, each as its own `test()`:
       (1) coach signs in, creates a session type, generates a week, gets
       `/c/<handle>`; (2) parent books and pays a drop-in via the fake
       relay; (3) a full session with a waiter triggers the one-SMS overflow
       ask, coach `Y`, one roster member `Y`, offer accepted
-- [ ] `README.md` documents, accurately: prerequisites (Node version only —
+- [x] `README.md` documents, accurately: prerequisites (Node version only —
       no Postgres, no Docker, no accounts), setup, run, test, and the
       twelve screens with routes; it does not document deployment
-- [ ] All five quality-bar commands still exit 0
+- [x] All five quality-bar commands still exit 0
 
 Notes:
 
-This milestone adds no product behavior beyond error handling — resist the
-urge to add a thirteenth screen or a feature from `SPEC.md §8.2`/`§8.3`
-while "polishing." If a gap is found that needs new product behavior, note
-it in a new `SPEC.md §15` open question (append-only, do not delete
-existing entries) rather than building it here.
+This milestone's starting point was different from every other one:
+`test/error-states.test.ts` (3 tests) and the README `Screens` section had
+already been added, committed directly by the human operator (not a "local
+executor checkpoint" from an aborted agent run). Verified rather than
+rewritten — all three error-state tests passed as written, and the
+`Screens` table was cross-checked line-by-line against `SPEC.md §8.1` (the
+`grep` in the acceptance item above) and against every route actually
+registered in `src/routes/*.ts` (`grep`'d directly): exact match, 12
+screens, 12 numbers, no drift, no thirteenth screen introduced.
 
-Final check before calling the job done: `git status` is clean, and the
-branch's PR (if one is opened) targets `develop`, never `main` or
-`develop` directly (open the PR, do not push to either).
+What this turn added on top:
+- `test/journeys.test.ts` — three tests, one per journey named in the
+  idea's "I will judge it by," each exercised end to end against the fakes
+  in a single file (not a repeat of the focused unit tests elsewhere; a
+  smoke-level string-together of sign-in → session-type → week-generation →
+  public page, book → checkout → drop-in charge → Money screen reflecting
+  it, and full-session-plus-waiter → coach `Y` → roster `Y` → accepted).
+- `README.md`: added a `Prerequisites` section (Node version only, no
+  Postgres/Docker/accounts - the acceptance item asked for this and no such
+  section existed), expanded `Run it` to the full quality-bar command list
+  instead of just install/dev/test, and fixed the `Status` section, which
+  still said "Pre-implementation. The specification is the current
+  artifact." — stale from before M1 and never updated across six
+  milestones of actual implementation. No deployment section exists or was
+  added, per this milestone's explicit "does not document deployment."
+
+No product behavior changed. No thirteenth screen. No feature pulled
+forward from `SPEC.md §8.2`/`§8.3`.
+
+Final check: `git status` clean. No PR opened this turn (none of the prior
+milestones opened one either) — the branch's history is available for one
+to be opened into `develop` whenever the operator wants it; per `AGENTS.md`
+and this file's own "Must not change," nothing pushes to `main` or
+`develop` directly.
+
+---
+
+## Slice 1: complete
+
+All seven milestones are `[x] done`. `npm test` passes 38/38 from a fresh
+clone with `DATABASE_URL` and `RELAY_BASE_URL` unset — no secrets, no
+daemon, no Docker. The three journeys in the idea are each covered
+end-to-end in `test/journeys.test.ts`, on top of focused unit coverage per
+milestone. Twelve screens, matching `SPEC.md §8.1` exactly. `SPEC.md` and
+`docs/PLATFORM.md` are unmodified from the versions already in the repo
+before this job started, per the idea's explicit override of the generic
+phase-1 template ("Add ROADMAP.md. Leave the product rules in SPEC.md in
+place.").
+
+Nothing from `SPEC.md §8.2`/`§8.3` (Slice 2/3) was pulled forward. Notable
+deliberate scope decisions made along the way, all documented in the
+milestone Notes above where they happened:
+- Subscription (monthly plan) renewal via a Connect Hub webhook is
+  explicitly out of scope for Slice 1 (M3) — only the initial purchase and
+  first month's credit grant exist.
+- `startCascade` operates on the original session rather than creating a
+  literal "parallel session" row (M4) — the accepted roster member becomes
+  that session's backup coach via `assigned_roster_member_id`.
+- No refund-webhook consumption exists (SPEC.md §9.4: refunds are issued
+  through the coach's own Square dashboard; Coachatron was never asked to
+  automate reversing a package credit on a partial refund in Slice 1, and
+  the "I will judge it by" / acceptance criteria across all seven
+  milestones never required it).

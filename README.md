@@ -23,27 +23,46 @@ Coachatron does three things and refuses the rest:
 
 Later, the coach runs all of it by texting the number in plain English.
 
+## Prerequisites
+
+- Node.js ≥ 20.11 (see `engines` in `package.json`). That's the whole list.
+- No Postgres, no Docker, no database to install — tests run against
+  [PGlite](https://pglite.dev) (Postgres compiled to WASM, in-memory).
+- No accounts to create and no secrets required to run locally. Payments
+  and SMS go through an in-process fake relay in tests (`test/fakes/relay.ts`),
+  never a real Square or Twilio account.
+
 ## Run it
 
 From a fresh clone:
 
 ```bash
-npm ci          # install dependencies
-npm run migrate # (optional) apply migrations to DATABASE_URL
-npm run dev     # start server on localhost:3000
-npm test        # run tests (uses PGlite, no database required)
+npm ci             # install dependencies
+npm run lint       # ESLint
+npm run typecheck  # tsc --noEmit
+npm test           # run the test suite (PGlite, no database required, no secrets)
+npm run build      # compile to dist/
+npm run dev        # start the server on http://localhost:3000
 ```
+
+`npm run migrate` applies the SQL migrations in `src/db/migrations/` to
+`DATABASE_URL` if you've set one (Postgres in production); it's optional for
+local development, since `npm run dev` and `npm test` both work against
+PGlite with no `DATABASE_URL` at all.
 
 ## Status
 
-Pre-implementation. The specification is the current artifact.
+Slice 1 is implemented: all twelve screens below, tested against fakes of
+the Square/Twilio-shaped relay (`docs/PLATFORM.md`). See `ROADMAP.md` for
+the milestone-by-milestone build log.
 
 📄 **[SPEC.md](SPEC.md)** — full specification: scope, domain model, journeys,
 payments, messaging, data model, and the explicit non-goals.
 
 📄 **[docs/PLATFORM.md](docs/PLATFORM.md)** — what we *don't* build, because the
 Noctusoft relay already has it: email, SMS, inbound routing, and Square
-marketplace payments. Also the design for SMS natural-language control.
+marketplace payments. Also the design for SMS natural-language control
+(Slice 2 — Slice 1 ships the `Y`/`N`/`STOP`/`HELP` keyword layer only).
 
 ## Design constraints
 
