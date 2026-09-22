@@ -904,7 +904,7 @@ own database.
 ---
 
 ## M7: Polish and release readiness
-Status: [ ] todo
+Status: [~] in progress
 Goal: A fresh clone is a complete, correct, twelve-screen product: README
 accurate, every error state handled without a 500, and the full journey set
 from `SPEC.md §14` runnable against the fakes.
