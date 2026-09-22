@@ -63,3 +63,44 @@ export async function seedPlan(db: DbClient, coachId: number, creditsPerMonth: n
   );
   return result.rows[0].id;
 }
+
+export interface SeededRosterMember {
+  id: number;
+  phone: string;
+}
+
+export async function seedRosterMember(
+  db: DbClient,
+  coachId: number,
+  name: string,
+  priority: number,
+): Promise<SeededRosterMember> {
+  const phone = `+1777${Math.floor(1000000 + Math.random() * 8999999)}`;
+  const result = await db.query<{ id: number }>(
+    `insert into roster_member (coach_id, name, phone, priority, active)
+     values ($1, $2, $3, $4, true)
+     returning id`,
+    [coachId, name, phone, priority],
+  );
+  return { id: result.rows[0].id, phone };
+}
+
+/** Books a session directly (bypassing checkout) so cascade tests can set
+ * up a full session without exercising the whole M3 payment flow. */
+export async function seedBookedSession(db: DbClient, sessionId: number, athleteName: string, contactPhone: string): Promise<number> {
+  const result = await db.query<{ id: number }>(
+    `insert into booking (session_id, athlete_name, contact_phone, payment_source, gross_cents, status)
+     values ($1, $2, $3, 'DropIn', 0, 'booked')
+     returning id`,
+    [sessionId, athleteName, contactPhone],
+  );
+  return result.rows[0].id;
+}
+
+export async function seedWaitlistEntry(db: DbClient, sessionId: number, athleteName: string, contactPhone: string): Promise<void> {
+  await db.query('insert into waitlist (session_id, contact_phone, athlete_name) values ($1, $2, $3)', [
+    sessionId,
+    contactPhone,
+    athleteName,
+  ]);
+}

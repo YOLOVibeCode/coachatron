@@ -492,35 +492,108 @@ calls `fetch` against `RELAY_BASE_URL`.
 ---
 
 ## M4: Overflow cascade & roster
-Status: [~] in progress
+Status: [x] done
 Goal: When a session is full and someone is waiting, the coach gets one SMS
 and must reply YES before the roster is offered the session, one backup
 coach at a time — screens 6 (roster) and 12 (offer response page).
 Acceptance:
-- [ ] `npm test` includes `test/overflow-cascade.test.ts` asserting: booking
+- [x] `npm test` includes `test/overflow-cascade.test.ts` asserting: booking
       into a full session with an existing waitlist entry sends exactly one
       SMS to the coach (assert `fakeRelay.sms.length === 1` for that phone);
       no `offer` row exists yet
-- [ ] Coach `Y` reply (simulated as `POST /webhooks/sms` with the fake
+- [x] Coach `Y` reply (simulated as `POST /webhooks/sms` with the fake
       relay's inbound shape) creates exactly one `offer` row, for the
       highest-priority active `roster_member`, and sends exactly one SMS to
       that member — not to any other roster member
-- [ ] That member accepting (`Y` reply, or `GET`+`POST
+- [x] That member accepting (`Y` reply, or `GET`+`POST
       /offer/:token`, screen 12) sets `offer.state = 'accepted'`,
       `session.assigned_coach_id`, and stops the cascade — a second `Y` from
       a different member has no effect (assert no second `offer` row and no
       state change)
-- [ ] Offer expiry (`expires_at` in the past) advances the cascade to the
+- [x] Offer expiry (`expires_at` in the past) advances the cascade to the
       next roster member on the next poll/cron tick (call the exported
       `advanceCascade()` function directly in the test with a stubbed clock
       — no real `setTimeout` waits in tests)
-- [ ] `N`, `STOP`, `HELP`, and any other inbound text are each handled
+- [x] `N`, `STOP`, `HELP`, and any other inbound text are each handled
       per `SPEC.md §10` (an unrecognized keyword gets exactly one reply
       pointing at the web link; `STOP` marks the number opted out and
       suppresses future non-critical sends)
-- [ ] All five quality-bar commands still exit 0
+- [x] All five quality-bar commands still exit 0
 
 Notes:
+
+Starting point was again a leftover, not-yet-`[x]`-marked "local executor
+checkpoint" (roster CRUD in `src/routes/coach.ts` was fine and kept
+as-is; `src/domain/cascade.ts`, `src/routes/webhooks.ts`, and
+`src/db/migrations/0004_overflow.sql` had real bugs and were rewritten).
+Bugs found, in order of severity:
+
+1. **The cascade could never actually start.** The webhook handler for the
+   coach's `YES` called `advanceCascade(db, new Date())` — a function whose
+   whole job is to react to *already-expired* `sent` offers. On a fresh
+   overflow ask there is no offer yet, so `advanceCascade` found nothing to
+   do and silently no-opped. Fixed by having the coach's `YES` look up the
+   session with a pending ask (`findPendingAskSessionForCoach`) and call
+   `startCascade(db, sessionId)` directly — the function whose actual job
+   is "make the next offer."
+2. **No way to ever trigger the condition being tested.** SPEC.md §7.3's
+   trigger is "the session is full AND a second athlete has joined the
+   waitlist," but nothing in the leftover code let an athlete join a
+   waitlist — a full session's booking form just returned a dead-end 409.
+   Added `POST /c/:handle/sessions/:sessionId/waitlist` (the same screen 9
+   form, offered as the 409 response's action, not a new/13th screen) and
+   rewrote `checkOverflow()` to require both `booked >= threshold` and
+   `waitlist count >= 1`, not just the booked count crossing a threshold.
+3. **`STOP` had zero effect.** It was logged to `message_log` and nothing
+   ever read that log before sending. Added a real `opt_out` table,
+   `isOptedOut()`/`upsertOptOut()`, and routed every cascade-initiated send
+   (the ask to the coach, the offer to a roster member, the
+   roster-exhausted notice) through `sendUnlessOptedOut()`. An opted-out
+   roster member is also excluded from `startCascade`'s candidate query
+   entirely, not merely muted — they're skipped in favor of the next
+   person, per "roster, in priority order... until someone claims it."
+4. **Schema type mismatch.** The plan below (written before this milestone
+   was implemented) said accepting should set `session.assigned_coach_id`
+   — but that column is `references coach(id)`, and a roster member is not
+   necessarily a coach account. Added `session.assigned_roster_member_id
+   integer references roster_member(id)` instead and set that on accept.
+5. **Cascade would loop on the same person forever.** First implementation
+   excluded a roster member from re-selection only while their offer was
+   `state in ('sent','accepted') and expires_at > now()` — once an offer
+   *expired*, that condition went false and the same highest-priority
+   member got re-offered on every `advanceCascade` tick instead of the
+   cascade moving to the next person. Caught by
+   `test/overflow-cascade.test.ts`'s expiry and decline tests, both failing
+   the same way before the fix. Fixed: exclude a roster member if *any*
+   offer exists for them on this session, any state — each member gets one
+   shot per session.
+6. **A pre-existing, unrelated bug in `src/db/migrate.ts`, dormant since
+   M1, surfaced here.** It splits each migration file into statements on
+   every literal `;`, including ones inside `--` comments. `0001`-`0003`
+   never had a semicolon inside a comment so this never showed up; this
+   milestone's migration did ("...joined the waitlist; configurable")."),
+   which cut a statement in half and produced a baffling "syntax error at
+   or near 'configurable'" that took real bisection to find (see the SQL
+   in `runMigrations`'s new `stripLineComments()` — every prior migration
+   was re-verified end-to-end against the fix, all still apply cleanly).
+   Fixed at the cause in `migrate.ts`, not worked around by avoiding
+   semicolons in future comments (though the fixed migration file also
+   avoids non-ASCII characters now, matching `0001`-`0003`'s style).
+
+Deliberate scope decision, not a bug: `startCascade` operates on the
+*original* session (no new "parallel session" row is created), and the
+accepted roster member becomes that session's backup coach via
+`assigned_roster_member_id`. SPEC.md §7.3 describes creating a parallel
+session; building that (a second `session_type`/`session` row, its own
+capacity and pricing) is real scope beyond what this milestone's own
+acceptance criteria require or what fits "finishable in one focused
+session" — noted here rather than silently narrowed.
+
+`overflow_ask.coach_notified_at` (from the leftover code) is renamed
+`resolved_at` in the rewritten migration for clarity — it was actually
+being used as "has this ask been acted on," not literally "was the coach
+texted," which the old name suggested. Added `exhausted_notified_at` so
+the "nobody accepted" notice to the coach fires at most once per ask.
 
 `src/routes/coach.ts` addition for screen 6:
 - `GET /app/roster` and `POST /app/roster` — list/add `roster_member`

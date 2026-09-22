@@ -19,7 +19,7 @@ import {
   chargeForBooking,
   subscribeForBooking,
 } from '../domain/pricing.js';
-import { checkOverflow } from '../domain/cascade.js';
+import { checkOverflow, acceptOffer, declineOffer, getOfferByToken } from '../domain/cascade.js';
 
 export const publicRouter = Router();
 
@@ -182,7 +182,14 @@ publicRouter.post('/c/:handle/sessions/:sessionId/book', async (req, res) => {
       page(
         'Session full',
         html`<h1>That session just filled up</h1>
-          <p class="muted">Someone booked the last spot. <a href="/c/${coach.handle}">See other times</a>.</p>`,
+          <p class="muted">Someone booked the last spot, but you can wait for one to open.</p>
+          <form method="post" action="/c/${coach.handle}/sessions/${session.id}/waitlist">
+            <input type="hidden" name="athlete_name" value="${athleteName}" />
+            <input type="hidden" name="contact_phone" value="${rawPhone}" />
+            <input type="hidden" name="contact_email" value="${contactEmail ?? ''}" />
+            <button type="submit">Join the waitlist</button>
+          </form>
+          <a class="action" href="/c/${coach.handle}">See other times</a>`,
       ),
     );
     return;
@@ -190,6 +197,48 @@ publicRouter.post('/c/:handle/sessions/:sessionId/book', async (req, res) => {
 
   const bookingId = await createPendingBooking(db, session.id, athleteName, contactPhone, contactEmail);
   res.redirect(303, `/c/${coach.handle}/checkout/${bookingId}`);
+});
+
+// Joining the waitlist for a full session (SPEC.md §7.3 step 1: "the
+// session is full AND a second athlete has joined the waitlist" is what
+// triggers the coach's overflow ask). This is the same screen 9 form in a
+// different state, not a new screen.
+publicRouter.post('/c/:handle/sessions/:sessionId/waitlist', async (req, res) => {
+  const db = getDb();
+  const coach = await findCoachByHandle(db, req.params.handle);
+  if (!coach) {
+    res.status(404).send(notFound());
+    return;
+  }
+  const session = await loadSessionForCoach(db, coach, Number(req.params.sessionId));
+  if (!session) {
+    res.status(404).send(notFound());
+    return;
+  }
+
+  const athleteName = field(req.body, 'athlete_name');
+  const contactPhone = normalizePhone(field(req.body, 'contact_phone'));
+  // waitlist has no email column (SPEC.md §11.1) — phone is the contact of record.
+  if (!athleteName || !contactPhone) {
+    res.status(422).send(notFound());
+    return;
+  }
+
+  await db.query(
+    'insert into waitlist (session_id, contact_phone, athlete_name) values ($1, $2, $3)',
+    [session.id, contactPhone, athleteName],
+  );
+
+  await checkOverflow(db, session.id);
+
+  res.status(200).send(
+    page(
+      'On the waitlist',
+      html`<h1>You're on the waitlist</h1>
+        <p class="muted">${session.name} — ${formatLocal(session.starts_at_utc, session.tz)}. We'll text ${contactPhone} if a spot opens.</p>
+        <a class="action" href="/c/${coach.handle}">Back to ${coach.name}'s sessions</a>`,
+    ),
+  );
 });
 
 // ---- Screen 10: checkout ----
@@ -396,4 +445,63 @@ publicRouter.post('/c/:handle/checkout/:bookingId', async (req, res) => {
   }
 
   res.redirect(303, `/c/${coach.handle}/checkout/${bookingId}`);
+});
+
+// ---- Screen 12: offer response page (web fallback for a roster member's
+// SMS reply; SPEC.md §8.1 item 12) ----
+
+publicRouter.get('/offer/:token', async (req, res) => {
+  const db = getDb();
+  const offer = await getOfferByToken(db, req.params.token);
+  if (!offer) {
+    res.status(404).send(notFound());
+    return;
+  }
+  res.status(200).send(renderOfferPage(offer.state));
+});
+
+function renderOfferPage(state: string, message?: string) {
+  const resolved = state !== 'sent';
+  return page(
+    'Overflow offer',
+    html`<h1>Backup coach needed</h1>
+      ${resolved
+        ? html`<p class="muted">This offer is no longer open (${state}).</p>`
+        : html`<form method="post">
+            <button type="submit" name="action" value="accept">Accept</button>
+          </form>
+          <form method="post">
+            <button type="submit" name="action" value="decline">Decline</button>
+          </form>`}
+      ${message ? html`<p class="muted">${message}</p>` : raw('')}`,
+  );
+}
+
+publicRouter.post('/offer/:token', async (req, res) => {
+  const db = getDb();
+  const offer = await getOfferByToken(db, req.params.token);
+  if (!offer) {
+    res.status(404).send(notFound());
+    return;
+  }
+
+  const action = field(req.body, 'action');
+  if (offer.state !== 'sent') {
+    res.status(200).send(renderOfferPage(offer.state));
+    return;
+  }
+
+  if (action === 'accept') {
+    const accepted = await acceptOffer(db, offer.id);
+    res
+      .status(200)
+      .send(renderOfferPage(accepted ? 'accepted' : offer.state, accepted ? undefined : 'Too late — someone else already claimed it.'));
+    return;
+  }
+  if (action === 'decline') {
+    await declineOffer(db, offer.id);
+    res.status(200).send(renderOfferPage('declined'));
+    return;
+  }
+  res.status(422).send(renderOfferPage(offer.state, 'Choose accept or decline.'));
 });
