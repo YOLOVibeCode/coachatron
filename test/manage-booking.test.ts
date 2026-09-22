@@ -46,7 +46,7 @@ test('POST /booking/:token/cancel sets status to cancelled and frees spot', asyn
 
   await withServer(async (base) => {
     // Cancel the booking
-    const cancelRes = await fetch(`${base}/booking/${token}/cancel`, { method: 'POST' });
+    const cancelRes = await fetch(`${base}/booking/${token}/cancel`, { method: 'POST', redirect: 'manual' });
     assert.equal(cancelRes.status, 303);
 
     // Verify booking status changed
@@ -75,11 +75,15 @@ test(' cancelling a paid-with-credit booking increments credit', async () => {
 
   const contactPhone = '+15550000001';
 
-  // Create credit with initial balance of 5
+  // Create credit with initial balance of 5. $3 is passed once as the
+  // integer package_id and again pre-formatted as the text source, rather
+  // than reused as `$3::text` — PGlite's parameter-type inference rejects
+  // the same placeholder being deduced as two different types in one
+  // statement ("inconsistent types deduced for parameter $3").
   const creditId = await db.query<{ id: number }>(
     `insert into credit (coach_id, contact_phone, package_id, remaining, source)
-     values ($1, $2, $3, 5, 'package:' || $3::text) returning id`,
-    [seed.coach.id, contactPhone, pkgId],
+     values ($1, $2, $3, 5, $4) returning id`,
+    [seed.coach.id, contactPhone, pkgId, `package:${pkgId}`],
   ).then((r) => r.rows[0].id);
 
   // Book with credit first to get booking ID
@@ -99,7 +103,7 @@ test(' cancelling a paid-with-credit booking increments credit', async () => {
 
   await withServer(async (base) => {
     // Cancel the booking
-    const cancelRes = await fetch(`${base}/booking/${token}/cancel`, { method: 'POST' });
+    const cancelRes = await fetch(`${base}/booking/${token}/cancel`, { method: 'POST', redirect: 'manual' });
     assert.equal(cancelRes.status, 303);
   });
 
@@ -128,7 +132,7 @@ test('cannot cancel a session that has already started', async () => {
 
   await withServer(async (base) => {
     // Try to cancel
-    const cancelRes = await fetch(`${base}/booking/${token}/cancel`, { method: 'POST' });
+    const cancelRes = await fetch(`${base}/booking/${token}/cancel`, { method: 'POST', redirect: 'manual' });
     assert.equal(cancelRes.status, 409);
 
     const body = await cancelRes.text();
@@ -219,11 +223,11 @@ test('cannot cancel already cancelled booking', async () => {
 
   await withServer(async (base) => {
     // First cancel works
-    const cancelRes1 = await fetch(`${base}/booking/${token}/cancel`, { method: 'POST' });
+    const cancelRes1 = await fetch(`${base}/booking/${token}/cancel`, { method: 'POST', redirect: 'manual' });
     assert.equal(cancelRes1.status, 303);
 
     // Second cancel should still succeed (idempotent)
-    const cancelRes2 = await fetch(`${base}/booking/${token}/cancel`, { method: 'POST' });
+    const cancelRes2 = await fetch(`${base}/booking/${token}/cancel`, { method: 'POST', redirect: 'manual' });
     assert.equal(cancelRes2.status, 303);
   });
 });

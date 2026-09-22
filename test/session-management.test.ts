@@ -149,7 +149,7 @@ test('cannot cancel a session that has already started', async () => {
     await withServer(async (base) => {
       // Try to cancel the session
       const cancelForm = new URLSearchParams();
-      const cancelRes = await coachPost(base, `/app/sessions/${seed.sessionId}/cancel`, cancelForm);
+      const cancelRes = await coachPost(base, `/app/sessions/${seed.sessionId}/cancel`, cancelForm, makeAuthCookie('test-token'));
       assert.equal(cancelRes.status, 409);
 
       const body = await cancelRes.text();
@@ -178,7 +178,7 @@ test('coach can delete a session', async () => {
 
       // Cancel the session
       const cancelForm = new URLSearchParams();
-      const cancelRes = await coachPost(base, `/app/sessions/${seed.sessionId}/cancel`, cancelForm);
+      const cancelRes = await coachPost(base, `/app/sessions/${seed.sessionId}/cancel`, cancelForm, makeAuthCookie('test-token'));
       assert.equal(cancelRes.status, 303);
 
       // Verify session status changed

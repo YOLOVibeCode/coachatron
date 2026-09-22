@@ -466,12 +466,12 @@ coachRouter.post('/app/sessions/:id/bookings/:bookingId/attendance', requireAuth
     res.status(422).send(page('Error', html`<h1>Invalid status</h1>`));
     return;
   }
-  
+
   await db.query(
-    `update booking set status = $1 where id = $2 and session_id = $3`,
+    `update booking set status = $1 where id = $2 and session_id = $3 and status = 'booked'`,
     [status, bookingId, sessionId],
   );
-  
+
   res.redirect(303, `/app/sessions/${sessionId}`);
 });
 
@@ -479,24 +479,19 @@ coachRouter.post('/app/sessions/:id/cancel', requireAuth, async (req, res) => {
   const db = getDb();
   const coachId = res.locals.coachId as number;
   const sessionId = Number(req.params.id);
-  
+
   // Verify session belongs to this coach
   const session = await loadSessionForCoach(db, coachId, sessionId);
   if (!session) {
     res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
     return;
   }
-  
-  // Check if session is in the past
-  const now = new Date();
-  await db.query(`set timezone to $1`, [session.tz]);
-  const startsAtInTz = await db.query<{ starts_at_utc: string }>(
-    `select s.starts_at_utc from session s where s.id = $1`,
-    [sessionId],
-  );
-  await db.query(`set timezone to 'UTC'`);
-  
-  if (startsAtInTz.rows[0]?.starts_at_utc && new Date(startsAtInTz.rows[0].starts_at_utc) < now) {
+
+  // starts_at_utc is already an absolute instant (timestamptz); compare it
+  // directly against "now" - no per-connection SET timezone dance needed
+  // (and `SET timezone TO $1` is not even valid SQL: SET does not accept a
+  // bind parameter).
+  if (new Date(session.starts_at_utc) < new Date()) {
     res.status(409).send(
       page('Cannot cancel', html`<h1>Session already started</h1>
         <p class="error">This session has already passed and cannot be cancelled.</p>
@@ -504,36 +499,25 @@ coachRouter.post('/app/sessions/:id/cancel', requireAuth, async (req, res) => {
     );
     return;
   }
-  
-  const transactionResult = await db.query<{ count: string }>(
-    `with cancelled as (
-       update booking set status = 'cancelled'
-       where session_id = $1 and status in ('booked', 'attended', 'noshow')
-       returning id
-     )
-     select count(*)::text as count from cancelled`,
+
+  // Idempotent: a double-submitted cancel must not re-send cancellation
+  // texts to everyone a second time.
+  const cancelled = await db.query<{ contact_phone: string; athlete_name: string }>(
+    `update booking set status = 'cancelled'
+     where session_id = $1 and status in ('booked', 'attended', 'noshow')
+     returning contact_phone, athlete_name`,
     [sessionId],
   );
 
-  // Send SMS to each affected athlete
-  const cancelledCount = Number(transactionResult.rows[0]?.count ?? '0');
-  if (cancelledCount > 0) {
-    const athletes = await db.query<{ contact_phone: string; athlete_name: string }>(
-      `select b.contact_phone, b.athlete_name from booking b where b.session_id = $1`,
-      [sessionId],
-    );
-
-    for (const athlete of athletes.rows) {
-      await sendSms({
-        to: athlete.contact_phone,
-        body: `${athlete.athlete_name}'s ${session.name} on ${formatLocal(session.starts_at_utc, session.tz)} has been cancelled.`,
-      });
-    }
+  for (const athlete of cancelled.rows) {
+    await sendSms({
+      to: athlete.contact_phone,
+      body: `${athlete.athlete_name}'s ${session.name} on ${formatLocal(session.starts_at_utc, session.tz)} has been cancelled.`,
+    });
   }
-  
-  // Also mark the session itself as cancelled
-  await db.query(`update session set status = 'cancelled' where id = $1`, [sessionId]);
-  
+
+  await db.query("update session set status = 'cancelled' where id = $1", [sessionId]);
+
   res.redirect(303, '/app/schedule');
 });
 

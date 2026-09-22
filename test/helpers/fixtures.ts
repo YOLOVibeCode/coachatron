@@ -1,6 +1,6 @@
 import type { DbClient } from '../../src/db/client.js';
 import { createCoach, type CoachRow } from '../../src/domain/auth.js';
-import crypto from 'crypto';
+import crypto from 'node:crypto';
 
 export interface SeededSession {
   coach: CoachRow;

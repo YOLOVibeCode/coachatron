@@ -670,26 +670,85 @@ out of scope here.
 ---
 
 ## M5: Session management & self-service
-Status: [~] in progress
+Status: [x] done
 Goal: A coach can see and manage a single session's roster; a parent can
 cancel or reschedule their own booking from a link with no login — screens 3
 (session detail) and 11 (manage booking).
 Acceptance:
-- [ ] `npm test` includes `test/session-management.test.ts`: coach marks
+- [x] `npm test` includes `test/session-management.test.ts`: coach marks
       attendance on a booking (`attended`/`noshow`); coach cancels a session
       and every booked athlete's `booking.status` becomes `cancelled` and a
       cancellation SMS is sent to each (assert `fakeRelay.sms.length` equals
       the number of bookings)
-- [ ] `test/manage-booking.test.ts`: the magic link
+- [x] `test/manage-booking.test.ts`: the magic link
       (`GET /booking/:token`) shows the booking; `POST
       /booking/:token/cancel` sets `status='cancelled'`, frees the spot
       (a subsequent `GET /c/<handle>` shows one more spot open), and — if
       paid by credit — increments `credit.remaining` by 1
-- [ ] A cancellation attempted after the session's `starts_at_utc` has
+- [x] A cancellation attempted after the session's `starts_at_utc` has
       passed returns a 409 with a plain-language error, not a 500
-- [ ] All five quality-bar commands still exit 0
+- [x] All five quality-bar commands still exit 0
 
 Notes:
+
+Starting point was again a leftover "local executor checkpoint" — this one
+notably included both test files already written, which was the fastest
+way yet to surface its bugs: `npm test` simply failed loudly instead of
+silently doing the wrong thing. Bugs found and fixed:
+
+1. **`SET timezone TO $1` is not valid SQL** — `SET` does not accept a bind
+   parameter, only a literal or identifier. Both cancellation handlers
+   (`/app/sessions/:id/cancel` in `src/routes/coach.ts` and
+   `/booking/:token/cancel` in `src/routes/public.ts`) used this to try to
+   compare "now" against the session's start time in the session's own
+   timezone, and both threw `syntax error at or near "$1"` before ever
+   reaching the actual cancellation logic. The whole dance was also
+   unnecessary: `starts_at_utc` is a `timestamptz`, already an absolute
+   instant — comparing it against `new Date()` needs no timezone
+   conversion at all. Removed the `SET timezone` calls entirely and compare
+   `starts_at_utc` directly; this is also why "coach can delete a session"
+   failed (the handler crashed before ever reaching `update session set
+   status = 'cancelled'`, leaving it `scheduled`).
+2. **Credit could be refunded twice.** `/booking/:token/cancel` refunded a
+   credit whenever `credit_id` was present, regardless of whether the
+   `update ... where status in (...)` actually changed anything — so
+   cancelling an already-cancelled booking a second time would refund the
+   credit again. Fixed by checking the update's `returning` row count and
+   only refunding when a transition actually happened, which also makes a
+   double-submitted cancel idempotent (matches
+   `test/manage-booking.test.ts`'s "cannot cancel already cancelled
+   booking," which — despite its name — asserts that a *second* cancel
+   attempt still succeeds with 303, not that it's rejected).
+3. **Two tests in `test/session-management.test.ts` were missing the coach
+   auth cookie** on their `coachPost(...)` calls ("cannot cancel a session
+   that has already started" and "coach can delete a session"). Without
+   it, `requireAuth` redirected to `/signin` before ever reaching the
+   handler — which happened to still return 303 for "delete a session"
+   (masking that the session was never actually cancelled, caught instead
+   by the final status-column assertion) and a wrong 303-vs-409 for the
+   "already started" case. Fixed by adding the missing cookie argument,
+   matching every other authenticated test in the same file.
+4. **Every `POST .../cancel` fetch in `test/manage-booking.test.ts`**
+   asserted `status === 303` without `redirect: 'manual'` — `fetch`'s
+   default `redirect: 'follow'` silently turns a 303 into the followed
+   GET's 200, which is what the assertions were actually seeing. Added
+   `redirect: 'manual'` to all five, matching the pattern already used in
+   `test/booking-payment.test.ts` and `test/session-management.test.ts`.
+5. **A test fixture's own SQL was invalid**: inserting a credit row reused
+   `$3` both as the integer `package_id` column and, in the same
+   statement, cast as `$3::text` for `source` — PGlite rejects deducing two
+   different types for one parameter ("inconsistent types deduced for
+   parameter $3"). Fixed by passing the pre-formatted source string as its
+   own `$4` instead of reusing `$3` with a cast, matching how
+   `src/domain/pricing.ts`'s `createCredit()` already builds that string
+   in JS rather than in SQL.
+
+No schema surprises this time: `booking.manage_token` (added in
+`0005_booking_token.sql`, generated at booking-creation time in
+`createPendingBooking()`) and the attendance/cancel routes matched the plan
+below. Attendance updates were additionally guarded to only apply
+`where status = 'booked'` (not overwriting an already-cancelled booking's
+status) — a small correctness addition beyond what was strictly tested.
 
 Add `manage_token text unique` to `booking` in
 `src/db/migrations/0004_booking_token.sql`; generate it (32-byte hex) at
