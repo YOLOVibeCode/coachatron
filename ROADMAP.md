@@ -670,7 +670,7 @@ out of scope here.
 ---
 
 ## M5: Session management & self-service
-Status: [ ] todo
+Status: [~] in progress
 Goal: A coach can see and manage a single session's roster; a parent can
 cancel or reschedule their own booking from a link with no login — screens 3
 (session detail) and 11 (manage booking).

@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import type { DbClient } from '../db/client.js';
 import {
   charge as connectHubCharge,
@@ -45,6 +46,7 @@ export interface BookingRow {
   credit_id: number | null;
   charge_id: string | null;
   gross_cents: number | null;
+  manage_token: string;
   status: string;
 }
 
@@ -206,18 +208,19 @@ export async function createPendingBooking(
   contactPhone: string,
   contactEmail: string | null,
 ): Promise<number> {
+  const manageToken = crypto.randomBytes(32).toString('hex');
   const result = await db.query<{ id: number }>(
-    `insert into booking (session_id, athlete_name, contact_phone, contact_email, status)
-     values ($1, $2, $3, $4, 'pending')
+    `insert into booking (session_id, athlete_name, contact_phone, contact_email, manage_token, status)
+     values ($1, $2, $3, $4, $5, 'pending')
      returning id`,
-    [sessionId, athleteName, contactPhone, contactEmail],
+    [sessionId, athleteName, contactPhone, contactEmail, manageToken],
   );
   return result.rows[0].id;
 }
 
 export async function getBooking(db: DbClient, bookingId: number): Promise<BookingRow | null> {
   const result = await db.query<BookingRow>(
-    `select id, session_id, athlete_name, contact_phone, contact_email, payment_source, credit_id, charge_id, gross_cents, status
+    `select id, session_id, athlete_name, contact_phone, contact_email, payment_source, credit_id, charge_id, gross_cents, manage_token, status
      from booking where id = $1`,
     [bookingId],
   );

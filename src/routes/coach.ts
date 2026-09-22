@@ -367,6 +367,176 @@ coachRouter.get('/app/schedule', requireAuth, async (_req, res) => {
   );
 });
 
+// ---- Screen 3: session detail (M5 session management) ----
+
+async function loadSessionForCoach(db: DbClient, coachId: number, sessionId: number): Promise<{
+  id: number;
+  starts_at_utc: string;
+  tz: string;
+  name: string;
+} | null> {
+  const result = await db.query<{ id: number; starts_at_utc: string; tz: string; name: string }>(
+    `select s.id, s.starts_at_utc, s.tz, st.name
+     from session s
+     join session_type st on st.id = s.session_type_id
+     where s.id = $1 and st.coach_id = $2`,
+    [sessionId, coachId],
+  );
+  return result.rows[0] ?? null;
+}
+
+coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const sessionId = Number(req.params.id);
+  
+  const session = await loadSessionForCoach(db, coachId, sessionId);
+  if (!session) {
+    res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
+    return;
+  }
+  
+  // Get bookings for this session
+  const bookings = await db.query<{
+    id: number;
+    athlete_name: string;
+    status: string;
+    manage_token: string;
+  }>(
+    `select id, athlete_name, status, manage_token 
+     from booking 
+     where session_id = $1 
+     order by id`,
+    [sessionId],
+  );
+  
+  res.status(200).send(
+    page(
+      session.name,
+      html`<h1>${session.name}</h1>
+        <p class="muted">${formatLocal(session.starts_at_utc, session.tz)}</p>
+        
+        <h2>Roster (${bookings.rows.length} attendees)</h2>
+        ${bookings.rows.length === 0
+          ? html`<p class="muted">No bookings yet.</p>`
+          : html`<ul>
+              ${bookings.rows.map((b) => {
+                const statusClass = b.status === 'attended' ? 'good' : b.status === 'noshow' ? 'alert' : '';
+                return html`<li class="card">
+                  <strong>${b.athlete_name}</strong> — 
+                  ${b.status === 'booked' ? html`<span>Ready to mark</span>` : 
+                    b.status === 'cancelled' ? html`<span class="muted">Cancelled</span>` :
+                    html`<span class="${statusClass}">${b.status}</span>`}
+                  ${b.status === 'booked' ? html`
+                    <form method="post" action="/app/sessions/${sessionId}/bookings/${b.id}/attendance">
+                      <label><input type="radio" name="status" value="attended" checked /> Attended</label>
+                      <label><input type="radio" name="status" value="noshow" /> No-show</label>
+                      <button type="submit">Mark attendance</button>
+                    </form>
+                  ` : raw('')}
+                </li>`;
+              })}
+            </ul>`}
+        
+        <h2>Action</h2>
+        <form method="post" action="/app/sessions/${sessionId}/cancel">
+          <button type="submit" class="action">Cancel session</button>
+        </form>
+        
+        <a class="action" href="/app/schedule">Back to schedule</a>`,
+    ),
+  );
+});
+
+coachRouter.post('/app/sessions/:id/bookings/:bookingId/attendance', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const sessionId = Number(req.params.id);
+  const bookingId = Number(req.params.bookingId);
+  
+  // Verify session belongs to this coach
+  const session = await loadSessionForCoach(db, coachId, sessionId);
+  if (!session) {
+    res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
+    return;
+  }
+  
+  const status = field(req.body, 'status');
+  if (status !== 'attended' && status !== 'noshow') {
+    res.status(422).send(page('Error', html`<h1>Invalid status</h1>`));
+    return;
+  }
+  
+  await db.query(
+    `update booking set status = $1 where id = $2 and session_id = $3`,
+    [status, bookingId, sessionId],
+  );
+  
+  res.redirect(303, `/app/sessions/${sessionId}`);
+});
+
+coachRouter.post('/app/sessions/:id/cancel', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const sessionId = Number(req.params.id);
+  
+  // Verify session belongs to this coach
+  const session = await loadSessionForCoach(db, coachId, sessionId);
+  if (!session) {
+    res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
+    return;
+  }
+  
+  // Check if session is in the past
+  const now = new Date();
+  await db.query(`set timezone to $1`, [session.tz]);
+  const startsAtInTz = await db.query<{ starts_at_utc: string }>(
+    `select s.starts_at_utc from session s where s.id = $1`,
+    [sessionId],
+  );
+  await db.query(`set timezone to 'UTC'`);
+  
+  if (startsAtInTz.rows[0]?.starts_at_utc && new Date(startsAtInTz.rows[0].starts_at_utc) < now) {
+    res.status(409).send(
+      page('Cannot cancel', html`<h1>Session already started</h1>
+        <p class="error">This session has already passed and cannot be cancelled.</p>
+        <a class="action" href="/app/sessions/${sessionId}">Back to session detail</a>`),
+    );
+    return;
+  }
+  
+  const transactionResult = await db.query<{ count: string }>(
+    `with cancelled as (
+       update booking set status = 'cancelled'
+       where session_id = $1 and status in ('booked', 'attended', 'noshow')
+       returning id
+     )
+     select count(*)::text as count from cancelled`,
+    [sessionId],
+  );
+
+  // Send SMS to each affected athlete
+  const cancelledCount = Number(transactionResult.rows[0]?.count ?? '0');
+  if (cancelledCount > 0) {
+    const athletes = await db.query<{ contact_phone: string; athlete_name: string }>(
+      `select b.contact_phone, b.athlete_name from booking b where b.session_id = $1`,
+      [sessionId],
+    );
+
+    for (const athlete of athletes.rows) {
+      await sendSms({
+        to: athlete.contact_phone,
+        body: `${athlete.athlete_name}'s ${session.name} on ${formatLocal(session.starts_at_utc, session.tz)} has been cancelled.`,
+      });
+    }
+  }
+  
+  // Also mark the session itself as cancelled
+  await db.query(`update session set status = 'cancelled' where id = $1`, [sessionId]);
+  
+  res.redirect(303, '/app/schedule');
+});
+
 // ---- Screen 5: pricing (packages and plans) ----
 
 coachRouter.get('/app/pricing', requireAuth, async (_req, res) => {

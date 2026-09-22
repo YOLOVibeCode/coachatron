@@ -505,3 +505,153 @@ publicRouter.post('/offer/:token', async (req, res) => {
   }
   res.status(422).send(renderOfferPage(offer.state, 'Choose accept or decline.'));
 });
+
+// ---- Screen 11: manage booking (M5 self-service) ----
+
+async function loadBookingByToken(db: DbClient, token: string): Promise<{
+  id: number;
+  session_id: number;
+  athlete_name: string;
+  contact_phone: string;
+  status: string;
+  manage_token: string;
+} | null> {
+  const result = await db.query<{ id: number; session_id: number; athlete_name: string; contact_phone: string; status: string; manage_token: string }>(
+    `select b.id, b.session_id, b.athlete_name, b.contact_phone, b.status, b.manage_token from booking b where b.manage_token = $1`,
+    [token],
+  );
+  return result.rows[0] ?? null;
+}
+
+publicRouter.get('/booking/:token', async (req, res) => {
+  const db = getDb();
+  const booking = await loadBookingByToken(db, req.params.token);
+  if (!booking) {
+    res.status(404).send(notFound());
+    return;
+  }
+
+  // Load session info to show details
+  const sessionResult = await db.query<{
+    name: string;
+    starts_at_utc: string;
+    tz: string;
+    coach_id: number;
+    contact_phone: string;
+    athlete_name: string;
+    status: string;
+  }>(
+    `select st.name, s.starts_at_utc, s.tz, c.id as coach_id
+     from booking b
+     join session s on s.id = b.session_id
+     join session_type st on st.id = s.session_type_id
+     join coach c on c.id = st.coach_id
+     where b.manage_token = $1`,
+    [req.params.token],
+  );
+  
+  if (!sessionResult.rows[0]) {
+    res.status(404).send(notFound());
+    return;
+  }
+  
+  const { name, starts_at_utc, tz, coach_id } = sessionResult.rows[0];
+  
+  // Check if cancellation is allowed (before session start)
+  const now = new Date();
+  const cancellationAllowed = now < new Date(starts_at_utc);
+  
+  // Find this coach's handle for the public link
+  const coachResult = await db.query<{ handle: string }>('select handle from coach where id = $1', [coach_id]);
+  const coachHandle = coachResult.rows[0]?.handle ?? 'unknown';
+  
+  res.status(200).send(
+    page(
+      'Manage booking',
+      html`<h1>${name}</h1>
+        <p class="muted">${formatLocal(starts_at_utc, tz)}</p>
+        
+        <p class="card">
+          <strong>Athlete:</strong> ${booking.athlete_name}<br />
+          <strong>Status:</strong> 
+          ${booking.status === 'booked' ? html`<span class="good">Confirmed</span>` : 
+            booking.status === 'cancelled' ? html`<span class="muted">Cancelled</span>` :
+            html`<span>${booking.status}</span>`}
+        </p>
+        
+        <h2>Action</h2>
+        ${cancellationAllowed
+          ? html`<form method="post" action="/booking/${req.params.token}/cancel">
+              <button type="submit" class="action">Cancel this booking</button>
+            </form>`
+          : html`<p class="muted">Cancellations are not accepted after the session starts.</p>`}
+        
+        <a class="action" href="/c/${coachHandle}">Back to ${coachHandle}'s page</a>`,
+    ),
+  );
+});
+
+publicRouter.post('/booking/:token/cancel', async (req, res) => {
+  const db = getDb();
+  const booking = await loadBookingByToken(db, req.params.token);
+  if (!booking) {
+    res.status(404).send(notFound());
+    return;
+  }
+
+  // Check if session is in the past
+  const sessionResult = await db.query<{ starts_at_utc: string; tz: string }>(
+    `select s.starts_at_utc, s.tz
+     from booking b
+     join session s on s.id = b.session_id
+     where b.manage_token = $1`,
+    [req.params.token],
+  );
+  
+  if (!sessionResult.rows[0]) {
+    res.status(404).send(notFound());
+    return;
+  }
+  
+  const tz = sessionResult.rows[0].tz;
+  await db.query(`set timezone to $1`, [tz]);
+  const startsAtInTz = await db.query<{ starts_at_utc: string }>(
+    `select s.starts_at_utc from session s where s.id = (select b.session_id from booking b where b.manage_token = $1)`,
+    [req.params.token],
+  );
+  await db.query(`set timezone to 'UTC'`);
+  
+  const now = new Date();
+  if (startsAtInTz.rows[0]?.starts_at_utc && new Date(startsAtInTz.rows[0].starts_at_utc) < now) {
+    res.status(409).send(
+      page('Cannot cancel', html`<h1>Session already started</h1>
+        <p class="error">This session has already passed and cannot be cancelled.</p>
+        <a class="action" href="/booking/${req.params.token}">Back to booking detail</a>`),
+    );
+    return;
+  }
+  
+  // Mark booking as cancelled
+  await db.query(
+    `update booking b set status = 'cancelled' where b.manage_token = $1 and b.status in ('booked', 'attended', 'noshow')`,
+    [req.params.token],
+  );
+
+  // If paid with credit, increment the credit back by 1
+  const bookingDetail = await db.query<{ payment_source: string; credit_id: number | null }>(
+    `select b.payment_source, b.credit_id from booking b where b.manage_token = $1`,
+    [req.params.token],
+  );
+  
+  if (bookingDetail.rows[0]?.credit_id) {
+    await db.query(
+      `update credit set remaining = remaining + 1 where id = $1`,
+      [bookingDetail.rows[0].credit_id],
+    );
+  }
+
+  // Update spots count (re-count for future use if needed)
+  void booking.session_id;
+
+  res.redirect(303, `/booking/${req.params.token}`);
+});

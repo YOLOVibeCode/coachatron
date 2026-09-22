@@ -1,5 +1,6 @@
 import type { DbClient } from '../../src/db/client.js';
 import { createCoach, type CoachRow } from '../../src/domain/auth.js';
+import crypto from 'crypto';
 
 export interface SeededSession {
   coach: CoachRow;
@@ -88,11 +89,12 @@ export async function seedRosterMember(
 /** Books a session directly (bypassing checkout) so cascade tests can set
  * up a full session without exercising the whole M3 payment flow. */
 export async function seedBookedSession(db: DbClient, sessionId: number, athleteName: string, contactPhone: string): Promise<number> {
+  const manageToken = crypto.randomBytes(32).toString('hex');
   const result = await db.query<{ id: number }>(
-    `insert into booking (session_id, athlete_name, contact_phone, payment_source, gross_cents, status)
-     values ($1, $2, $3, 'DropIn', 0, 'booked')
+    `insert into booking (session_id, athlete_name, contact_phone, payment_source, gross_cents, status, manage_token)
+     values ($1, $2, $3, 'DropIn', 0, 'booked', $4)
      returning id`,
-    [sessionId, athleteName, contactPhone],
+    [sessionId, athleteName, contactPhone, manageToken],
   );
   return result.rows[0].id;
 }
