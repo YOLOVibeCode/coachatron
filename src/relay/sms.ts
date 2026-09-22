@@ -1,5 +1,3 @@
-import { RELAY_BASE_URL } from '../config.js';
-
 export interface SendSmsRequest {
   to: string;
   body: string;

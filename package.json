@@ -12,7 +12,7 @@
     "start": "node dist/server.js",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "sh -c \"tsx test/health.test.ts && tsx test/migrate.test.ts\"",
+    "test": "node --import tsx --test test/*.test.ts",
     "migrate": "tsx src/db/migrate.ts"
   },
   "dependencies": {

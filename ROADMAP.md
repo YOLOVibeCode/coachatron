@@ -139,20 +139,80 @@ Tests are in `health.test.ts` and `migrate.test.ts`.
 ---
 
 ## M2: Coach identity, session types & weekly schedule
-Status: [ ] todo
+Status: [x] done
 Goal: A coach signs in with a phone code, creates a session type, generates a
 week of sessions, and gets a public `/c/<handle>` page listing them —
 screens 1 (sign in), 2 (schedule), 4 (session types), and 8 (public page,
 read-only at this stage).
 Acceptance:
-- [ ] `npm test` includes `test/coach-onboarding.test.ts` covering: request
+- [x] `npm test` includes `test/coach-onboarding.test.ts` covering: request
       OTP → verify OTP → session cookie set → create session type → generate
       a week of sessions → `GET /c/<handle>` returns 200 and lists the
       generated sessions with date, time, spots left, price
-- [ ] `GET /c/does-not-exist` returns 404
-- [ ] All five quality-bar commands still exit 0
+- [x] `GET /c/does-not-exist` returns 404
+- [x] All five quality-bar commands still exit 0
 
 Notes:
+
+Deviations from the plan below, and why:
+1. **`src/routes/auth.ts` (M1 leftover) moved to `src/domain/auth.ts`.**
+   It held OTP/session data-access helpers, not Express routes, so it
+   belongs with the other pure domain logic (`src/domain/scheduling.ts`,
+   added this milestone). `src/routes/coach.ts` and `src/routes/public.ts`
+   are the actual route files, matching this note's original plan.
+2. **Deleted `src/app.d.ts`.** It was dead weight from an earlier aborted
+   attempt (`declare module '*.js'` hacks) — removing it does not affect
+   `tsc --noEmit`, which already resolves `./x.js` specifiers against `.ts`
+   files correctly under this project's `moduleResolution`. Also fixed the
+   one real bug it was masking: `getCoachBySessionToken` now types its query
+   with `db.query<{ coach_id: number }>(...)` instead of returning `unknown`.
+3. **Session cookie is a bare opaque token, not HMAC-signed.** The token is
+   32 random bytes looked up in `coach_session` server-side; a forged value
+   matches no row, which is the same security property a signature check
+   would add. Skipping the signature keeps `src/lib/cookies.ts` a five-line
+   parser instead of pulling in HMAC-and-compare logic for no behavioral
+   gain. `SESSION_SECRET` in `src/config.ts` is unused as of this milestone;
+   left in place for a future milestone that may want it, not removed.
+4. **`package.json`'s `test` script changed again**, from M1's
+   `sh -c "tsx test/health.test.ts && tsx test/migrate.test.ts"` (which
+   hardcoded two files and would not have picked up this milestone's new
+   test file) to `node --import tsx --test test/*.test.ts`. Verified
+   directly on this machine (Node 26): `tsx --test test/` (a bare directory)
+   fails with `ERR_UNSUPPORTED_DIR_IMPORT`, and `node --test test/*.test.ts`
+   without `--import tsx` fails resolving `./x.js` specifiers against `.ts`
+   files. The combination that works, and that all four tests now pass
+   under: `node --import tsx --test test/*.test.ts`. This is a **flat glob**
+   (not recursive) — every `*.test.ts` file must live directly under
+   `test/`, not in a subdirectory (fakes and helpers go in `test/fakes/` and
+   `test/helpers/`, which is exactly where this milestone put them, and
+   which the glob correctly ignores since they don't end in `.test.ts`).
+5. **First-time profile capture (name/email/tz) is one field set added to
+   the same `/signin/verify` POST**, not a separate route — this is what
+   "prompt for name/email/handle/tz in the same step before issuing the
+   session" (this file's original wording) meant in practice: one form,
+   shown after the code is entered, with the profile fields visible but
+   optional-looking; only enforced when the phone number turns out to be
+   new. Handle is not a form field — it is still derived from `name` via
+   `reserveHandle()`/`slugify()` in `src/domain/auth.ts`, exactly as
+   originally planned below.
+6. **Weekly grid submits as `day_0..day_6` / `time_0..time_6` form fields**
+   (a checkbox + time input per weekday, rendered on
+   `GET /app/session-types/:id/generate-week`), not a `{ weekday,
+   time_local }[]` JSON array — this is submittable from a plain HTML
+   `<form>` with no client-side JS, which the JSON-array shape is not.
+   `src/domain/scheduling.ts`'s `generateWeekSessions()` still takes the
+   `WeeklySlot[]` shape described below internally; the route just builds
+   that array from the seven checkbox/time pairs before calling it.
+7. **IANA timezone conversion is hand-rolled** in
+   `src/domain/scheduling.ts` (`zonedTimeToUtc`, using the standard
+   `Intl.DateTimeFormat`-guess-and-correct technique), not a date library —
+   keeps the dependency list exactly as stated in this file's "Stack"
+   section (no new package added this milestone).
+
+Everything else below matches what shipped.
+
+Original plan (still accurate as the intent; see deviations above for the
+handful of implementation-detail changes):
 
 New migration `src/db/migrations/0002_auth.sql`:
 ```sql
