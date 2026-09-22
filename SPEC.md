@@ -272,26 +272,24 @@ for two children with one phone draws from one pool.
 
 ### 9.3 Our cut
 
-**Locked 2026-09-21: free to the coach, 4% application fee on each transaction**,
+**Locked 2026-09-22: free to the coach, 5% application fee on each transaction**,
 on top of Square's processing (~2.6% + 10¢ card-present, 2.9% + 30¢ online).
 
-The rate is set for fairness and volume. A solo coach will not sign a monthly
-bill before seeing money arrive. Four percent of money that now gets collected
-is small enough to keep, and a lower rate is how the product spreads: one
-coach's athletes, roster, and assistant coaches are how the next coach shows
-up. Ease of use does that propagation. The text assistant — set something up
-by text, or ask and wait for Y — is included in the 4%. It saves the same
-admin work for a small book and a large one, so the launch rate stays flat
-rather than climbing with the coach's lessons. FieldView's 10% is a different
+The rate is the ease. A coach has a bookable link in five minutes, a parent
+pays with no account, and a full session texts the next coach. On a $35
+session that is $1.75, on top of Square. The text assistant — set something up
+by text, or ask and wait for Y — is included. It is the same work for a small
+book and a large one, so the rate stays 5% rather than climbing with the
+lessons. A lower rate is still how the product spreads: one coach's athletes
+and roster are how the next coach shows up. FieldView's 10% is a different
 product: a paid stream the team did not previously sell.
 
-Raising the default later is a config change (`appFeeBps`), and a higher
-default propagates to new charges without a release. When it changes, it
-applies to coaches who connect after the change. Coaches already on 4% stay
-on 4%. Pilot coaches can be zero-rated the same way, with no deploy.
+Raising the default later is a config change (`appFeeBps` 500), and a higher
+default applies to coaches who connect after the change. Pilot coaches can be
+zero-rated the same way, with no deploy.
 
-Offer a **$49/mo, 0% fee** plan once a coach clears roughly $1,200/mo in
-bookings — at 4%, that is the crossover, and letting them switch themselves
+Offer a **$49/mo, 0% fee** plan once a coach clears roughly $1,000/mo in
+bookings — at 5%, that is the crossover, and letting them switch themselves
 is how a growing coach stays.
 
 Fee is configurable per-coach and per-transaction-type from day one (Connect Hub

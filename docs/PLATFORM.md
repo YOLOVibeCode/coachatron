@@ -49,7 +49,7 @@ Per `AGENTS.md`, this is data, not code:
   "status": "planned",
   "connect": {
     "productKey": "coachatron",
-    "appFeeBps": 400,
+    "appFeeBps": 500,
     "squareEnv": "sandbox",
     "postConnectRedirect": "https://coachatron.com/settings/payments"
   },
@@ -62,10 +62,10 @@ Per `AGENTS.md`, this is data, not code:
 }
 ```
 
-`appFeeBps: 400` is the locked 4% from SPEC.md §9.3 (2026-09-21): fairness
-and volume, with the text assistant included in that rate. FieldView runs
-1000 (10%) for a different product. A later default applies to coaches who
-connect after the change; coaches already on 4% stay there. Per-transaction
+`appFeeBps: 500` is the locked 5% from SPEC.md §9.3 (2026-09-22): the ease
+of a five-minute link, a parent who pays with no account, and a full session
+that texts the next coach. FieldView runs 1000 (10%) for a different product.
+A later default applies to coaches who connect after the change. Per-transaction
 override is supported and bounded by `app_fee_bps_max`, so pilot coaches can
 be zero-rated without a deploy.
 
@@ -246,8 +246,8 @@ The texts are the cost. The model is not.
 
 A busy month — eight sessions a week, six athletes, a confirmation and a
 reminder each, plus overflow and the coach texting — is on the order of
-**600–1,200 segments, about $8–$16.** At 4%, a coach covers $16 of texts once
-they book about $400. The $49 plan covers that same month with room left. A
+**600–1,200 segments, about $8–$16.** At 5%, a coach covers $16 of texts once
+they book about $320. The $49 plan covers that same month with room left. A
 zero-rated pilot costs us the texts and nothing else, which at this volume is
 a few dollars.
 
@@ -276,7 +276,7 @@ the backstop when a bug ignores the per-coach counter.
 
 ### 4.6 Rollout
 
-The full assistant is what the 4% pays for: schedule, set a session up, and
+The full assistant is what the 5% pays for: schedule, set a session up, and
 ask before any write, on the closed intent set above. It is not trimmed to
 save texts.
 
@@ -295,4 +295,4 @@ and it does not ship as a shorter command list.
 3. Start attorney review (§2.1 item 1) — long pole to first revenue
 4. Create the Coachatron LiteLLM virtual key with a monthly budget
 5. Decide the Slice-1 keyword vocabulary exactly (`Y/N/STOP/HELP` + what else)
-6. ~~Confirm `appFeeBps: 400`~~ **Locked at 400 (4%).** See SPEC.md §9.3. Raise later by config for new coaches only.
+6. ~~Confirm `appFeeBps: 400`~~ **Locked at 500 (5%).** See SPEC.md §9.3. Raise later by config for new coaches only.
