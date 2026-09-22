@@ -2,26 +2,20 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { freshDb } from './helpers/db.js';
 import { withServer } from './helpers/server.js';
-import {
-  seedCoachWithSession,
-  seedPackage,
-  createCredit,
-} from './helpers/fixtures.js';
+import { createCoach } from '../src/domain/auth.js';
 
 test('money screen shows correct summaries after various bookings', async () => {
   const db = await freshDb();
 
-  // Seed a coach with timezone America/Chicago
-  const coachResult = await db.query<{
-    id: number;
-    handle: string;
-    tz: string;
-  }>(
-    `insert into coach (name, phone, email, tz)
-     values ('Test Coach', '+15550001234', 'test@example.com', 'America/Chicago')
-     returning id, slug as handle, tz`,
-  );
-  const coach = coachResult.rows[0];
+  // coach.handle is not-null/unique and coach creation has its own
+  // slugify/collision logic (src/domain/auth.ts) - go through createCoach()
+  // rather than a raw insert that has to duplicate that.
+  const coach = await createCoach(db, {
+    name: 'Test Coach',
+    phone: '+15550001234',
+    email: 'test@example.com',
+    tz: 'America/Chicago',
+  });
 
   // Create a session type
   const typeResult = await db.query<{ id: number; price_cents: number }>(
@@ -111,33 +105,16 @@ test('money screen shows correct summaries after various bookings', async () => 
   assert.equal(summary.nextWeekCount, 3, 'next week count should be 3');
   assert.equal(summary.nextWeekCents, sessionType.price_cents * 3, 'next week cents should match 3 projected sessions');
 
-  // Now test the actual route
+  // Now test the actual route, authenticated. The OTP round trip itself is
+  // already covered by test/coach-onboarding.test.ts (M2) - here we only
+  // need a valid session, so create a coach_session row directly, the same
+  // way test/session-management.test.ts and test/manage-booking.test.ts do.
   await withServer(async (base) => {
     const loginRes = await fetch(`${base}/signin`);
     assert.equal(loginRes.status, 200);
 
-    // Simulate a session cookie for this coach by setting it directly
-    const { serializeCookie } = await import('../src/lib/cookies.js');
-    // We need to actually log in to get a valid token
-    // Let's use the helper to set up auth properly
-
-    const { createOtp, checkOtp, consumeOtp, createCoachSession, findCoachByPhone } = await import('../src/domain/auth.js');
-
-    // Get phone from coach row and create a session
-    const code = '123456';
-    const otpId = await db.query<{ id: number }>(
-      `insert into otp_code (phone, code_hash, expires_at)
-       values ($1, encode(sha256($2::bytea), 'hex'), now() + interval '10 minutes')
-       returning id`,
-      [coach.phone, code],
-    );
-
-    await db.query(`update otp_code set consumed_at = now() where id = $1`, [otpId]);
-
-    const coachRow = await findCoachByPhone(db, coach.phone);
-    assert.ok(coachRow);
-
-    const token = await createCoachSession(db, coachRow.id);
+    const { createCoachSession } = await import('../src/domain/auth.js');
+    const token = await createCoachSession(db, coach.id);
 
     // Call the money endpoint with authentication
     const moneyRes = await fetch(`${base}/app/money`, {
@@ -154,21 +131,24 @@ test('money screen shows correct summaries after various bookings', async () => 
     assert.ok(htmlText.includes('9 credits outstanding'));
     assert.ok(htmlText.includes('Next week'));
     assert.ok(htmlText.includes('3 sessions projected'));
+
+    // SPEC.md §7.4 / §5 (P5): "There is no payout screen, no balance, no
+    // withdrawal." This is the one acceptance item that isn't a number to
+    // check - it's an absence to check.
+    assert.ok(!/balance/i.test(htmlText), 'Money screen must not show a balance figure');
+    assert.ok(!/withdraw/i.test(htmlText), 'Money screen must not offer a withdrawal control');
   });
 });
 
 test('money screen shows zero when no bookings exist', async () => {
   const db = await freshDb();
 
-  const coachResult = await db.query<{
-    id: number;
-    tz: string;
-  }>(
-    `insert into coach (name, phone, email, tz)
-     values ('New Coach', '+15559991234', 'new@example.com', 'America/New_York')
-     returning id, tz`,
-  );
-  const coach = coachResult.rows[0];
+  const coach = await createCoach(db, {
+    name: 'New Coach',
+    phone: '+15559991234',
+    email: 'new@example.com',
+    tz: 'America/New_York',
+  });
 
   // No sessions, no bookings, no credits
 
@@ -186,12 +166,12 @@ test('money screen shows zero when no bookings exist', async () => {
 test('money screen correctly excludes cancelled bookings from collected this week', async () => {
   const db = await freshDb();
 
-  const coachResult = await db.query<{ id: number; tz: string }>(
-    `insert into coach (name, phone, email, tz)
-     values ('Cancelled Coach', '+15558881234', 'cancel@example.com', 'America/Los_Angeles')
-     returning id, tz`,
-  );
-  const coach = coachResult.rows[0];
+  const coach = await createCoach(db, {
+    name: 'Cancelled Coach',
+    phone: '+15558881234',
+    email: 'cancel@example.com',
+    tz: 'America/Los_Angeles',
+  });
 
   // Create session type
   const typeResult = await db.query<{ id: number; price_cents: number }>(
@@ -245,12 +225,12 @@ test('money screen correctly excludes cancelled bookings from collected this wee
 test('money screen shows correct data with credits that have expiry', async () => {
   const db = await freshDb();
 
-  const coachResult = await db.query<{ id: number }>(
-    `insert into coach (name, phone, email, tz)
-     values ('Expiry Coach', '+15556661234', 'expiry@example.com', 'America/Chicago')
-     returning id`,
-  );
-  const coach = coachResult.rows[0];
+  const coach = await createCoach(db, {
+    name: 'Expiry Coach',
+    phone: '+15556661234',
+    email: 'expiry@example.com',
+    tz: 'America/Chicago',
+  });
 
   // Create a credit with expiry in the past
   await db.query(

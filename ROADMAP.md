@@ -780,22 +780,96 @@ credit was already consumed at booking time in M3).
 ---
 
 ## M6: Money screen
-Status: [ ] todo
+Status: [x] done
 Goal: The coach's read-only Money screen — screen 7, the last of the twelve.
 Acceptance:
-- [ ] `npm test` includes `test/money.test.ts`: after a mix of drop-in,
+- [x] `npm test` includes `test/money.test.ts`: after a mix of drop-in,
       package, and plan bookings from M3's fixtures, `GET /app/money` shows
       figures that match hand-computed totals for: booked this week (count
       and cents), collected this week (sum of `appFeeCents`-exclusive
       charge amounts, i.e. gross collected, not our fee), outstanding
       package credits (sum of `credit.remaining` for this coach), and next
       week's projected sessions (count and gross value)
-- [ ] The page contains no balance figure, no "withdraw" control, and no
+- [x] The page contains no balance figure, no "withdraw" control, and no
       link to one — grep the rendered HTML in the test for the absence of
       the strings `balance` and `withdraw` (case-insensitive)
-- [ ] All five quality-bar commands still exit 0
+- [x] All five quality-bar commands still exit 0
 
 Notes:
+
+Starting point was again a leftover "local executor checkpoint" including
+`src/domain/money.ts`, the `/app/money` route, and `test/money.test.ts`
+already written. Bugs found and fixed:
+
+1. **The tz-aware week-boundary functions never used `tz`.**
+   `getMondayOfWeek`/`getSundayOfWeek`/`getNextWeekMonday` all took a `tz`
+   parameter and then called plain `Date#getDay()`/`setHours()`/`setDate()`
+   — which operate in the *Node process's local system timezone*, not the
+   coach's. This happened to not show up in this specific test run only
+   because the sandbox's system tz (`America/Chicago`) matches most of the
+   test fixtures' coach tz, and the one mismatched fixture
+   (`America/Los_Angeles`) places its session mid-week where a couple of
+   hours of boundary drift doesn't cross a week edge - it would have been
+   wrong for a real coach whose tz differs meaningfully from the server's,
+   which defeats the entire point of storing a per-coach tz (`SPEC.md
+   §11`: "half of all scheduling bugs live here"). Rewrote using the same
+   `Intl.DateTimeFormat`-based technique already established in
+   `src/domain/scheduling.ts`'s `zonedTimeToUtc` (now imported and reused
+   directly, not re-implemented) plus a DST-safe calendar-day-arithmetic
+   helper (`addCalendarDays`, which does the `+N days` math on a fixed
+   noon-UTC anchor so it can't be perturbed by a DST transition, then
+   re-resolves the correct UTC offset for that specific resulting calendar
+   day). "Next week" is also now a **closed** range (next Monday through
+   the following Monday), not `>= nextWeekMonday` with no upper bound (the
+   leftover version) — the latter would silently accumulate every session
+   from next week to the end of time as the coach schedules further out.
+2. **"Booked this week" counted session *slots*, not bookings** — a coach
+   with one Wednesday session and three athletes booked into it should
+   read "3 sessions booked" (demand), not "1" (supply). The leftover
+   `money.ts` and its own test disagreed with each other on this (the code
+   counted sessions; the test asserted a bookings count of 3), so the test
+   failed immediately once the tz bug above was no longer masking it.
+   Split into two distinct aggregates: `aggregateBookings()` (this week —
+   counts live `booking` rows) and `aggregateSessionSlots()` (next week —
+   counts `session` rows, since a not-yet-arrived week is about capacity
+   the coach put up, not demand realized yet). This asymmetry is
+   deliberate, not an inconsistency: `SPEC.md §7.4` itself only ever
+   describes "next week" as "projected."
+3. **Broken test fixtures.** All four `insert into coach (...)` statements
+   in `test/money.test.ts` referenced a `slug` column that does not exist
+   in the schema (it's `handle`) and omitted `handle` entirely, which is
+   `not null unique` — every one of these would have thrown before
+   `summarizeMoney` was ever called. Replaced with `createCoach()` from
+   `src/domain/auth.ts` (already responsible for handle generation and
+   collision-avoidance), matching how every other test file in this repo
+   creates a coach.
+4. **A hand-rolled OTP simulation had a real bug and was unnecessary.** The
+   test built its own `otp_code` row via `encode(sha256($2::bytea),
+   'hex')` and then passed the *entire query result object* (not
+   `.rows[0].id`) as the `id` parameter to the following `update ... where
+   id = $1` — and none of it was needed, since the OTP round trip itself is
+   already covered by `test/coach-onboarding.test.ts` (M2). Replaced the
+   whole block with a direct `createCoachSession()` call, the same pattern
+   `test/session-management.test.ts` and `test/manage-booking.test.ts`
+   already use to get an authenticated session without re-proving sign-in
+   works.
+5. **Three assertions couldn't have matched the actual rendered HTML.**
+   `/app/money`'s markup wrapped only part of each phrase in `<strong>`
+   (e.g. `<strong>3 sessions</strong> booked`), so
+   `htmlText.includes('3 sessions booked')` would never be true — the
+   closing tag sits in the middle of the asserted substring. Moved each
+   `<strong>` to wrap the whole phrase instead of splitting it.
+6. **The one acceptance item that's an absence, not a number, was never
+   actually checked** — `test/money.test.ts` had no assertion for "no
+   balance figure, no withdraw control" at all, despite it being listed
+   above. Added a case-insensitive regex check for both `balance` and
+   `withdraw` against the rendered page (SPEC.md §5 P5 / §7.4: "There is no
+   payout screen, no balance, no withdrawal" — this is permanent, not a
+   Slice-1-only gap).
+
+No product code beyond `src/domain/money.ts` and the `/app/money` route in
+`src/routes/coach.ts` needed changes; the route itself (render-only, no
+Square balance/payout call) was correct as found.
 
 `src/domain/money.ts` — pure read functions over `DbClient`, no writes:
 ```ts

@@ -14,18 +14,8 @@ import {
 } from '../domain/auth.js';
 import { generateWeekSessions, type WeeklySlot } from '../domain/scheduling.js';
 import { html, page, raw } from '../lib/html.js';
-import {
-  getPackagesForCoach,
-  getPlansForCoach,
-  createPackage,
-  createPlan,
-  type PackageRow,
-  type PlanRow,
-} from '../domain/pricing.js';
-import {
-  summarizeMoney,
-  type MoneySummary,
-} from '../domain/money.js';
+import { getPackagesForCoach, getPlansForCoach, createPackage, createPlan } from '../domain/pricing.js';
+import { summarizeMoney } from '../domain/money.js';
 import { parseCookies, serializeCookie } from '../lib/cookies.js';
 
 // ---- Roster functions (M4 overflow cascade) ----
@@ -729,7 +719,7 @@ coachRouter.get('/app/money', requireAuth, async (_req, res) => {
 
         <h2>This week</h2>
         <div class="card">
-          <p><strong>${summary.bookedThisWeekCount} sessions</strong> booked</p>
+          <p><strong>${summary.bookedThisWeekCount} sessions booked</strong></p>
           <p class="muted">Value: ${formatDollars(summary.bookedThisWeekCents)}</p>
         </div>
 
@@ -739,12 +729,12 @@ coachRouter.get('/app/money', requireAuth, async (_req, res) => {
 
         <h2>Credits</h2>
         <div class="card">
-          <p><strong>${summary.outstandingCreditCount} credits</strong> outstanding</p>
+          <p><strong>${summary.outstandingCreditCount} credits outstanding</strong></p>
         </div>
 
         <h2>Next week</h2>
         <div class="card">
-          <p><strong>${summary.nextWeekCount} sessions</strong> projected</p>
+          <p><strong>${summary.nextWeekCount} sessions projected</strong></p>
           <p class="muted">Value: ${formatDollars(summary.nextWeekCents)}</p>
         </div>
 
