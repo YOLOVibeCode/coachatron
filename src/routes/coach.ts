@@ -14,6 +14,12 @@ import {
 } from '../domain/auth.js';
 import { generateWeekSessions, type WeeklySlot } from '../domain/scheduling.js';
 import { html, page, raw } from '../lib/html.js';
+import {
+  getPackagesForCoach,
+  getPlansForCoach,
+  createPackage,
+  createPlan,
+} from '../domain/pricing.js';
 import { parseCookies, serializeCookie } from '../lib/cookies.js';
 
 export const SESSION_COOKIE = 'cx_session';
@@ -324,6 +330,114 @@ coachRouter.get('/app/schedule', requireAuth, async (_req, res) => {
         <a class="action" href="/app/session-types">Session types</a>`,
     ),
   );
+});
+
+// ---- Screen 5: pricing (packages and plans) ----
+
+coachRouter.get('/app/pricing', requireAuth, async (_req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const packagesList = await getPackagesForCoach(db, coachId);
+  const plansList = await getPlansForCoach(db, coachId);
+
+  res.status(200).send(
+    page(
+      'Pricing',
+      html`<h1>Pricing & credits</h1>
+        <h2>Session packages</h2>
+        ${packagesList.length === 0
+          ? html`<p class="muted">No packages yet.</p>`
+          : packagesList.map(
+              (p) =>
+                html`<div class="card">
+                  <strong>${p.name}</strong><br />
+                  ${p.credits} sessions — $${(p.price_cents / 100).toFixed(2)}
+                  ${p.expires_days ? html`<br /><span class="muted">Expires in ${p.expires_days} days</span>` : raw('')}
+                </div>`,
+            )}
+        <form method="post" action="/app/pricing/package">
+          <label for="pkg_name">Package name</label>
+          <input id="pkg_name" name="name" required />
+          <label for="pkg_credits">Number of sessions</label>
+          <input id="pkg_credits" name="credits" type="number" min="1" required />
+          <label for="pkg_price_dollars">Price (dollars)</label>
+          <input id="pkg_price_dollars" name="price_dollars" type="number" min="0" step="0.01" required />
+          <label for="pkg_expires_days">Expires after days (optional)</label>
+          <input id="pkg_expires_days" name="expires_days" type="number" min="1" />
+          <button type="submit">Create package</button>
+        </form>
+
+        <h2>Monthly plans</h2>
+        ${plansList.length === 0
+          ? html`<p class="muted">No monthly plans yet.</p>`
+          : plansList.map(
+              (p) =>
+                html`<div class="card">
+                  <strong>${p.name}</strong><br />
+                  $${(p.price_cents / 100).toFixed(2)} / month — ${p.credits_per_month} sessions
+                </div>`,
+            )}
+        <form method="post" action="/app/pricing/plan">
+          <label for="plan_name">Plan name</label>
+          <input id="plan_name" name="name" required />
+          <label for="plan_price_dollars">Price (dollars)</label>
+          <input id="plan_price_dollars" name="price_dollars" type="number" min="0" step="0.01" required />
+          <label for="plan_credits">Sessions per month</label>
+          <input id="plan_credits" name="credits_per_month" type="number" min="1" required />
+          <button type="submit">Create plan</button>
+        </form>`,
+    ),
+  );
+});
+
+coachRouter.post('/app/pricing/package', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const name = field(req.body, 'name');
+  const credits = Number(field(req.body, 'credits'));
+  const priceDollars = Number(field(req.body, 'price_dollars'));
+  const expiresDaysRaw = field(req.body, 'expires_days');
+  const expiresDays = expiresDaysRaw ? Number(expiresDaysRaw) : undefined;
+
+  if (!name || !Number.isInteger(credits) || credits <= 0 || priceDollars <= 0 || (expiresDays !== undefined && !Number.isInteger(expiresDays))) {
+    res.status(422).send(
+      page(
+        'Pricing',
+        html`<h1>Pricing & credits</h1>
+          <p class="error">Fill in package details correctly.</p>
+          <a class="action" href="/app/pricing">Back</a>`,
+      ),
+    );
+    return;
+  }
+
+  const priceCents = Math.round(priceDollars * 100);
+  await createPackage(db, coachId, name, credits, priceCents, expiresDays);
+  res.redirect(303, '/app/pricing');
+});
+
+coachRouter.post('/app/pricing/plan', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const name = field(req.body, 'name');
+  const priceDollars = Number(field(req.body, 'price_dollars'));
+  const creditsPerMonth = Number(field(req.body, 'credits_per_month'));
+
+  if (!name || !Number.isInteger(creditsPerMonth) || creditsPerMonth <= 0 || priceDollars <= 0) {
+    res.status(422).send(
+      page(
+        'Pricing',
+        html`<h1>Pricing & credits</h1>
+          <p class="error">Fill in plan details correctly.</p>
+          <a class="action" href="/app/pricing">Back</a>`,
+      ),
+    );
+    return;
+  }
+
+  const priceCents = Math.round(priceDollars * 100);
+  await createPlan(db, coachId, name, priceCents, creditsPerMonth);
+  res.redirect(303, '/app/pricing');
 });
 
 export function formatLocal(isoUtc: string, tz: string): string {

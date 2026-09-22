@@ -3,10 +3,21 @@ import { getDb } from '../db/client.js';
 import { findCoachByHandle } from '../domain/auth.js';
 import { html, page } from '../lib/html.js';
 import { formatLocal } from './coach.js';
+import {
+  getPackageById,
+  getPlanById,
+  getCreditBalance,
+  applyCredit as applyCreditDomain,
+  processCharge as processChargeRemote,
+  processSubscription as processSubscriptionRemote,
+  createBooking,
+  type BookingRow,
+  type ChargeResult,
+} from '../domain/pricing.js';
 
 export const publicRouter = Router();
 
-// ---- Screen 8: coach's public page ----
+// ---- Screen 8: coach's public page (sessions list) ----
 
 publicRouter.get('/c/:handle', async (req, res) => {
   const db = getDb();
