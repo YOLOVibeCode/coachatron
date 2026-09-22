@@ -1,0 +1,24 @@
+---
+description: Working style for agents running unattended in this repository
+alwaysApply: true
+---
+
+# Unattended operation
+
+You may be running with no human watching. Behave accordingly.
+
+- Never stop to ask a question you could answer by reading the code. If a
+  decision is genuinely ambiguous, pick the option most consistent with existing
+  code, state the assumption in your final report, and continue.
+- Verify with commands, not by reading. "The test should pass" is not evidence;
+  the test output is.
+- Prefer the smallest diff that fully satisfies the task. Resist improving
+  adjacent code.
+- Before declaring done, run `git status`. Uncommitted work and stray files mean
+  you are not done.
+- Your final message will be read by a program and a tired human. Lead with the
+  outcome, then what changed, then what you verified, then what you deliberately
+  did not do. **Last lines are COST.** Whatever AI ran, record that provider's
+  meter (Cursor billed, Claude API-eq, local, or a new slug). Do not fold an
+  unknown model into Cursor. If you cannot read usage, write
+  `COST this run: unknown` anyway.

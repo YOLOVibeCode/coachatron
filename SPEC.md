@@ -272,20 +272,30 @@ for two children with one phone draws from one pool.
 
 ### 9.3 Our cut
 
-Recommendation for launch: **free to the coach, 4% application fee on each
-transaction**, on top of Square's processing (~2.6% + 10¢ card-present, 2.9% +
-30¢ online).
+**Locked 2026-09-21: free to the coach, 4% application fee on each transaction**,
+on top of Square's processing (~2.6% + 10¢ card-present, 2.9% + 30¢ online).
 
-Reasoning: a solo coach will not sign a monthly bill before seeing money arrive,
-but will not notice a percentage taken from revenue they would not otherwise have
-collected. It also aligns us with their growth rather than their headcount.
+The rate is set for fairness and volume. A solo coach will not sign a monthly
+bill before seeing money arrive. Four percent of money that now gets collected
+is small enough to keep, and a lower rate is how the product spreads: one
+coach's athletes, roster, and assistant coaches are how the next coach shows
+up. Ease of use does that propagation. The text assistant — set something up
+by text, or ask and wait for Y — is included in the 4%. It saves the same
+admin work for a small book and a large one, so the launch rate stays flat
+rather than climbing with the coach's lessons. FieldView's 10% is a different
+product: a paid stream the team did not previously sell.
 
-Offer a **$49/mo, 0% fee** plan once a coach clears roughly $1,200/mo in bookings
-— at 4%, that is the crossover, and letting them switch themselves is a
-retention feature, not a discount.
+Raising the default later is a config change (`appFeeBps`), and a higher
+default propagates to new charges without a release. When it changes, it
+applies to coaches who connect after the change. Coaches already on 4% stay
+on 4%. Pilot coaches can be zero-rated the same way, with no deploy.
+
+Offer a **$49/mo, 0% fee** plan once a coach clears roughly $1,200/mo in
+bookings — at 4%, that is the crossover, and letting them switch themselves
+is how a growing coach stays.
 
 Fee is configurable per-coach and per-transaction-type from day one (Connect Hub
-supports this) so pilot coaches can be zero-rated without a code change.
+supports this).
 
 ### 9.4 Refunds
 
@@ -320,8 +330,9 @@ marketing. Messages are short enough to read in a notification preview.
 link.
 
 In Slice 2 this grows into **natural-language control** — the coach runs the
-business by texting in plain English, with a cheap model routed through the
-LiteLLM VM doing closed-set intent extraction only. Reads answer immediately;
+business by texting in plain English. Intent extraction goes through one
+model interface. The only production implementation of that interface is the
+LiteLLM relay on **litellm-vm**. Reads answer immediately;
 anything that moves money, cancels a session, or messages athletes requires a
 `Y` confirmation whose text is rendered by template code, never by the model.
 Full design, safety rules, and cost model in `docs/PLATFORM.md` §4. This is still
@@ -329,6 +340,17 @@ not a chat interface (§3).
 
 `STOP` handling, quiet hours (no non-urgent SMS 9pm–8am local), and per-recipient
 rate limits are required, not optional.
+
+**The fee has to survive the texts.** The full assistant stays: the coach texts
+to schedule, to set a session up, or to answer the question we ask before
+anything is changed, and athletes still get confirmations, reminders, and
+overflow texts. Those ceilings sit above that month. Outbound SMS stops at
+**300 segments per coach per day** and **2,000 per coach per month**. One
+automatic reply per non-coach number per day. No message longer than one
+segment. No destination priced above $0.02 per segment. Model calls stop at
+**30 per coach per day** and **400 per month**, and the Coachatron model key
+has a **$20 per month** ceiling. A coach using the whole feature stays under
+these. The stop is there for a loop. Worked cost in `docs/PLATFORM.md` §4.5.
 
 ---
 
@@ -339,12 +361,20 @@ Decisions that can be made cheaply now; anything not listed is deliberately open
 - **Frontend:** server-rendered, mobile-first, no SPA framework unless a screen
   demands it. Total JS budget for the athlete booking flow: keep it small enough
   to load fast on stadium LTE. This flow is where revenue happens.
+- **Visual:** Postcard, locked 2026-09-21. Sand ground, a clay phone, a cream
+  screen, one teal action, round corners. Serif for the name of a thing, system
+  sans for the rest. Reference `design/index.html`.
 - **Backend:** one service, one database. No microservices, no queue in v1 — the
   overflow cascade is a scheduled job over a table, not a message bus.
 - **Database:** Postgres. The credit ledger and the cascade both want
   transactions.
 - **Hosting:** Railway, matching the rest of the estate.
 - **Secrets:** 1Password at runtime. No `.env` in any deployed environment.
+- **Model:** one interface in the product (`complete` a closed prompt, return
+  structured output). Tests use a fake. Production calls the LiteLLM relay on
+  **litellm-vm** (`https://api.noctusoft.com/v1`). No provider SDK. The model
+  name is configuration on that VM, so swapping the small model does not change
+  Coachatron code. Detail in `docs/PLATFORM.md` §4.4.
 - **Time:** every session stores an explicit IANA timezone. Never store a naive
   local time. Half of all scheduling bugs live here.
 - **Money:** integer minor units (cents). Never floats.
