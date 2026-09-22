@@ -23,6 +23,17 @@ Coachatron does three things and refuses the rest:
 
 Later, the coach runs all of it by texting the number in plain English.
 
+## Run it
+
+From a fresh clone:
+
+```bash
+npm ci          # install dependencies
+npm run migrate # (optional) apply migrations to DATABASE_URL
+npm run dev     # start server on localhost:3000
+npm test        # run tests (uses PGlite, no database required)
+```
+
 ## Status
 
 Pre-implementation. The specification is the current artifact.
