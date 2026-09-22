@@ -19,6 +19,7 @@ import {
   chargeForBooking,
   subscribeForBooking,
 } from '../domain/pricing.js';
+import { checkOverflow } from '../domain/cascade.js';
 
 export const publicRouter = Router();
 
@@ -324,6 +325,8 @@ publicRouter.post('/c/:handle/checkout/:bookingId', async (req, res) => {
         chargeId: null,
         grossCents: null,
       });
+      // Check if this session needs overflow cascade triggered
+      void checkOverflow(db, ctx.session.id);
     } else if (mode === 'dropin') {
       const result = await chargeForBooking(bookingId, 'dropin', ctx.session.price_cents, `phone:${phone}`, `Drop-in: ${ctx.session.name}`);
       await markBookingBooked(db, bookingId, {
@@ -332,6 +335,8 @@ publicRouter.post('/c/:handle/checkout/:bookingId', async (req, res) => {
         chargeId: result.id,
         grossCents: result.amountCents,
       });
+      // Check if this session needs overflow cascade triggered
+      void checkOverflow(db, ctx.session.id);
     } else if (mode === 'package') {
       const packageId = Number(field(req.body, 'package_id'));
       const pkg = await getPackageById(db, coach.id, packageId);
@@ -350,6 +355,8 @@ publicRouter.post('/c/:handle/checkout/:bookingId', async (req, res) => {
         chargeId: result.id,
         grossCents: result.amountCents,
       });
+      // Check if this session needs overflow cascade triggered
+      void checkOverflow(db, ctx.session.id);
     } else if (mode === 'plan') {
       const planId = Number(field(req.body, 'plan_id'));
       const plan = await getPlanById(db, coach.id, planId);
@@ -369,6 +376,8 @@ publicRouter.post('/c/:handle/checkout/:bookingId', async (req, res) => {
         chargeId: result.id,
         grossCents: plan.price_cents,
       });
+      // Check if this session needs overflow cascade triggered
+      void checkOverflow(db, ctx.session.id);
     } else {
       res.status(422).send(notFound());
       return;

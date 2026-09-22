@@ -1,5 +1,5 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
-import { getDb } from '../db/client.js';
+import { getDb, type DbClient } from '../db/client.js';
 import { sendSms } from '../relay/sms.js';
 import {
   normalizePhone,
@@ -21,6 +21,41 @@ import {
   createPlan,
 } from '../domain/pricing.js';
 import { parseCookies, serializeCookie } from '../lib/cookies.js';
+
+// ---- Roster functions (M4 overflow cascade) ----
+
+export async function addRosterMember(db: DbClient, coachId: number, name: string, phone: string): Promise<void> {
+  // Get the highest priority currently in use
+  const maxResult = await db.query<{ max_priority: number }>(
+    `select coalesce(max(priority), -1) as max_priority from roster_member where coach_id = $1 and active = true`,
+    [coachId]
+  );
+  
+  const nextPriority = maxResult.rows[0].max_priority + 1;
+  
+  await db.query(
+    `insert into roster_member (coach_id, name, phone, priority, active) values ($1, $2, $3, $4, true)`,
+    [coachId, name, phone, nextPriority]
+  );
+}
+
+export async function updateRosterPriority(db: DbClient, coachId: number, id: number, newPriority: number): Promise<boolean> {
+  const result = await db.query<{ affected: number }>(
+    `update roster_member set priority = $1 where id = $2 and coach_id = $3 and active = true returning id`,
+    [newPriority, id, coachId]
+  );
+  
+  return result.rows.length > 0;
+}
+
+export async function listRosterMembers(db: DbClient, coachId: number): Promise<Array<{ id: number; name: string; phone: string; priority: number }>> {
+  const result = await db.query<{ id: number; name: string; phone: string; priority: number }>(
+    `select id, name, phone, priority from roster_member where coach_id = $1 and active = true order by priority asc`,
+    [coachId]
+  );
+  
+  return result.rows;
+}
 
 export const SESSION_COOKIE = 'cx_session';
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -438,6 +473,81 @@ coachRouter.post('/app/pricing/plan', requireAuth, async (req, res) => {
   const priceCents = Math.round(priceDollars * 100);
   await createPlan(db, coachId, name, priceCents, creditsPerMonth);
   res.redirect(303, '/app/pricing');
+});
+
+// ---- Screen 6: roster (M4 overflow cascade) ----
+
+coachRouter.get('/app/roster', requireAuth, async (_req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const members = await listRosterMembers(db, coachId);
+
+  res.status(200).send(
+    page(
+      'Roster',
+      html`<h1>Overflow roster</h1>
+        ${members.length === 0
+          ? html`<p class="muted">No roster members yet.</p>`
+          : html`<ul>
+              ${members.map((m) => html`<li class="card">${m.name} — ${m.phone}
+                <form method="post" action="/app/roster/${m.id}/priority" style="display:inline;">
+                  <input type="number" name="priority" value="${m.priority}" min="0" required />
+                  <button type="submit">Update priority</button>
+                </form>
+              </li>`)}
+            </ul>`}
+        <h2>Add member</h2>
+        <form method="post" action="/app/roster">
+          <label for="name">Name</label>
+          <input id="name" name="name" required />
+          <label for="phone">Phone</label>
+          <input id="phone" name="phone" type="tel" required />
+          <button type="submit">Add to roster</button>
+        </form>`,
+    ),
+  );
+});
+
+coachRouter.post('/app/roster', requireAuth, async (_req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const name = field(_req.body, 'name');
+  const phone = normalizePhone(field(_req.body, 'phone'));
+
+  if (!name || !phone) {
+    res.status(422).send(
+      page(
+        'Roster',
+        html`<h1>Overflow roster</h1>
+          <p class="error">Enter name and a valid phone.</p>
+          <a class="action" href="/app/roster">Back</a>`,
+      ),
+    );
+    return;
+  }
+
+  await addRosterMember(db, coachId, name, phone);
+  res.redirect(303, '/app/roster');
+});
+
+coachRouter.post('/app/roster/:id/priority', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const id = Number(req.params.id);
+  const newPriority = Number(field(req.body, 'priority'));
+
+  if (!Number.isInteger(newPriority) || newPriority < 0) {
+    res.status(422).send(page('Error', html`<h1>Invalid priority</h1>`));
+    return;
+  }
+
+  const success = await updateRosterPriority(db, coachId, id, newPriority);
+  if (!success) {
+    res.status(404).send(page('Not found', html`<h1>Member not found</h1>`));
+    return;
+  }
+
+  res.redirect(303, '/app/roster');
 });
 
 export function formatLocal(isoUtc: string, tz: string): string {

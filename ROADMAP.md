@@ -492,7 +492,7 @@ calls `fetch` against `RELAY_BASE_URL`.
 ---
 
 ## M4: Overflow cascade & roster
-Status: [ ] todo
+Status: [~] in progress
 Goal: When a session is full and someone is waiting, the coach gets one SMS
 and must reply YES before the roster is offered the session, one backup
 coach at a time — screens 6 (roster) and 12 (offer response page).

@@ -2,6 +2,7 @@ import express from 'express';
 import { PORT } from './config.js';
 import { coachRouter } from './routes/coach.js';
 import { publicRouter } from './routes/public.js';
+import { webhooksRouter } from './routes/webhooks.js';
 
 export function createApp() {
   const app = express();
@@ -14,6 +15,7 @@ export function createApp() {
 
   app.use(coachRouter);
   app.use(publicRouter);
+  app.use(webhooksRouter);
 
   return app;
 }
