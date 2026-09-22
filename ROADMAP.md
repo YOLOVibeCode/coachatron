@@ -272,24 +272,84 @@ phone + OTP is the only coach credential per `SPEC.md §7.1`.
 ---
 
 ## M3: Pricing & booking payment (Connect Hub, three ways to pay)
-Status: [ ] todo
+Status: [x] done
 Goal: A parent opens `/c/<handle>`, books a session, and pays drop-in,
 10-pack, or monthly through a fake Connect Hub HTTP relay with `appFeeBps
 400` — screens 5 (pricing), 9 (booking form), 10 (checkout).
 Acceptance:
-- [ ] `npm test` includes `test/booking-payment.test.ts` with three cases,
+- [x] `npm test` includes `test/booking-payment.test.ts` with three cases,
       one per payment mode, each asserting: a `POST` to the fake relay's
       `/connect/coachatron/charges` (drop-in, package) or
       `/connect/coachatron/subscriptions` (plan) endpoint was made with
       `appFeeBps: 400`; a `booking` row exists with `status = 'booked'`; for
       package/plan, a `credit` row is created or decremented correctly
-- [ ] A repeated request with the same idempotency key does not create a
+- [x] A repeated request with the same idempotency key does not create a
       second charge or a second booking (idempotency test)
-- [ ] `GET /c/<handle>` spots-left count decreases after a successful
+- [x] `GET /c/<handle>` spots-left count decreases after a successful
       booking
-- [ ] All five quality-bar commands still exit 0
+- [x] All five quality-bar commands still exit 0
 
 Notes:
+
+Starting point for this milestone was **not empty**: a prior aborted
+attempt (visible in `git log` as a "local executor checkpoint before
+rescue" commit) had already added `src/domain/pricing.ts`, the
+`0003_pricing.sql` migration, and screen 5 (`/app/pricing`) to
+`src/routes/coach.ts`, but left `npm run typecheck` failing and screens 9
+and 10 unwritten. Screen 5 and the read helpers (`getPackagesForCoach`,
+`getPlansForCoach`, `getPackageById`, `getPlanById`, `getCreditBalance`)
+were correct and kept as-is. The rest of `pricing.ts` had real bugs and was
+rewritten:
+1. **Two unquoted SQL string literals that would have thrown at runtime**:
+   `values ($1, $2, $3, $4, $5, pending)` and
+   `values ($1, $2, active)` — bare `pending`/`active` are parsed as column
+   references, not string literals (missing quotes). Both call sites now
+   either bind the value as a parameter or use a quoted literal.
+2. **`booking.payment_source` was being set to `'Pending'` at booking-form
+   time**, conflating payment source (DropIn/PackageCredit/Subscription)
+   with lifecycle status (pending/booked). Redesigned: a booking is created
+   `pending` with `payment_source = null` at `/book` time (schema change:
+   `payment_source` is no longer `not null`, since the mode genuinely isn't
+   known until checkout), and `markBookingBooked()` fills in
+   `payment_source`/`charge_id`/`gross_cents`/`credit_id` and flips
+   `status = 'booked'` only once the checkout mode succeeds.
+3. **Idempotency key ignored the actual mode** (`processCharge` always
+   tagged charges `dropin`, even for a package purchase, which would have
+   let a package purchase collide with an unrelated drop-in charge on the
+   same booking). Replaced with `paymentIdempotencyKey(bookingId, mode)` —
+   stable per (booking, mode) pair, used by both `chargeForBooking` and
+   `subscribeForBooking`.
+4. Return types (`PackageRow[]`, `PlanRow[]`, `CreditRow`) didn't match
+   their queries (missing `coach_id`/`contact_phone` columns) — fixed by
+   selecting those columns rather than narrowing the type.
+
+Design decisions not already covered by the plan below:
+- **Checkout is idempotent by booking status, not just by relay-level
+  idempotency key.** `POST /c/:handle/checkout/:bookingId` checks
+  `booking.status` first; if it's already `booked` (a retried/double
+  submission), it renders the confirmation view and does not call the
+  relay again at all. The relay-level idempotency key is the second line of
+  defense (proven directly in `test/booking-payment.test.ts`'s last case,
+  which calls `charge()` twice with the same key with no HTTP layer
+  involved).
+- **Relay failure returns 502** with the checkout form re-rendered and an
+  error message (not a 500, not a silently swallowed error, not a
+  different route) — the booking stays `pending` so the parent can retry
+  the same checkout URL.
+- Capacity is re-checked server-side at `/book` time (`countBookedForSession`
+  vs `session_type.capacity`); a session that fills between the parent
+  loading `/c/<handle>` and submitting the booking form gets a 409, not a
+  500 or a silently-accepted overbooking.
+- Test fixtures (`test/helpers/fixtures.ts`) seed a coach/session-type/
+  session directly via SQL rather than driving the full OTP sign-in flow
+  from M2 — keeps `booking-payment.test.ts` focused on checkout. The
+  shared `withServer()` HTTP-test helper (previously duplicated inline in
+  `test/coach-onboarding.test.ts`) moved to `test/helpers/server.ts` and is
+  now used by both test files.
+
+Original plan (still accurate as the intent; see the bug list above for
+what actually needed fixing in the leftover code, and the design-decisions
+list for the handful of new calls made this milestone):
 
 `test/fakes/relay.ts` — an in-process fake, built on Express (no new
 dependency), exporting `startFakeRelay()`:

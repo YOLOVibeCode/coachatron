@@ -1,21 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { Server } from 'node:http';
-import { createApp } from '../src/server.js';
 import { freshDb } from './helpers/db.js';
+import { withServer } from './helpers/server.js';
 import { startFakeRelay } from './fakes/relay.js';
-
-async function withServer(fn: (base: string) => Promise<void>): Promise<void> {
-  const app = createApp();
-  const server: Server = app.listen(0);
-  const address = server.address();
-  const port = typeof address === 'object' && address ? address.port : 0;
-  try {
-    await fn(`http://127.0.0.1:${port}`);
-  } finally {
-    server.close();
-  }
-}
 
 function extractSessionCookie(res: Response): string {
   const setCookie = res.headers.getSetCookie?.() ?? [];
