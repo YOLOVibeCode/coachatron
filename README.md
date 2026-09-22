@@ -65,6 +65,27 @@ The spec enforces these; they're the reason the product exists.
 | `staging` | Release candidate; pre-production verification |
 | `develop` | Integration branch for feature work |
 
+## Screens
+
+The twelve screens of Coachatron (Slice 1):
+
+| # | Screen | Route(s) | Who |
+|---|--------|----------|-----|
+| 1 | Sign in | `/signin`, `/signin/otp`, `/signin/verify` | Coach |
+| 2 | Schedule | `/app/schedule` | Coach |
+| 3 | Session detail | `/app/sessions/:id`, `/app/sessions/:id/bookings/:bookingId/attendance`, `/app/sessions/:id/cancel` | Coach |
+| 4 | Session types | `/app/session-types`, `/app/session-types/:id/generate-week` | Coach |
+| 5 | Pricing | `/app/pricing`, `/app/pricing/package`, `/app/pricing/plan` | Coach |
+| 6 | Roster | `/app/roster`, `/app/roster/:id/priority` | Coach |
+| 7 | Money | `/app/money` | Coach |
+| 8 | Public page | `/c/:handle` | Athlete |
+| 9 | Booking form | `/c/:handle/sessions/:sessionId/book`, `/c/:handle/sessions/:sessionId/waitlist` | Athlete |
+| 10 | Checkout | `/c/:handle/checkout/:bookingId` | Athlete |
+| 11 | Manage booking | `/booking/:token`, `/booking/:token/cancel` | Athlete |
+| 12 | Offer response | `/offer/:token` | Assistant coach |
+
+All routes are server-rendered HTML. No SPA.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
