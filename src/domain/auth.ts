@@ -123,7 +123,7 @@ export async function createCoach(db: DbClient, input: NewCoachInput): Promise<C
   const handle = await reserveHandle(db, input.name);
   const result = await db.query<{ id: number }>(
     `insert into coach (handle, name, email, phone, tz, fee_bps)
-     values ($1, $2, $3, $4, $5, 400)
+     values ($1, $2, $3, $4, $5, 500)
      returning id`,
     [handle, input.name, input.email, input.phone, input.tz],
   );

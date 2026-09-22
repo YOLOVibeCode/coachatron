@@ -265,7 +265,7 @@ Handle generation: slugify `coach.name` (lowercase, `[a-z0-9]+` joined by
 `-`, max 30 chars) at first sign-in; if taken, append `-2`, `-3`, etc. Store
 it, never recompute it.
 
-Must not change: `APP_FEE_BPS`, the `coach.fee_bps` default of `400`, or any
+Must not change: `APP_FEE_BPS`, the `coach.fee_bps` default of `500`, or any
 `SPEC.md`/`docs/PLATFORM.md` text. Do not add a password field anywhere —
 phone + OTP is the only coach credential per `SPEC.md §7.1`.
 
@@ -275,13 +275,13 @@ phone + OTP is the only coach credential per `SPEC.md §7.1`.
 Status: [x] done
 Goal: A parent opens `/c/<handle>`, books a session, and pays drop-in,
 10-pack, or monthly through a fake Connect Hub HTTP relay with `appFeeBps
-400` — screens 5 (pricing), 9 (booking form), 10 (checkout).
+500` — screens 5 (pricing), 9 (booking form), 10 (checkout).
 Acceptance:
 - [x] `npm test` includes `test/booking-payment.test.ts` with three cases,
       one per payment mode, each asserting: a `POST` to the fake relay's
       `/connect/coachatron/charges` (drop-in, package) or
       `/connect/coachatron/subscriptions` (plan) endpoint was made with
-      `appFeeBps: 400`; a `booking` row exists with `status = 'booked'`; for
+      `appFeeBps: 500`; a `booking` row exists with `status = 'booked'`; for
       package/plan, a `credit` row is created or decremented correctly
 - [x] A repeated request with the same idempotency key does not create a
       second charge or a second booking (idempotency test)
@@ -485,7 +485,7 @@ Routes `src/routes/public.ts` additions:
   (`{ name, credits, price_cents, expires_days? }`) and `plan`
   (`{ name, price_cents, credits_per_month }`) rows for the signed-in coach
 
-Must not change: `appFeeBps` stays `400` on every call, in both `charge()`
+Must not change: `appFeeBps` stays `500` on every call, in both `charge()`
 and `subscribe()`. Do not import a Square SDK — `connectHub.ts` only ever
 calls `fetch` against `RELAY_BASE_URL`.
 
@@ -980,7 +980,7 @@ daemon, no Docker. The three journeys in the idea are each covered
 end-to-end in `test/journeys.test.ts`, on top of focused unit coverage per
 milestone. Twelve screens, matching `SPEC.md §8.1` exactly. `docs/PLATFORM.md`
 is unmodified from the version already in the repo before this job started.
-`SPEC.md`'s product decisions (12-screen cap, non-goals, 4% fee, Postcard
+`SPEC.md`'s product decisions (12-screen cap, non-goals, 5% fee, Postcard
 visual, etc.) are likewise unmodified — the only change to `SPEC.md` across
 the whole job is one append-only `§15` open question, added during release
 verification (below), following that section's own established pattern

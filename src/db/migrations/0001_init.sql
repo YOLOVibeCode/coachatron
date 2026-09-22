@@ -6,7 +6,7 @@ create table coach (
   phone text not null unique,
   tz text not null,
   square_merchant_id text,
-  fee_bps integer not null default 400,
+  fee_bps integer not null default 500,
   created_at timestamptz not null default now()
 );
 

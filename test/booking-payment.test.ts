@@ -24,7 +24,7 @@ function bookingIdFromLocation(location: string | null): number {
   return Number(match![1]);
 }
 
-test('drop-in payment: charges the fake relay with appFeeBps 400 and books the session', async () => {
+test('drop-in payment: charges the fake relay with appFeeBps 500 and books the session', async () => {
   await withRelay(async (relay) => {
     const db = await freshDb();
     const seed = await seedCoachWithSession(db, { capacity: 2, priceCents: 3500 });
@@ -48,7 +48,7 @@ test('drop-in payment: charges the fake relay with appFeeBps 400 and books the s
       assert.equal(checkoutRes.status, 303);
 
       assert.equal(relay.charges.length, 1);
-      assert.equal(relay.charges[0].appFeeBps, 400);
+      assert.equal(relay.charges[0].appFeeBps, 500);
       assert.equal(relay.charges[0].amountCents, 3500);
 
       const rows = await db.query<{ status: string; payment_source: string; gross_cents: number }>(
@@ -90,7 +90,7 @@ test('package payment: charges once, creates a credit ledger row', async () => {
       assert.equal(checkoutRes.status, 303);
 
       assert.equal(relay.charges.length, 1);
-      assert.equal(relay.charges[0].appFeeBps, 400);
+      assert.equal(relay.charges[0].appFeeBps, 500);
       assert.equal(relay.charges[0].amountCents, 30000);
 
       const creditRows = await db.query<{ remaining: number; source: string }>(
@@ -135,7 +135,7 @@ test('plan payment: subscribes once, creates a subscription and a credit ledger 
       assert.equal(checkoutRes.status, 303);
 
       assert.equal(relay.subscriptions.length, 1);
-      assert.equal(relay.subscriptions[0].appFeeBps, 400);
+      assert.equal(relay.subscriptions[0].appFeeBps, 500);
       assert.equal(relay.subscriptions[0].priceCents, 12000);
 
       const subRows = await db.query<{ status: string }>(

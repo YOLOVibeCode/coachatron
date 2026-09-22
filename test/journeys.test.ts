@@ -134,10 +134,10 @@ test('journey 2: parent books and pays a drop-in via the fake relay', async () =
       assert.equal(checkoutRes.status, 303, 'a successful drop-in payment redirects to the confirmation view');
 
       // The charge went through the fake Connect Hub relay, not a real
-      // Square account, with the locked 4% application fee.
+      // Square account, with the locked 5% application fee.
       assert.equal(relay.charges.length, 1);
       assert.equal(relay.charges[0].amountCents, 3500);
-      assert.equal(relay.charges[0].appFeeBps, 400);
+      assert.equal(relay.charges[0].appFeeBps, 500);
 
       const bookingRows = await db.query<{ status: string; payment_source: string }>(
         'select status, payment_source from booking where id = $1',
