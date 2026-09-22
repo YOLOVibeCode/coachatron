@@ -19,7 +19,13 @@ import {
   getPlansForCoach,
   createPackage,
   createPlan,
+  type PackageRow,
+  type PlanRow,
 } from '../domain/pricing.js';
+import {
+  summarizeMoney,
+  type MoneySummary,
+} from '../domain/money.js';
 import { parseCookies, serializeCookie } from '../lib/cookies.js';
 
 // ---- Roster functions (M4 overflow cascade) ----
@@ -702,6 +708,49 @@ coachRouter.post('/app/roster/:id/priority', requireAuth, async (req, res) => {
   }
 
   res.redirect(303, '/app/roster');
+});
+
+// ---- Screen 7: money (read-only summary) ----
+
+coachRouter.get('/app/money', requireAuth, async (_req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const now = new Date();
+
+  const summary = await summarizeMoney(db, coachId, now);
+
+  // Format dollars for display
+  const formatDollars = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+
+  res.status(200).send(
+    page(
+      'Money',
+      html`<h1>Money</h1>
+
+        <h2>This week</h2>
+        <div class="card">
+          <p><strong>${summary.bookedThisWeekCount} sessions</strong> booked</p>
+          <p class="muted">Value: ${formatDollars(summary.bookedThisWeekCents)}</p>
+        </div>
+
+        <div class="card">
+          <p class="muted">Collected (gross): ${formatDollars(summary.collectedThisWeekCents)}</p>
+        </div>
+
+        <h2>Credits</h2>
+        <div class="card">
+          <p><strong>${summary.outstandingCreditCount} credits</strong> outstanding</p>
+        </div>
+
+        <h2>Next week</h2>
+        <div class="card">
+          <p><strong>${summary.nextWeekCount} sessions</strong> projected</p>
+          <p class="muted">Value: ${formatDollars(summary.nextWeekCents)}</p>
+        </div>
+
+        <a class="action" href="/app/schedule">Back to schedule</a>`,
+    ),
+  );
 });
 
 export function formatLocal(isoUtc: string, tz: string): string {
