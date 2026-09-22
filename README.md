@@ -105,6 +105,28 @@ The twelve screens of Coachatron (Slice 1):
 
 All routes are server-rendered HTML. No SPA.
 
+## Known gaps
+
+- **No email confirmations.** `SPEC.md §7.2` describes an SMS + email
+  confirmation; Slice 1 as built sends SMS only (the relay's `/email/send`
+  exists and is exercised by the fake in tests, but nothing calls it yet).
+  Tracked as `SPEC.md §15` item 7.
+- **Monthly plan renewal isn't automated.** A parent's first month of
+  credits is granted at purchase; granting the next month's credits each
+  billing cycle needs a Connect Hub webhook this slice doesn't implement
+  (see `ROADMAP.md` M3).
+- **No refund-webhook automation.** Refunds are issued through the coach's
+  own Square dashboard (`SPEC.md §9.4`); Coachatron doesn't automatically
+  reverse a package credit if the coach later issues a partial refund.
+- **The overflow cascade reuses the original session**, rather than
+  creating a literal second "parallel session" row — the accepted backup
+  coach is recorded on the same session via `assigned_roster_member_id`.
+  See `ROADMAP.md` M4 for why.
+
+None of these affect the three journeys in the product brief (booking +
+payment, the overflow cascade, the read-only Money screen), which are all
+covered by `test/journeys.test.ts`.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

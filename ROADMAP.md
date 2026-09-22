@@ -978,11 +978,15 @@ All seven milestones are `[x] done`. `npm test` passes 38/38 from a fresh
 clone with `DATABASE_URL` and `RELAY_BASE_URL` unset — no secrets, no
 daemon, no Docker. The three journeys in the idea are each covered
 end-to-end in `test/journeys.test.ts`, on top of focused unit coverage per
-milestone. Twelve screens, matching `SPEC.md §8.1` exactly. `SPEC.md` and
-`docs/PLATFORM.md` are unmodified from the versions already in the repo
-before this job started, per the idea's explicit override of the generic
-phase-1 template ("Add ROADMAP.md. Leave the product rules in SPEC.md in
-place.").
+milestone. Twelve screens, matching `SPEC.md §8.1` exactly. `docs/PLATFORM.md`
+is unmodified from the version already in the repo before this job started.
+`SPEC.md`'s product decisions (12-screen cap, non-goals, 4% fee, Postcard
+visual, etc.) are likewise unmodified — the only change to `SPEC.md` across
+the whole job is one append-only `§15` open question, added during release
+verification (below), following that section's own established pattern
+(it already had one item marked "Answered" in place rather than deleted).
+This is per the idea's explicit override of the generic phase-1 template
+("Add ROADMAP.md. Leave the product rules in SPEC.md in place.").
 
 Nothing from `SPEC.md §8.2`/`§8.3` (Slice 2/3) was pulled forward. Notable
 deliberate scope decisions made along the way, all documented in the
@@ -998,3 +1002,38 @@ milestone Notes above where they happened:
   automate reversing a package credit on a partial refund in Slice 1, and
   the "I will judge it by" / acceptance criteria across all seven
   milestones never required it).
+
+### Release verification (post-M7)
+
+A dedicated release-gate pass found one bug the test suite could not see,
+because the test suite never exercises the real startup path: **the running
+server never ran migrations.** `test/helpers/db.ts`'s `freshDb()` calls
+`runMigrations()` explicitly before every test, so `npm test` was always
+green — but `npm run dev` (or production with no `DATABASE_URL`, an
+explicitly supported no-database-to-install mode per the README) booted
+against a schema-less database. `GET /` doesn't touch the database, so it
+looked fine; the first real request that did (`POST /signin/otp`) failed
+with `relation "otp_code" does not exist` — and because Express 4 does not
+forward a rejected promise from an async route handler to error middleware,
+that became an *unhandled promise rejection*, which crashed the entire
+Node process under Node's default policy, taking every other in-flight
+request down with it. Found by literally curling a fresh clone's `npm run
+dev`, not by the automated suite. Fixed in `src/server.ts`: migrate on
+boot (every migration uses `if not exists`, so this is safe against an
+already-current real Postgres `DATABASE_URL` too), plus a
+`process.on('unhandledRejection', ...)` logger as defense in depth against
+the same failure mode from some other, still-undiscovered cause. Re-verified
+by running the actual `npm run dev` command against a standalone fake relay
+and curling all three journeys from the idea end to end, live — not just
+re-running the test suite (which was passing the whole time and would not
+have caught this).
+
+Also found, and recorded rather than silently fixed by building new
+product behavior this late: `SPEC.md §7.2` step 5 promises an email
+confirmation alongside SMS; no milestone's acceptance criteria ever
+required one, and no code calls the relay's `/email/send`. Not a bug in
+what was built — the idea's own "Must have" list only ever specified SMS —
+but a real gap between `SPEC.md`'s wording and Slice 1 as shipped. Recorded
+as `SPEC.md §15` item 7 rather than either quietly building it (scope
+creep at the very last step, with no milestone-level test design behind
+it) or quietly ignoring the discrepancy.
