@@ -223,7 +223,7 @@ intent. The production implementation is a thin HTTP client.
 That client talks only to the **LiteLLM relay on `litellm-vm`**, the same
 relay the rest of the estate uses:
 
-- Base: `https://api.noctusoft.com/v1` (`LITELLM_BASE`)
+- Base: `https://ai.noctusoft.com/v1` (`LITELLM_BASE`)
 - Call: `POST /chat/completions` with the virtual key
 - Model: `LITELLM_MODEL`, a name configured on the VM (a small, cheap alias).
   Changing Haiku / Flash / mini is a change on litellm-vm, not a code change
