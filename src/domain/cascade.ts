@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type { DbClient } from '../db/client.js';
 import { sendSms } from '../relay/sms.js';
+import { expireLivePendingForCoach } from './assistantPending.js';
 
 export const OVERFLOW_OFFER_TTL_MINUTES = 20;
 
@@ -101,6 +102,7 @@ export async function checkOverflow(db: DbClient, sessionId: number): Promise<vo
   if (pending.rows.length > 0) return; // already asked, waiting on the coach
 
   await db.query('insert into overflow_ask (session_id) values ($1)', [sessionId]);
+  await expireLivePendingForCoach(db, info.coachId);
   await sendUnlessOptedOut(
     db,
     info.coachPhone,

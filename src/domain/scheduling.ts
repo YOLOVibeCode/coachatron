@@ -30,6 +30,51 @@ export function zonedTimeToUtc(year: number, month: number, day: number, hour: n
   return new Date(guess.getTime() - offsetMs);
 }
 
+const WEEKDAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+export interface ZonedParts {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  weekday: number; // 0 = Sunday .. 6 = Saturday
+}
+
+/** Calendar + clock parts of an instant in an IANA zone. hour is 0–23. */
+export function zonedParts(date: Date, tz: string): ZonedParts {
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  const parts = Object.fromEntries(dtf.formatToParts(date).map((p) => [p.type, p.value]));
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+    hour: Number(parts.hour),
+    minute: Number(parts.minute),
+    weekday: WEEKDAY_NAMES.indexOf(parts.weekday ?? ''),
+  };
+}
+
+export function addCalendarDays(
+  year: number,
+  month: number,
+  day: number,
+  deltaDays: number,
+): { year: number; month: number; day: number } {
+  const anchor = new Date(Date.UTC(year, month - 1, day, 12));
+  anchor.setUTCDate(anchor.getUTCDate() + deltaDays);
+  return { year: anchor.getUTCFullYear(), month: anchor.getUTCMonth() + 1, day: anchor.getUTCDate() };
+}
+
 export interface WeeklySlot {
   /** 0 = Sunday .. 6 = Saturday, matching Date#getUTCDay via the coach's tz */
   weekday: number;

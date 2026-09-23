@@ -3,7 +3,7 @@ import { getDb, type DbClient } from '../db/client.js';
 import { findCoachByHandle, getConnectRecipientKey, normalizePhone, type CoachRow } from '../domain/auth.js';
 import { getFrontendConfig, type FrontendConfig } from '../relay/connectHub.js';
 import { html, page, raw, type SafeHtml } from '../lib/html.js';
-import { formatLocal } from './coach.js';
+import { formatLocal } from '../lib/time.js';
 import {
   getPackagesForCoach,
   getPackageById,

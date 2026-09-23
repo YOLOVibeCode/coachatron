@@ -9,13 +9,16 @@ import {
   createCoachSession,
   getCoachBySessionToken,
   findCoachByPhone,
+  findCoachById,
   createCoach,
   type CoachRow,
 } from '../domain/auth.js';
 import { generateWeekSessions, type WeeklySlot } from '../domain/scheduling.js';
 import { html, page, raw } from '../lib/html.js';
+import { formatLocal } from '../lib/time.js';
 import { getPackagesForCoach, getPlansForCoach, createPackage, createPlan } from '../domain/pricing.js';
 import { summarizeMoney } from '../domain/money.js';
+import { handleCoachMessage, loadScheduleAssistant, resolvePendingForCoach } from '../domain/assistant.js';
 import { parseCookies, serializeCookie } from '../lib/cookies.js';
 
 // ---- Roster functions (M4 overflow cascade) ----
@@ -346,10 +349,29 @@ coachRouter.get('/app/schedule', requireAuth, async (_req, res) => {
     [coachId],
   );
 
+  const assistant = await loadScheduleAssistant(db, coachId);
+
   res.status(200).send(
     page(
       'Schedule',
       html`<h1>This week</h1>
+        <form method="post" action="/app/schedule/ask">
+          <label for="ask">Text the week</label>
+          <input id="ask" name="text" type="text" placeholder="Text the week. &quot;who's at 6pm&quot; or &quot;cancel tomorrow&quot;" />
+          <button type="submit">Send</button>
+        </form>
+        ${assistant.reply
+          ? html`<div class="card ask-reply">
+              <p>${assistant.reply.body}</p>
+              ${assistant.livePendingId
+                ? html`<form class="btn-row" method="post" action="/app/schedule/confirm">
+                    <input type="hidden" name="id" value="${assistant.livePendingId}" />
+                    <button type="submit" name="answer" value="yes">Yes</button>
+                    <button type="submit" name="answer" value="no" class="ghost">No</button>
+                  </form>`
+                : raw('')}
+            </div>`
+          : raw('')}
         ${sessions.rows.length === 0
           ? html`<p class="muted">No sessions yet. Create a session type and generate a week.</p>`
           : sessions.rows.map(
@@ -361,6 +383,37 @@ coachRouter.get('/app/schedule', requireAuth, async (_req, res) => {
         <a class="action" href="/app/session-types">Session types</a>`,
     ),
   );
+});
+
+coachRouter.post('/app/schedule/ask', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const coach = await findCoachById(db, coachId);
+  if (!coach) {
+    res.redirect(303, '/signin');
+    return;
+  }
+  const text = field(req.body, 'text');
+  if (text) {
+    await handleCoachMessage(db, coach, text, 'web');
+  }
+  res.redirect(303, '/app/schedule');
+});
+
+coachRouter.post('/app/schedule/confirm', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const coach = await findCoachById(db, coachId);
+  if (!coach) {
+    res.redirect(303, '/signin');
+    return;
+  }
+  const pendingId = Number(field(req.body, 'id'));
+  const yes = field(req.body, 'answer') === 'yes';
+  if (Number.isInteger(pendingId) && pendingId > 0) {
+    await resolvePendingForCoach(db, coach, pendingId, yes);
+  }
+  res.redirect(303, '/app/schedule');
 });
 
 // ---- Screen 3: session detail (M5 session management) ----
@@ -743,16 +796,4 @@ coachRouter.get('/app/money', requireAuth, async (_req, res) => {
   );
 });
 
-export function formatLocal(isoUtc: string, tz: string): string {
-  const date = new Date(isoUtc);
-  return new Intl.DateTimeFormat('en-US', {
-    timeZone: tz,
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(date);
-}
-
-export { requireAuth };
+export { requireAuth, formatLocal };
