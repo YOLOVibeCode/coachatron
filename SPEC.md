@@ -370,7 +370,7 @@ Decisions that can be made cheaply now; anything not listed is deliberately open
 - **Secrets:** 1Password at runtime. No `.env` in any deployed environment.
 - **Model:** one interface in the product (`complete` a closed prompt, return
   structured output). Tests use a fake. Production calls the LiteLLM relay on
-  **litellm-vm** (`https://api.noctusoft.com/v1`). No provider SDK. The model
+  **litellm-vm** (`https://ai.noctusoft.com/v1`). No provider SDK. The model
   name is configuration on that VM, so swapping the small model does not change
   Coachatron code. Detail in `docs/PLATFORM.md` §4.4.
 - **Time:** every session stores an explicit IANA timezone. Never store a naive
