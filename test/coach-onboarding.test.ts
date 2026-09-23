@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { freshDb } from './helpers/db.js';
 import { withServer } from './helpers/server.js';
-import { startFakeRelay } from './fakes/relay.js';
+import { withRelay } from './helpers/relay.js';
 
 function extractSessionCookie(res: Response): string {
   const setCookie = res.headers.getSetCookie?.() ?? [];
@@ -12,11 +12,8 @@ function extractSessionCookie(res: Response): string {
 }
 
 test('coach onboarding: OTP sign-in, session type, weekly schedule, public page', async () => {
-  const relay = await startFakeRelay();
-  process.env.RELAY_BASE_URL = relay.url;
-  const db = await freshDb();
-
-  try {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
     await withServer(async (base) => {
       // 1. Request an OTP.
       const otpRes = await fetch(`${base}/signin/otp`, {
@@ -99,10 +96,7 @@ test('coach onboarding: OTP sign-in, session type, weekly schedule, public page'
       assert.match(publicHtml, /8 spots left/);
       assert.match(publicHtml, /\$35\.00/);
     });
-  } finally {
-    await relay.close();
-    delete process.env.RELAY_BASE_URL;
-  }
+  });
 });
 
 test('GET /c/does-not-exist returns 404', async () => {

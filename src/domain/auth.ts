@@ -72,11 +72,16 @@ export interface CoachRow {
   email: string;
   phone: string;
   tz: string;
+  connect_recipient_key: string | null;
+}
+
+export function getConnectRecipientKey(coach: Pick<CoachRow, 'handle' | 'connect_recipient_key'>): string {
+  return coach.connect_recipient_key ?? coach.handle;
 }
 
 export async function findCoachByPhone(db: DbClient, phone: string): Promise<CoachRow | null> {
   const result = await db.query<CoachRow>(
-    'select id, handle, name, email, phone, tz from coach where phone = $1',
+    'select id, handle, name, email, phone, tz, connect_recipient_key from coach where phone = $1',
     [phone],
   );
   return result.rows[0] ?? null;
@@ -84,7 +89,7 @@ export async function findCoachByPhone(db: DbClient, phone: string): Promise<Coa
 
 export async function findCoachByHandle(db: DbClient, handle: string): Promise<CoachRow | null> {
   const result = await db.query<CoachRow>(
-    'select id, handle, name, email, phone, tz from coach where handle = $1',
+    'select id, handle, name, email, phone, tz, connect_recipient_key from coach where handle = $1',
     [handle],
   );
   return result.rows[0] ?? null;
@@ -122,10 +127,18 @@ export interface NewCoachInput {
 export async function createCoach(db: DbClient, input: NewCoachInput): Promise<CoachRow> {
   const handle = await reserveHandle(db, input.name);
   const result = await db.query<{ id: number }>(
-    `insert into coach (handle, name, email, phone, tz, fee_bps)
-     values ($1, $2, $3, $4, $5, 500)
+    `insert into coach (handle, name, email, phone, tz, fee_bps, connect_recipient_key)
+     values ($1, $2, $3, $4, $5, 500, $1)
      returning id`,
     [handle, input.name, input.email, input.phone, input.tz],
   );
-  return { id: result.rows[0].id, handle, name: input.name, email: input.email, phone: input.phone, tz: input.tz };
+  return {
+    id: result.rows[0].id,
+    handle,
+    name: input.name,
+    email: input.email,
+    phone: input.phone,
+    tz: input.tz,
+    connect_recipient_key: handle,
+  };
 }

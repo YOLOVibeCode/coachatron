@@ -2,21 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { freshDb } from './helpers/db.js';
 import { withServer } from './helpers/server.js';
-import { startFakeRelay, type FakeRelay } from './fakes/relay.js';
+import { withRelay } from './helpers/relay.js';
 import { seedCoachWithSession, seedRosterMember, seedBookedSession, seedWaitlistEntry } from './helpers/fixtures.js';
 import { checkOverflow, startCascade, advanceCascade, acceptOffer } from '../src/domain/cascade.js';
 import type { DbClient } from '../src/db/client.js';
-
-async function withRelay(fn: (relay: FakeRelay) => Promise<void>): Promise<void> {
-  const relay = await startFakeRelay();
-  process.env.RELAY_BASE_URL = relay.url;
-  try {
-    await fn(relay);
-  } finally {
-    await relay.close();
-    delete process.env.RELAY_BASE_URL;
-  }
-}
 
 async function smsTo(base: string, from: string, body: string): Promise<Response> {
   return fetch(`${base}/webhooks/sms`, {

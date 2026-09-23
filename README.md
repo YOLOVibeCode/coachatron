@@ -105,6 +105,18 @@ The twelve screens of Coachatron (Slice 1):
 
 All routes are server-rendered HTML. No SPA.
 
+## Relay environment (sandbox)
+
+To exercise real Connect Hub, SMS, and email against Noctusoft `ns` (not used in CI):
+
+| Variable | Purpose |
+| --- | --- |
+| `RELAY_BASE_URL` | Hub base URL (sandbox: `https://api.square.noctusoft.com`) |
+| `RELAY_API_KEY` | Product key for `coachatron`, sent as `X-Api-Key` |
+| `RELAY_APP_ENV` | Set to `dev` so relay email is captured (smtp4dev) instead of delivered |
+
+Do not commit secrets. `npm test` uses the in-process fake in `test/fakes/relay.ts`.
+
 ## Known gaps
 
 - **No email confirmations.** `SPEC.md §7.2` describes an SMS + email
