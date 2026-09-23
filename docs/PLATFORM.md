@@ -49,7 +49,7 @@ Per `AGENTS.md`, this is data, not code:
   "status": "planned",
   "connect": {
     "productKey": "coachatron",
-    "appFeeBps": 400,
+    "appFeeBps": 500,
     "squareEnv": "sandbox",
     "postConnectRedirect": "https://coachatron.com/settings/payments"
   },
@@ -62,9 +62,12 @@ Per `AGENTS.md`, this is data, not code:
 }
 ```
 
-`appFeeBps: 400` is the 4% from SPEC.md §9.3. FieldView runs 1000 (10%) for
-comparison. Per-transaction override is supported and bounded by
-`app_fee_bps_max`, so pilot coaches can be zero-rated without a deploy.
+`appFeeBps: 500` is the locked 5% from SPEC.md §9.3 (2026-09-22): the ease
+of a five-minute link, a parent who pays with no account, and a full session
+that texts the next coach. FieldView runs 1000 (10%) for a different product.
+A later default applies to coaches who connect after the change. Per-transaction
+override is supported and bounded by `app_fee_bps_max`, so pilot coaches can
+be zero-rated without a deploy.
 
 ---
 
@@ -210,51 +213,78 @@ These are the whole design. Without them this feature is a liability.
 - **R7 — Everything is logged** — raw message, parsed intent, confirmation, and
   outcome — under SPEC.md §13's append-only audit requirement.
 
-### 4.4 Model routing — LiteLLM
+### 4.4 Model — one interface, litellm-vm behind it
 
-All model calls go through the existing **LiteLLM VM at `llm.noctusoft.com`**
-(live; `/health/liveliness` returns 200). Not the provider APIs directly.
+Coachatron code depends on a single interface: complete a closed prompt and
+return structured output. Callers (intent extraction, and anything later) see
+that interface and nothing else. Tests inject a fake that returns a fixed
+intent. The production implementation is a thin HTTP client.
 
-- Dedicated **virtual key** for Coachatron with a hard monthly budget, so a loop
-  or an abusive sender cannot run up a bill. Budgets and the SMS anomaly monitor
-  are already wired on that VM.
-- Key from **1Password at runtime** — never a `.env` in a deployed environment.
-- Pin a **small, cheap model** (Haiku / Flash / mini class). This is closed-set
-  classification over a 2-line prompt; frontier capability buys nothing here.
-- Request **structured output** (JSON schema / tool-call), temperature 0.
-- Set an explicit **timeout of ~3s** and fall back to the link reply. A coach
-  texting from a parking lot would rather get a link fast than a perfect parse
-  slowly.
-- One retry, then fall back. Never a retry loop on an SMS path.
+That client talks only to the **LiteLLM relay on `litellm-vm`**, the same
+relay the rest of the estate uses:
+
+- Base: `https://api.noctusoft.com/v1` (`LITELLM_BASE`)
+- Call: `POST /chat/completions` with the virtual key
+- Model: `LITELLM_MODEL`, a name configured on the VM (a small, cheap alias).
+  Changing Haiku / Flash / mini is a change on litellm-vm, not a code change
+  and not a new dependency.
+
+No Anthropic, OpenAI, or Google SDK in this repo. Provider keys stay on the
+VM. The Coachatron virtual key comes from **1Password at runtime**, with a
+hard monthly budget so a loop cannot run up a bill. Budgets and the SMS
+anomaly monitor are already on that VM.
+
+Request structured output (JSON schema), temperature 0. Timeout ~3s, then the
+link reply. One retry, then fall back. A retry loop on the SMS path is a bug.
 
 ### 4.5 Cost
 
-The AI is **not** the expensive part of this feature, and it is worth being
-precise about that before optimizing the wrong thing.
+US SMS is about **$0.013 per segment** all-in: Twilio's $0.0083 plus carrier
+fees of roughly $0.0035–$0.0045. Inbound is $0.0083. A parse is about 200 input
+tokens and 60 output tokens on a small model, well under a tenth of a cent.
+The texts are the cost. The model is not.
 
-A parse is roughly 200 input + 60 output tokens against a small model — a small
-fraction of a cent, so a heavy coach at ~100 parsed messages a month costs cents.
-**The outbound SMS costs more than the model call by roughly an order of
-magnitude.** Twilio per-segment pricing dominates the unit economics of the
-entire messaging feature.
+A busy month — eight sessions a week, six athletes, a confirmation and a
+reminder each, plus overflow and the coach texting — is on the order of
+**600–1,200 segments, about $8–$16.** At 5%, a coach covers $16 of texts once
+they book about $320. The $49 plan covers that same month with room left. A
+zero-rated pilot costs us the texts and nothing else, which at this volume is
+a few dollars.
 
-Consequences for the design:
+What can outrun the fee is a loop, a broadcast storm, or a number Twilio
+prices like an international destination. Those are capped in the send path
+(SPEC.md §10):
 
-- Optimize **message count**, not token count. Layer 1/2 routing exists to keep
-  volume off the model, but the bigger win is not sending avoidable texts at all.
-- Keep every message inside **one 160-character segment** where possible. Two
-  segments is two charges.
-- The per-coach LLM budget is an **abuse stop, not a cost control.** Set it, then
-  stop thinking about it.
+| Ceiling | Limit | Worst case |
+|---|---|---|
+| Per coach, per day | 300 outbound segments | ~$4, then silence |
+| Per coach, per month | 2,000 outbound segments | ~$26 |
+| Per non-coach number | 1 automatic reply per day | stops reply storms |
+| Per message | 1 segment | a second segment is never sent |
+| Destination price | above $0.02/segment is refused | email still goes |
+| Per coach, model | 30 calls/day, 400/month | cents |
+| Product model key | $20/month | raise on purpose, not by usage |
+| Product, per day | 400 segments × active coaches, floor 500 | a shared-sender bug dies the same day |
+
+The full assistant fits inside those ceilings. Scheduling by text, setting a
+session up, asking before a change, confirmations, reminders, and the overflow
+cascade for a busy coach land around 600–1,200 segments and well under 400
+model calls. The caps are not a smaller product. Hitting one means a loop:
+sends stop until the window resets. Idempotency keys already required by
+SPEC.md §11 keep a retry from being a second text. The product-day ceiling is
+the backstop when a bug ignores the per-coach counter.
 
 ### 4.6 Rollout
 
-NL control is **Slice 2**, not Slice 1. Slice 1 ships the keyword layer only
-(`Y`/`N`/`STOP`), because the cascade needs it and it needs no model at all.
+The full assistant is what the 5% pays for: schedule, set a session up, and
+ask before any write, on the closed intent set above. It is not trimmed to
+save texts.
 
-Add the model layer once there is real inbound traffic to read: the actual
-messages coaches send are the intent set. Guessing the set before launch is how
-this feature grows twelve intents nobody uses.
+Slice 1 still ships the keyword layer only (`Y`/`N`/`STOP`), because the
+cascade needs `Y` to be instant and the model must not sit in that path. The
+full assistant follows as soon as the launch coach is actually texting, so the
+intent set comes from real messages. It does not wait for ten paying coaches,
+and it does not ship as a shorter command list.
 
 ---
 
@@ -265,4 +295,4 @@ this feature grows twelve intents nobody uses.
 3. Start attorney review (§2.1 item 1) — long pole to first revenue
 4. Create the Coachatron LiteLLM virtual key with a monthly budget
 5. Decide the Slice-1 keyword vocabulary exactly (`Y/N/STOP/HELP` + what else)
-6. Confirm `appFeeBps: 400` against the launch coach's actual volume
+6. ~~Confirm `appFeeBps: 400`~~ **Locked at 500 (5%).** See SPEC.md §9.3. Raise later by config for new coaches only.

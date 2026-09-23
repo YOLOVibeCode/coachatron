@@ -1,0 +1,18 @@
+---
+description: Efficient generation — product repo; Slack or PR; never a second meter
+alwaysApply: true
+---
+
+# Efficient generation
+
+This repository is an **existing product**. Do not `build-farm` a new GitHub repo for work that belongs here.
+
+- Have a `bc-` id → resume that Cloud Agent. Never start a parallel job.
+- New fix → `@CloudAgents` in this project's `-fixbot` channel if wired, else a branch + PR. Composer 2.5, Fast off.
+- Brand-new independent app → `/Users/admin/Dev/YOLOProjects/cloud-agents` (`npm run build-farm` or `--engine hybrid`).
+
+Never: Opus/GPT as the Cursor model, Fast on, `ANTHROPIC_API_KEY` in the shell, extra Max usage, re-farming a failed `bc-` job.
+
+## Close
+
+Last lines of every job are COST. Every AI provider is its own meter. Print a meter only when it has spend. If cents are unknown, write `COST this run: unknown`.
