@@ -5,7 +5,7 @@ export type { ChatMessage, CompleteFn, CompleteRequest } from './schema.js';
 
 async function postOnce(req: CompleteRequest): Promise<unknown> {
   const apiKey = process.env.LITELLM_API_KEY ?? '';
-  const base = process.env.LITELLM_BASE ?? 'https://api.noctusoft.com/v1';
+  const base = process.env.LITELLM_BASE ?? 'https://ai.noctusoft.com/v1';
   const model = process.env.LITELLM_MODEL ?? 'coachatron';
   if (!apiKey) {
     throw new Error('LITELLM_API_KEY missing');
