@@ -272,20 +272,28 @@ for two children with one phone draws from one pool.
 
 ### 9.3 Our cut
 
-Recommendation for launch: **free to the coach, 4% application fee on each
-transaction**, on top of Square's processing (~2.6% + 10¢ card-present, 2.9% +
-30¢ online).
+**Locked 2026-09-22: free to the coach, 5% application fee on each transaction**,
+on top of Square's processing (~2.6% + 10¢ card-present, 2.9% + 30¢ online).
 
-Reasoning: a solo coach will not sign a monthly bill before seeing money arrive,
-but will not notice a percentage taken from revenue they would not otherwise have
-collected. It also aligns us with their growth rather than their headcount.
+The rate is the ease. A coach has a bookable link in five minutes, a parent
+pays with no account, and a full session texts the next coach. On a $35
+session that is $1.75, on top of Square. The text assistant — set something up
+by text, or ask and wait for Y — is included. It is the same work for a small
+book and a large one, so the rate stays 5% rather than climbing with the
+lessons. A lower rate is still how the product spreads: one coach's athletes
+and roster are how the next coach shows up. FieldView's 10% is a different
+product: a paid stream the team did not previously sell.
 
-Offer a **$49/mo, 0% fee** plan once a coach clears roughly $1,200/mo in bookings
-— at 4%, that is the crossover, and letting them switch themselves is a
-retention feature, not a discount.
+Raising the default later is a config change (`appFeeBps` 500), and a higher
+default applies to coaches who connect after the change. Pilot coaches can be
+zero-rated the same way, with no deploy.
+
+Offer a **$49/mo, 0% fee** plan once a coach clears roughly $1,000/mo in
+bookings — at 5%, that is the crossover, and letting them switch themselves
+is how a growing coach stays.
 
 Fee is configurable per-coach and per-transaction-type from day one (Connect Hub
-supports this) so pilot coaches can be zero-rated without a code change.
+supports this).
 
 ### 9.4 Refunds
 
@@ -320,8 +328,9 @@ marketing. Messages are short enough to read in a notification preview.
 link.
 
 In Slice 2 this grows into **natural-language control** — the coach runs the
-business by texting in plain English, with a cheap model routed through the
-LiteLLM VM doing closed-set intent extraction only. Reads answer immediately;
+business by texting in plain English. Intent extraction goes through one
+model interface. The only production implementation of that interface is the
+LiteLLM relay on **litellm-vm**. Reads answer immediately;
 anything that moves money, cancels a session, or messages athletes requires a
 `Y` confirmation whose text is rendered by template code, never by the model.
 Full design, safety rules, and cost model in `docs/PLATFORM.md` §4. This is still
@@ -329,6 +338,17 @@ not a chat interface (§3).
 
 `STOP` handling, quiet hours (no non-urgent SMS 9pm–8am local), and per-recipient
 rate limits are required, not optional.
+
+**The fee has to survive the texts.** The full assistant stays: the coach texts
+to schedule, to set a session up, or to answer the question we ask before
+anything is changed, and athletes still get confirmations, reminders, and
+overflow texts. Those ceilings sit above that month. Outbound SMS stops at
+**300 segments per coach per day** and **2,000 per coach per month**. One
+automatic reply per non-coach number per day. No message longer than one
+segment. No destination priced above $0.02 per segment. Model calls stop at
+**30 per coach per day** and **400 per month**, and the Coachatron model key
+has a **$20 per month** ceiling. A coach using the whole feature stays under
+these. The stop is there for a loop. Worked cost in `docs/PLATFORM.md` §4.5.
 
 ---
 
@@ -339,12 +359,20 @@ Decisions that can be made cheaply now; anything not listed is deliberately open
 - **Frontend:** server-rendered, mobile-first, no SPA framework unless a screen
   demands it. Total JS budget for the athlete booking flow: keep it small enough
   to load fast on stadium LTE. This flow is where revenue happens.
+- **Visual:** Postcard, locked 2026-09-21. Sand ground, a clay phone, a cream
+  screen, one teal action, round corners. Serif for the name of a thing, system
+  sans for the rest. Reference `design/index.html`.
 - **Backend:** one service, one database. No microservices, no queue in v1 — the
   overflow cascade is a scheduled job over a table, not a message bus.
 - **Database:** Postgres. The credit ledger and the cascade both want
   transactions.
 - **Hosting:** Railway, matching the rest of the estate.
 - **Secrets:** 1Password at runtime. No `.env` in any deployed environment.
+- **Model:** one interface in the product (`complete` a closed prompt, return
+  structured output). Tests use a fake. Production calls the LiteLLM relay on
+  **litellm-vm** (`https://api.noctusoft.com/v1`). No provider SDK. The model
+  name is configuration on that VM, so swapping the small model does not change
+  Coachatron code. Detail in `docs/PLATFORM.md` §4.4.
 - **Time:** every session stores an explicit IANA timezone. Never store a naive
   local time. Half of all scheduling bugs live here.
 - **Money:** integer minor units (cents). Never floats.
@@ -440,3 +468,12 @@ Item 4 is the only one that matters. The others are how we get there.
    same session in one flow, or two passes? Affects the booking form materially.
 6. **Trademark.** "Coachatron" needs a USPTO knockout search before any spend on
    brand assets.
+7. **Email confirmations (§7.2 step 5, §10).** Slice 1 as built sends SMS
+   only for booking confirmations, cancellations, and the overflow flow —
+   no email. The relay's `/email/send` exists and is exercised by the fake
+   in tests, but no Coachatron code calls it yet. The build brief for
+   Slice 1 ("Must have") only ever specified SMS; email confirmation was
+   never in a milestone's acceptance criteria across the build. Recommend
+   deciding whether email is Slice 1 scope (small addition: one relay call
+   alongside the existing SMS confirmation) or explicitly Slice 2, rather
+   than leaving it an unstated gap.
