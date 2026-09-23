@@ -142,3 +142,11 @@ export async function createCoach(db: DbClient, input: NewCoachInput): Promise<C
     connect_recipient_key: handle,
   };
 }
+
+export async function findCoachById(db: DbClient, id: number): Promise<CoachRow | null> {
+  const result = await db.query<CoachRow>(
+    'select id, handle, name, email, phone, tz from coach where id = $1',
+    [id],
+  );
+  return result.rows[0] ?? null;
+}

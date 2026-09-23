@@ -92,6 +92,10 @@ export const POSTCARD_TOKENS_CSS = `
   }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; margin-bottom: 10px; }
   .error { color: var(--alert); font-family: ui-sans-serif, system-ui, sans-serif; font-size: 0.9rem; margin-top: 8px; }
+  .ask-reply p { margin: 0 0 8px; font-family: ui-sans-serif, system-ui, sans-serif; }
+  .btn-row { display: flex; gap: 8px; }
+  .btn-row button { margin-top: 8px; }
+  button.ghost { background: transparent; color: var(--teal); border: 1px solid var(--teal); }
 `;
 
 export function page(title: string, body: SafeHtml): string {
