@@ -7,3 +7,11 @@ export const RELAY_API_KEY = process.env.RELAY_API_KEY ?? '';
 /** When set to `dev`, relay email sends are captured (e.g. smtp4dev) instead of delivered. */
 export const RELAY_APP_ENV = process.env.RELAY_APP_ENV ?? '';
 export const SESSION_SECRET = process.env.SESSION_SECRET ?? 'dev-only-not-a-secret';
+export const APP_BASE_URL = process.env.APP_BASE_URL ?? 'https://coachatron.com';
+export const LITELLM_BASE = process.env.LITELLM_BASE ?? 'https://api.noctusoft.com/v1';
+export const LITELLM_MODEL = process.env.LITELLM_MODEL ?? 'coachatron';
+export const LITELLM_API_KEY = process.env.LITELLM_API_KEY ?? '';
+export const LITELLM_TIMEOUT_MS = 3000;
+export const ASSISTANT_CONFIRM_TTL_MS = 10 * 60 * 1000;
+export const ASSISTANT_MODEL_DAILY_CAP = 30;
+export const ASSISTANT_MODEL_MONTHLY_CAP = 400;
