@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { freshDb } from './helpers/db.js';
 import { withServer } from './helpers/server.js';
-import { startFakeRelay, type FakeRelay } from './fakes/relay.js';
+import { withRelay } from './helpers/relay.js';
 import { seedCoachWithSession, seedRosterMember, seedBookedSession, seedWaitlistEntry } from './helpers/fixtures.js';
 import { checkOverflow } from '../src/domain/cascade.js';
 
@@ -18,17 +18,6 @@ import { checkOverflow } from '../src/domain/cascade.js';
  *   3. a full session with a waiter triggers the one-SMS overflow ask,
  *      coach Y, one roster member Y, offer accepted
  */
-
-async function withRelay(fn: (relay: FakeRelay) => Promise<void>): Promise<void> {
-  const relay = await startFakeRelay();
-  process.env.RELAY_BASE_URL = relay.url;
-  try {
-    await fn(relay);
-  } finally {
-    await relay.close();
-    delete process.env.RELAY_BASE_URL;
-  }
-}
 
 function extractSessionCookie(res: Response): string {
   const setCookie = res.headers.getSetCookie?.() ?? [];
@@ -128,7 +117,7 @@ test('journey 2: parent books and pays a drop-in via the fake relay', async () =
       const checkoutRes = await fetch(`${base}/c/${seed.coach.handle}/checkout/${bookingId}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ mode: 'dropin' }),
+        body: JSON.stringify({ mode: 'dropin', source_id: 'cnon:test-nonce' }),
         redirect: 'manual',
       });
       assert.equal(checkoutRes.status, 303, 'a successful drop-in payment redirects to the confirmation view');

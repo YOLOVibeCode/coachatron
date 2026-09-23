@@ -170,6 +170,7 @@ export function paymentIdempotencyKey(bookingId: number, mode: string): string {
 }
 
 export async function chargeForBooking(
+  recipientKey: string,
   bookingId: number,
   mode: 'dropin' | 'package',
   amountCents: number,
@@ -177,6 +178,7 @@ export async function chargeForBooking(
   note: string,
 ): Promise<ChargeResult> {
   return connectHubCharge({
+    recipientKey,
     idempotencyKey: paymentIdempotencyKey(bookingId, mode),
     amountCents,
     sourceId,
@@ -185,16 +187,20 @@ export async function chargeForBooking(
 }
 
 export async function subscribeForBooking(
+  recipientKey: string,
   bookingId: number,
   priceCents: number,
   contactPhone: string,
   planName: string,
+  sourceId: string,
 ): Promise<SubscribeResult> {
   return connectHubSubscribe({
+    recipientKey,
     idempotencyKey: paymentIdempotencyKey(bookingId, 'plan'),
     priceCents,
     contactPhone,
     planName,
+    sourceId,
   });
 }
 

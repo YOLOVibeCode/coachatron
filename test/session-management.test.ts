@@ -2,19 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { freshDb } from './helpers/db.js';
 import { withServer } from './helpers/server.js';
-import { startFakeRelay, type FakeRelay } from './fakes/relay.js';
+import { withRelay } from './helpers/relay.js';
 import { seedCoachWithSession, seedBookedSession } from './helpers/fixtures.js';
-
-async function withRelay(fn: (relay: FakeRelay) => Promise<void>): Promise<void> {
-  const relay = await startFakeRelay();
-  process.env.RELAY_BASE_URL = relay.url;
-  try {
-    await fn(relay);
-  } finally {
-    await relay.close();
-    delete process.env.RELAY_BASE_URL;
-  }
-}
 
 async function coachPost(base: string, path: string, form: URLSearchParams, cookie?: string): Promise<Response> {
   const headers = { 'content-type': 'application/x-www-form-urlencoded' } as Record<string, string>;
