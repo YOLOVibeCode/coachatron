@@ -468,3 +468,12 @@ Item 4 is the only one that matters. The others are how we get there.
    same session in one flow, or two passes? Affects the booking form materially.
 6. **Trademark.** "Coachatron" needs a USPTO knockout search before any spend on
    brand assets.
+7. **Email confirmations (§7.2 step 5, §10).** Slice 1 as built sends SMS
+   only for booking confirmations, cancellations, and the overflow flow —
+   no email. The relay's `/email/send` exists and is exercised by the fake
+   in tests, but no Coachatron code calls it yet. The build brief for
+   Slice 1 ("Must have") only ever specified SMS; email confirmation was
+   never in a milestone's acceptance criteria across the build. Recommend
+   deciding whether email is Slice 1 scope (small addition: one relay call
+   alongside the existing SMS confirmation) or explicitly Slice 2, rather
+   than leaving it an unstated gap.
