@@ -92,11 +92,14 @@ publicRouter.get('/c/:handle', async (req, res) => {
           : sessions.rows.map((s) => {
               const spotsLeft = s.capacity - Number(s.booked);
               return html`<div class="card">
-                <strong>${formatLocal(s.starts_at_utc, s.tz)}</strong><br />
-                ${s.name} — ${spotsLeft} spot${spotsLeft === 1 ? '' : 's'} left — $${(s.price_cents / 100).toFixed(2)}<br />
+                <strong>${formatLocal(s.starts_at_utc, s.tz)}</strong>
+                <div class="meta">
+                  <span>${s.name}</span>
+                  <span>${spotsLeft > 0 ? `${spotsLeft} spot${spotsLeft === 1 ? '' : 's'} left · $${(s.price_cents / 100).toFixed(2)}` : 'Full'}</span>
+                </div>
                 ${spotsLeft > 0
                   ? html`<a class="action" href="/c/${coach.handle}/sessions/${s.id}/book">Book</a>`
-                  : html`<span class="muted">Full</span>`}
+                  : raw('')}
               </div>`;
             })}`,
     ),

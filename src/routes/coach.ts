@@ -354,33 +354,38 @@ coachRouter.get('/app/schedule', requireAuth, async (_req, res) => {
   res.status(200).send(
     page(
       'Schedule',
-      html`<h1>This week</h1>
-        <form method="post" action="/app/schedule/ask">
-          <label for="ask">Text the week</label>
-          <input id="ask" name="text" type="text" placeholder="Text the week. &quot;who's at 6pm&quot; or &quot;cancel tomorrow&quot;" />
-          <button type="submit">Send</button>
-        </form>
-        ${assistant.reply
-          ? html`<div class="card ask-reply">
-              <p>${assistant.reply.body}</p>
-              ${assistant.livePendingId
-                ? html`<form class="btn-row" method="post" action="/app/schedule/confirm">
-                    <input type="hidden" name="id" value="${assistant.livePendingId}" />
-                    <button type="submit" name="answer" value="yes">Yes</button>
-                    <button type="submit" name="answer" value="no" class="ghost">No</button>
-                  </form>`
-                : raw('')}
-            </div>`
-          : raw('')}
-        ${sessions.rows.length === 0
-          ? html`<p class="muted">No sessions yet. Create a session type and generate a week.</p>`
-          : sessions.rows.map(
-              (s) =>
-                html`<div class="card">
-                  ${formatLocal(s.starts_at_utc, s.tz)} — ${s.name} — $${(s.price_cents / 100).toFixed(2)}
-                </div>`,
-            )}
-        <a class="action" href="/app/session-types">Session types</a>`,
+      html`<div class="screen-main">
+          <h1>This week</h1>
+          ${assistant.reply
+            ? html`<div class="card ask-reply">
+                <p>${assistant.reply.body}</p>
+                ${assistant.livePendingId
+                  ? html`<form class="btn-row" method="post" action="/app/schedule/confirm">
+                      <input type="hidden" name="id" value="${assistant.livePendingId}" />
+                      <button type="submit" name="answer" value="yes">Yes</button>
+                      <button type="submit" name="answer" value="no" class="ghost">No</button>
+                    </form>`
+                  : raw('')}
+              </div>`
+            : raw('')}
+          ${sessions.rows.length === 0
+            ? html`<p class="muted">No sessions yet. Create a session type and generate a week.</p>`
+            : sessions.rows.map(
+                (s) =>
+                  html`<div class="card">
+                    <strong>${formatLocal(s.starts_at_utc, s.tz)}</strong>
+                    <div class="meta"><span>${s.name}</span><span>$${(s.price_cents / 100).toFixed(2)}</span></div>
+                  </div>`,
+              )}
+          <a class="action" href="/app/session-types">Session types</a>
+        </div>
+        <div class="schedule-ask">
+          <form method="post" action="/app/schedule/ask">
+            <label for="ask">Text the week</label>
+            <input id="ask" name="text" type="text" placeholder="Text the week. &quot;who's at 6pm&quot; or &quot;cancel tomorrow&quot;" />
+            <button type="submit">Send</button>
+          </form>
+        </div>`,
     ),
   );
 });
@@ -691,13 +696,17 @@ coachRouter.get('/app/roster', requireAuth, async (_req, res) => {
       html`<h1>Overflow roster</h1>
         ${members.length === 0
           ? html`<p class="muted">No roster members yet.</p>`
-          : html`<ul>
-              ${members.map((m) => html`<li class="card">${m.name} — ${m.phone}
-                <form method="post" action="/app/roster/${m.id}/priority" style="display:inline;">
-                  <input type="number" name="priority" value="${m.priority}" min="0" required />
-                  <button type="submit">Update priority</button>
-                </form>
-              </li>`)}
+          : html`<ul class="roster-list">
+              ${members.map(
+                (m) =>
+                  html`<li class="card">
+                    <div class="row"><span>${m.name}</span><span class="muted">${m.phone}</span></div>
+                    <form class="roster-priority-form" method="post" action="/app/roster/${m.id}/priority">
+                      <input type="number" name="priority" value="${m.priority}" min="0" required aria-label="Priority for ${m.name}" />
+                      <button type="submit">Update priority</button>
+                    </form>
+                  </li>`,
+              )}
             </ul>`}
         <h2>Add member</h2>
         <form method="post" action="/app/roster">
@@ -769,28 +778,19 @@ coachRouter.get('/app/money', requireAuth, async (_req, res) => {
     page(
       'Money',
       html`<h1>Money</h1>
-
         <h2>This week</h2>
-        <div class="card">
-          <p><strong>${summary.bookedThisWeekCount} sessions booked</strong></p>
-          <p class="muted">Value: ${formatDollars(summary.bookedThisWeekCents)}</p>
-        </div>
-
-        <div class="card">
-          <p class="muted">Collected (gross): ${formatDollars(summary.collectedThisWeekCents)}</p>
-        </div>
-
+        <p class="money-figure">${formatDollars(summary.collectedThisWeekCents)}</p>
+        <p class="muted">Collected (gross): ${formatDollars(summary.collectedThisWeekCents)}</p>
+        <p class="muted"><strong>${summary.bookedThisWeekCount} sessions booked</strong> — Value: ${formatDollars(summary.bookedThisWeekCents)}</p>
         <h2>Credits</h2>
         <div class="card">
           <p><strong>${summary.outstandingCreditCount} credits outstanding</strong></p>
         </div>
-
         <h2>Next week</h2>
         <div class="card">
           <p><strong>${summary.nextWeekCount} sessions projected</strong></p>
           <p class="muted">Value: ${formatDollars(summary.nextWeekCents)}</p>
         </div>
-
         <a class="action" href="/app/schedule">Back to schedule</a>`,
     ),
   );
