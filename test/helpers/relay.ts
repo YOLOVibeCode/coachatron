@@ -6,11 +6,13 @@ export async function withRelay<T>(fn: (relay: FakeRelay) => Promise<T>): Promis
   const relay = await startFakeRelay();
   process.env.RELAY_BASE_URL = relay.url;
   process.env.RELAY_API_KEY = TEST_RELAY_API_KEY;
+  process.env.CONNECT_WEBHOOK_SECRET = 'test-connect-webhook-secret';
   try {
     return await fn(relay);
   } finally {
     await relay.close();
     delete process.env.RELAY_BASE_URL;
     delete process.env.RELAY_API_KEY;
+    delete process.env.CONNECT_WEBHOOK_SECRET;
   }
 }

@@ -4,9 +4,9 @@ import { freshDb } from './helpers/db.js';
 import { withServer } from './helpers/server.js';
 import { withRelay } from './helpers/relay.js';
 import { seedCoachWithSession, seedPackage, seedPlan } from './helpers/fixtures.js';
-import { charge } from '../src/relay/connectHub.js';
-
-const TEST_NONCE = 'cnon:test-nonce';
+import { getConnectRecipientKey } from '../src/domain/auth.js';
+import { checkoutCompletedEvent, postConnectWebhook } from './helpers/connectWebhook.js';
+import { createChargeCheckout } from '../src/relay/connectHub.js';
 
 function bookingIdFromLocation(location: string | null): number {
   assert.ok(location, 'expected a redirect Location header');
@@ -15,8 +15,30 @@ function bookingIdFromLocation(location: string | null): number {
   return Number(match![1]);
 }
 
-function paidCheckoutBody(fields: Record<string, string>): string {
-  return JSON.stringify({ ...fields, source_id: TEST_NONCE });
+async function payViaCheckout(
+  base: string,
+  relay: { enableCharges: (k: string) => void; charges: { sessionId: string }[] },
+  coach: { handle: string; connect_recipient_key: string | null },
+  bookingId: number,
+  body: Record<string, string>,
+): Promise<void> {
+  relay.enableCharges(getConnectRecipientKey(coach));
+  const checkoutRes = await fetch(`${base}/c/${coach.handle}/checkout/${bookingId}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+    redirect: 'manual',
+  });
+  assert.equal(checkoutRes.status, 303);
+  const stripeUrl = checkoutRes.headers.get('location');
+  assert.ok(stripeUrl?.includes('stripe.test'));
+  assert.equal(relay.charges.length, 1);
+  const sessionId = relay.charges[relay.charges.length - 1].sessionId;
+  const wh = await postConnectWebhook(
+    base,
+    checkoutCompletedEvent(sessionId, getConnectRecipientKey(coach), relay.charges[0].amountCents),
+  );
+  assert.equal(wh.status, 200);
 }
 
 test('drop-in payment: charges the fake relay with appFeeBps 500 and books the session', async () => {
@@ -34,18 +56,10 @@ test('drop-in payment: charges the fake relay with appFeeBps 500 and books the s
       assert.equal(bookRes.status, 303);
       const bookingId = bookingIdFromLocation(bookRes.headers.get('location'));
 
-      const checkoutRes = await fetch(`${base}/c/${seed.coach.handle}/checkout/${bookingId}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: paidCheckoutBody({ mode: 'dropin' }),
-        redirect: 'manual',
-      });
-      assert.equal(checkoutRes.status, 303);
+      await payViaCheckout(base, relay, seed.coach, bookingId, { mode: 'dropin' });
 
-      assert.equal(relay.charges.length, 1);
       assert.equal(relay.charges[0].appFeeBps, 500);
       assert.equal(relay.charges[0].amountCents, 3500);
-      assert.equal(relay.charges[0].sourceId, TEST_NONCE);
 
       const rows = await db.query<{ status: string; payment_source: string; gross_cents: number }>(
         'select status, payment_source, gross_cents from booking where id = $1',
@@ -76,16 +90,11 @@ test('package payment: charges once, creates a credit ledger row', async () => {
       });
       const bookingId = bookingIdFromLocation(bookRes.headers.get('location'));
 
-      const checkoutRes = await fetch(`${base}/c/${seed.coach.handle}/checkout/${bookingId}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: paidCheckoutBody({ mode: 'package', package_id: String(packageId) }),
-        redirect: 'manual',
+      await payViaCheckout(base, relay, seed.coach, bookingId, {
+        mode: 'package',
+        package_id: String(packageId),
       });
-      assert.equal(checkoutRes.status, 303);
 
-      assert.equal(relay.charges.length, 1);
-      assert.equal(relay.charges[0].appFeeBps, 500);
       assert.equal(relay.charges[0].amountCents, 30000);
 
       const creditRows = await db.query<{ remaining: number; source: string }>(
@@ -121,17 +130,27 @@ test('plan payment: subscribes once, creates a subscription and a credit ledger 
       });
       const bookingId = bookingIdFromLocation(bookRes.headers.get('location'));
 
+      relay.enableCharges(getConnectRecipientKey(seed.coach));
       const checkoutRes = await fetch(`${base}/c/${seed.coach.handle}/checkout/${bookingId}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: paidCheckoutBody({ mode: 'plan', plan_id: String(planId) }),
+        body: JSON.stringify({ mode: 'plan', plan_id: String(planId) }),
         redirect: 'manual',
       });
       assert.equal(checkoutRes.status, 303);
-
       assert.equal(relay.subscriptions.length, 1);
       assert.equal(relay.subscriptions[0].appFeeBps, 500);
-      assert.equal(relay.subscriptions[0].priceCents, 12000);
+
+      const sessionRow = await db.query<{ connect_checkout_session_id: string }>(
+        'select connect_checkout_session_id from booking where id = $1',
+        [bookingId],
+      );
+      const sessionId = sessionRow.rows[0].connect_checkout_session_id;
+      const wh = await postConnectWebhook(
+        base,
+        checkoutCompletedEvent(sessionId, getConnectRecipientKey(seed.coach), 12000),
+      );
+      assert.equal(wh.status, 200);
 
       const subRows = await db.query<{ status: string }>(
         "select status from subscription where plan_id = $1 and contact_phone = '+15555556666'",
@@ -171,17 +190,24 @@ test('idempotency: resubmitting the same checkout does not double-charge or doub
       });
       const bookingId = bookingIdFromLocation(bookRes.headers.get('location'));
 
+      relay.enableCharges(getConnectRecipientKey(seed.coach));
       const submit = () =>
         fetch(`${base}/c/${seed.coach.handle}/checkout/${bookingId}`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: paidCheckoutBody({ mode: 'dropin' }),
+          body: JSON.stringify({ mode: 'dropin' }),
           redirect: 'manual',
         });
 
       const first = await submit();
-      const second = await submit();
       assert.equal(first.status, 303);
+      const sessionId = relay.charges[0].sessionId;
+      await postConnectWebhook(
+        base,
+        checkoutCompletedEvent(sessionId, getConnectRecipientKey(seed.coach), 3500),
+      );
+
+      const second = await submit();
       assert.equal(second.status, 200);
 
       assert.equal(relay.charges.length, 1, 'expected exactly one charge across both submissions');
@@ -196,21 +222,22 @@ test('fake relay idempotency: two charge() calls with the same key return the ca
   await withRelay(async (relay) => {
     await freshDb();
     const recipientKey = 'test-recipient';
-    const first = await charge({
+    relay.enableCharges(recipientKey);
+    const first = await createChargeCheckout({
       recipientKey,
       idempotencyKey: 'key-1',
       amountCents: 1000,
-      sourceId: TEST_NONCE,
-      note: 'n',
+      successUrl: 'http://test/success',
+      cancelUrl: 'http://test/cancel',
     });
-    const second = await charge({
+    const second = await createChargeCheckout({
       recipientKey,
       idempotencyKey: 'key-1',
       amountCents: 1000,
-      sourceId: TEST_NONCE,
-      note: 'n',
+      successUrl: 'http://test/success',
+      cancelUrl: 'http://test/cancel',
     });
-    assert.equal(first.id, second.id);
+    assert.equal(first.sessionId, second.sessionId);
     assert.equal(relay.charges.length, 1);
   });
 });

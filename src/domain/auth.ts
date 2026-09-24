@@ -65,6 +65,8 @@ export async function getCoachBySessionToken(db: DbClient, token: string): Promi
   return result.rows.length > 0 ? result.rows[0].coach_id : null;
 }
 
+export type ConnectStatus = 'none' | 'pending' | 'ready';
+
 export interface CoachRow {
   id: number;
   handle: string;
@@ -73,25 +75,24 @@ export interface CoachRow {
   phone: string;
   tz: string;
   connect_recipient_key: string | null;
+  connect_status: ConnectStatus;
+  stripe_account_id: string | null;
 }
+
+const COACH_COLUMNS =
+  'id, handle, name, email, phone, tz, connect_recipient_key, connect_status, stripe_account_id';
 
 export function getConnectRecipientKey(coach: Pick<CoachRow, 'handle' | 'connect_recipient_key'>): string {
   return coach.connect_recipient_key ?? coach.handle;
 }
 
 export async function findCoachByPhone(db: DbClient, phone: string): Promise<CoachRow | null> {
-  const result = await db.query<CoachRow>(
-    'select id, handle, name, email, phone, tz, connect_recipient_key from coach where phone = $1',
-    [phone],
-  );
+  const result = await db.query<CoachRow>(`select ${COACH_COLUMNS} from coach where phone = $1`, [phone]);
   return result.rows[0] ?? null;
 }
 
 export async function findCoachByHandle(db: DbClient, handle: string): Promise<CoachRow | null> {
-  const result = await db.query<CoachRow>(
-    'select id, handle, name, email, phone, tz, connect_recipient_key from coach where handle = $1',
-    [handle],
-  );
+  const result = await db.query<CoachRow>(`select ${COACH_COLUMNS} from coach where handle = $1`, [handle]);
   return result.rows[0] ?? null;
 }
 
@@ -140,13 +141,12 @@ export async function createCoach(db: DbClient, input: NewCoachInput): Promise<C
     phone: input.phone,
     tz: input.tz,
     connect_recipient_key: handle,
+    connect_status: 'none',
+    stripe_account_id: null,
   };
 }
 
 export async function findCoachById(db: DbClient, id: number): Promise<CoachRow | null> {
-  const result = await db.query<CoachRow>(
-    'select id, handle, name, email, phone, tz from coach where id = $1',
-    [id],
-  );
+  const result = await db.query<CoachRow>(`select ${COACH_COLUMNS} from coach where id = $1`, [id]);
   return result.rows[0] ?? null;
 }

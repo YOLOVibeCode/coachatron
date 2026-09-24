@@ -16,7 +16,17 @@ import {
 import { generateWeekSessions, type WeeklySlot } from '../domain/scheduling.js';
 import { html, page, raw } from '../lib/html.js';
 import { formatLocal } from '../lib/time.js';
-import { getPackagesForCoach, getPlansForCoach, createPackage, createPlan } from '../domain/pricing.js';
+import {
+  getPackagesForCoach,
+  getPlansForCoach,
+  createPackage,
+  createPlan,
+  setPlanStripePriceId,
+} from '../domain/pricing.js';
+import { getConnectRecipientKey } from '../domain/auth.js';
+import { isChargesReady, loadCoachConnect, setConnectPending } from '../domain/connect.js';
+import { postAgreement, postOnboard, createPlanPrice } from '../relay/connectHub.js';
+import { appBaseUrl } from '../config.js';
 import { summarizeMoney } from '../domain/money.js';
 import { handleCoachMessage, loadScheduleAssistant, resolvePendingForCoach } from '../domain/assistant.js';
 import { parseCookies, serializeCookie } from '../lib/cookies.js';
@@ -575,11 +585,48 @@ coachRouter.post('/app/sessions/:id/cancel', requireAuth, async (req, res) => {
   res.redirect(303, '/app/schedule');
 });
 
+function renderConnectStatus(coach: { connect_status: string }): ReturnType<typeof html> {
+  if (coach.connect_status === 'ready') {
+    return html`<p class="muted">Stripe payouts: connected.</p>`;
+  }
+  if (coach.connect_status === 'pending') {
+    return html`<p class="muted">Stripe payouts: setup in progress.</p>
+      <form method="post" action="/app/connect/onboard"><button type="submit">Continue Stripe setup</button></form>`;
+  }
+  return html`<p class="muted">Connect Stripe to accept card payments.</p>
+    <form method="post" action="/app/connect/onboard"><button type="submit">Connect Stripe</button></form>`;
+}
+
+coachRouter.post('/app/connect/onboard', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const coach = await findCoachById(db, coachId);
+  if (!coach) {
+    res.redirect(303, '/signin');
+    return;
+  }
+  const recipientKey = getConnectRecipientKey(coach);
+  const base = appBaseUrl();
+  await postAgreement(recipientKey);
+  const { url, stripeAccountId } = await postOnboard(recipientKey, {
+    email: coach.email,
+    refreshUrl: `${base}/app/connect/return`,
+    returnUrl: `${base}/app/connect/return`,
+  });
+  await setConnectPending(db, coachId, stripeAccountId || null);
+  res.redirect(303, url);
+});
+
+coachRouter.get('/app/connect/return', requireAuth, async (_req, res) => {
+  res.redirect(303, '/app/money');
+});
+
 // ---- Screen 5: pricing (packages and plans) ----
 
 coachRouter.get('/app/pricing', requireAuth, async (_req, res) => {
   const db = getDb();
   const coachId = res.locals.coachId as number;
+  const coach = await loadCoachConnect(db, coachId);
   const packagesList = await getPackagesForCoach(db, coachId);
   const plansList = await getPlansForCoach(db, coachId);
 
@@ -587,6 +634,7 @@ coachRouter.get('/app/pricing', requireAuth, async (_req, res) => {
     page(
       'Pricing',
       html`<h1>Pricing & credits</h1>
+        ${coach ? renderConnectStatus(coach) : raw('')}
         <h2>Session packages</h2>
         ${packagesList.length === 0
           ? html`<p class="muted">No packages yet.</p>`
@@ -679,7 +727,20 @@ coachRouter.post('/app/pricing/plan', requireAuth, async (req, res) => {
   }
 
   const priceCents = Math.round(priceDollars * 100);
-  await createPlan(db, coachId, name, priceCents, creditsPerMonth);
+  const coach = await findCoachById(db, coachId);
+  let stripePriceId: string | null = null;
+  if (coach && isChargesReady(coach)) {
+    stripePriceId = await createPlanPrice({
+      recipientKey: getConnectRecipientKey(coach),
+      name,
+      priceCents,
+      idempotencyKey: `plan:${coachId}:${name}:${priceCents}`,
+    });
+  }
+  const planId = await createPlan(db, coachId, name, priceCents, creditsPerMonth, stripePriceId);
+  if (stripePriceId) {
+    await setPlanStripePriceId(db, planId, stripePriceId);
+  }
   res.redirect(303, '/app/pricing');
 });
 
@@ -767,6 +828,7 @@ coachRouter.post('/app/roster/:id/priority', requireAuth, async (req, res) => {
 coachRouter.get('/app/money', requireAuth, async (_req, res) => {
   const db = getDb();
   const coachId = res.locals.coachId as number;
+  const coach = await loadCoachConnect(db, coachId);
   const now = new Date();
 
   const summary = await summarizeMoney(db, coachId, now);
@@ -778,6 +840,7 @@ coachRouter.get('/app/money', requireAuth, async (_req, res) => {
     page(
       'Money',
       html`<h1>Money</h1>
+        ${coach ? renderConnectStatus(coach) : raw('')}
         <h2>This week</h2>
         <p class="money-figure">${formatDollars(summary.collectedThisWeekCents)}</p>
         <p class="muted">Collected (gross): ${formatDollars(summary.collectedThisWeekCents)}</p>

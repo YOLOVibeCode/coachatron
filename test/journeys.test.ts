@@ -4,6 +4,8 @@ import { freshDb } from './helpers/db.js';
 import { withServer } from './helpers/server.js';
 import { withRelay } from './helpers/relay.js';
 import { seedCoachWithSession, seedRosterMember, seedBookedSession, seedWaitlistEntry } from './helpers/fixtures.js';
+import { getConnectRecipientKey } from '../src/domain/auth.js';
+import { checkoutCompletedEvent, postConnectWebhook } from './helpers/connectWebhook.js';
 import { checkOverflow } from '../src/domain/cascade.js';
 
 /**
@@ -114,17 +116,25 @@ test('journey 2: parent books and pays a drop-in via the fake relay', async () =
       const bookingId = Number(/\/checkout\/(\d+)/.exec(bookRes.headers.get('location') ?? '')?.[1]);
       assert.ok(bookingId);
 
+      relay.enableCharges(getConnectRecipientKey(seed.coach));
       const checkoutRes = await fetch(`${base}/c/${seed.coach.handle}/checkout/${bookingId}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ mode: 'dropin', source_id: 'cnon:test-nonce' }),
+        body: JSON.stringify({ mode: 'dropin' }),
         redirect: 'manual',
       });
-      assert.equal(checkoutRes.status, 303, 'a successful drop-in payment redirects to the confirmation view');
+      assert.equal(checkoutRes.status, 303, 'a successful drop-in payment redirects to Stripe Checkout');
 
-      // The charge went through the fake Connect Hub relay, not a real
-      // Square account, with the locked 5% application fee.
       assert.equal(relay.charges.length, 1);
+      const sessionId = relay.charges[0].sessionId;
+      const wh = await postConnectWebhook(
+        base,
+        checkoutCompletedEvent(sessionId, getConnectRecipientKey(seed.coach), 3500),
+      );
+      assert.equal(wh.status, 200);
+
+      // The charge went through the fake Connect Hub relay, not a live
+      // Stripe account, with the locked 5% application fee.
       assert.equal(relay.charges[0].amountCents, 3500);
       assert.equal(relay.charges[0].appFeeBps, 500);
 

@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import { getDb, type DbClient } from '../db/client.js';
 import { findCoachByHandle, getConnectRecipientKey, normalizePhone, type CoachRow } from '../domain/auth.js';
-import { getFrontendConfig, type FrontendConfig } from '../relay/connectHub.js';
-import { html, page, raw, type SafeHtml } from '../lib/html.js';
+import { isChargesReady } from '../domain/connect.js';
+import { ConnectHubError } from '../relay/connectHub.js';
+import { appBaseUrl } from '../config.js';
+import { html, page, raw } from '../lib/html.js';
 import { formatLocal } from '../lib/time.js';
 import {
   getPackagesForCoach,
@@ -11,14 +13,13 @@ import {
   getPlanById,
   getCreditBalance,
   decrementCredit,
-  createCredit,
-  createSubscriptionRecord,
   createPendingBooking,
   getBooking,
   markBookingBooked,
   countBookedForSession,
-  chargeForBooking,
-  subscribeForBooking,
+  startChargeCheckoutForBooking,
+  startSubscriptionCheckoutForBooking,
+  saveCheckoutSession,
 } from '../domain/pricing.js';
 import { checkOverflow, acceptOffer, declineOffer, getOfferByToken } from '../domain/cascade.js';
 
@@ -275,9 +276,19 @@ publicRouter.get('/c/:handle/checkout/:bookingId', async (req, res) => {
   const packages = await getPackagesForCoach(db, coach.id);
   const plans = await getPlansForCoach(db, coach.id);
   const credit = await getCreditBalance(db, coach.id, ctx.booking.contact_phone);
+  const paidQuery = req.query.paid;
+  const awaitingPayment =
+    ctx.booking.connect_checkout_session_id !== null ||
+    paidQuery === '1' ||
+    (Array.isArray(paidQuery) && paidQuery[0] === '1');
 
   res.status(200).send(
-    await renderCheckoutPage(coach, ctx.session, ctx.booking.id, { packages, plans, credit }),
+    renderCheckoutPage(coach, ctx.session, ctx.booking.id, {
+      packages,
+      plans,
+      credit,
+      awaitingPayment,
+    }),
   );
 });
 
@@ -290,91 +301,33 @@ function renderAlreadyBooked(coach: CoachRow, session: SessionForBooking) {
   );
 }
 
-function cardPaymentScript(frontend: FrontendConfig): SafeHtml {
-  const appId = JSON.stringify(frontend.applicationId);
-  const locationId = JSON.stringify(frontend.locationId);
-  return raw(`<script src="${frontend.scriptUrl}"></script>
-<script>
-(function () {
-  const appId = ${appId};
-  const locationId = ${locationId};
-  let card;
-  async function ensureCard() {
-    if (card) return card;
-    if (!window.Square) throw new Error('Square SDK failed to load');
-    const payments = window.Square.payments(appId, locationId);
-    card = await payments.card();
-    await card.attach('#card-container');
-    return card;
-  }
-  document.querySelectorAll('form.pay-with-card').forEach((form) => {
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const sourceInput = form.querySelector('input[name="source_id"]');
-      if (!sourceInput) return;
-      if (sourceInput.value && String(sourceInput.value).startsWith('cnon:')) {
-        form.submit();
-        return;
-      }
-      try {
-        const c = await ensureCard();
-        const result = await c.tokenize();
-        if (result.status !== 'OK') throw new Error('tokenize failed');
-        sourceInput.value = result.token;
-        form.submit();
-      } catch {
-        alert('Card entry failed. Check your details and try again.');
-      }
-    });
-  });
-})();
-</script>`);
-}
-
 type CheckoutOptions = {
   packages: Array<{ id: number; name: string; credits: number; price_cents: number }>;
   plans: Array<{ id: number; name: string; price_cents: number; credits_per_month: number }>;
   credit: { remaining: number } | null;
+  awaitingPayment?: boolean;
 };
 
-async function loadFrontendConfig(coach: CoachRow): Promise<FrontendConfig | null> {
-  try {
-    return await getFrontendConfig(getConnectRecipientKey(coach));
-  } catch {
-    return null;
-  }
-}
-
-async function renderCheckoutPage(
+function renderCheckoutPage(
   coach: CoachRow,
   session: SessionForBooking,
   bookingId: number,
   options: CheckoutOptions,
-  error?: string,
-) {
-  const frontend = await loadFrontendConfig(coach);
-  return renderCheckout(coach, session, bookingId, options, frontend, error);
-}
-
-function renderCheckout(
-  coach: CoachRow,
-  session: SessionForBooking,
-  bookingId: number,
-  options: CheckoutOptions,
-  frontend: FrontendConfig | null,
   error?: string,
 ) {
   const action = `/c/${coach.handle}/checkout/${bookingId}`;
-  const cardBlock = frontend
-    ? raw(`<div id="card-container"></div>`)
-    : raw('<p class="error">Card payments are not available right now.</p>');
-  const payDisabled = frontend ? raw('') : raw(' disabled');
+  const paymentsReady = isChargesReady(coach);
+  const payDisabled = paymentsReady ? raw('') : raw(' disabled');
+  const paymentsNotice = paymentsReady
+    ? raw('')
+    : raw('<p class="error">Card payments are not available until this coach finishes payment setup.</p>');
 
   return page(
     'Checkout',
     html`<h1>${session.name}</h1>
       <p class="muted">${formatLocal(session.starts_at_utc, session.tz)}</p>
-      ${cardBlock}
+      ${options.awaitingPayment ? raw('<p class="muted">Completing your payment… If you already paid, this page will update shortly.</p>') : raw('')}
+      ${paymentsNotice}
 
       ${options.credit
         ? html`<form method="post" action="${action}">
@@ -383,38 +336,37 @@ function renderCheckout(
           </form>`
         : raw('')}
 
-      <form class="pay-with-card" method="post" action="${action}">
+      <form method="post" action="${action}">
         <input type="hidden" name="mode" value="dropin" />
-        <input type="hidden" name="source_id" value="" />
         <button type="submit"${payDisabled}>Pay $${(session.price_cents / 100).toFixed(2)} — this session only</button>
       </form>
 
       ${options.packages.map(
-        (p) => html`<form class="pay-with-card" method="post" action="${action}">
+        (p) => html`<form method="post" action="${action}">
           <input type="hidden" name="mode" value="package" />
           <input type="hidden" name="package_id" value="${p.id}" />
-          <input type="hidden" name="source_id" value="" />
           <button type="submit"${payDisabled}>Buy ${p.name} — ${p.credits} sessions for $${(p.price_cents / 100).toFixed(2)}</button>
         </form>`,
       )}
 
       ${options.plans.map(
-        (p) => html`<form class="pay-with-card" method="post" action="${action}">
+        (p) => html`<form method="post" action="${action}">
           <input type="hidden" name="mode" value="plan" />
           <input type="hidden" name="plan_id" value="${p.id}" />
-          <input type="hidden" name="source_id" value="" />
           <button type="submit"${payDisabled}>Subscribe to ${p.name} — $${(p.price_cents / 100).toFixed(2)}/mo</button>
         </form>`,
       )}
-      ${error ? raw(`<p class="error">${error}</p>`) : raw('')}
-      ${frontend ? cardPaymentScript(frontend) : raw('')}`,
+      ${error ? raw(`<p class="error">${error}</p>`) : raw('')}`,
   );
 }
 
-function parseCardNonce(body: unknown): string | null {
-  const value = (body as Record<string, unknown> | undefined)?.source_id;
-  if (typeof value !== 'string' || !value.startsWith('cnon:')) return null;
-  return value.trim();
+function checkoutUrls(coach: CoachRow, bookingId: number): { successUrl: string; cancelUrl: string } {
+  const base = appBaseUrl();
+  const path = `/c/${coach.handle}/checkout/${bookingId}`;
+  return {
+    successUrl: `${base}${path}?paid=1`,
+    cancelUrl: `${base}${path}`,
+  };
 }
 
 publicRouter.post('/c/:handle/checkout/:bookingId', async (req, res) => {
@@ -442,21 +394,20 @@ publicRouter.post('/c/:handle/checkout/:bookingId', async (req, res) => {
   const mode = field(req.body, 'mode');
   const phone = ctx.booking.contact_phone;
   const recipientKey = getConnectRecipientKey(coach);
-  const cardNonce = parseCardNonce(req.body);
 
-  if (mode !== 'credit' && !cardNonce) {
+  if (mode !== 'credit' && !isChargesReady(coach)) {
     const packages = await getPackagesForCoach(db, coach.id);
     const plans = await getPlansForCoach(db, coach.id);
     const credit = await getCreditBalance(db, coach.id, phone);
     res
       .status(422)
       .send(
-        await renderCheckoutPage(
+        renderCheckoutPage(
           coach,
           ctx.session,
           bookingId,
           { packages, plans, credit },
-          'Enter your card details to continue.',
+          'Card payments are not available for this coach yet.',
         ),
       );
     return;
@@ -490,22 +441,20 @@ publicRouter.post('/c/:handle/checkout/:bookingId', async (req, res) => {
       // Check if this session needs overflow cascade triggered
       void checkOverflow(db, ctx.session.id);
     } else if (mode === 'dropin') {
-      const result = await chargeForBooking(
+      const urls = checkoutUrls(coach, bookingId);
+      const result = await startChargeCheckoutForBooking(
         recipientKey,
         bookingId,
         'dropin',
         ctx.session.price_cents,
-        cardNonce!,
+        urls.successUrl,
+        urls.cancelUrl,
         `Drop-in: ${ctx.session.name}`,
+        ctx.booking.contact_email,
       );
-      await markBookingBooked(db, bookingId, {
-        paymentSource: 'DropIn',
-        creditId: null,
-        chargeId: result.id,
-        grossCents: result.amountCents,
-      });
-      // Check if this session needs overflow cascade triggered
-      void checkOverflow(db, ctx.session.id);
+      await saveCheckoutSession(db, bookingId, result.sessionId, 'dropin', null, null);
+      res.redirect(303, result.url);
+      return;
     } else if (mode === 'package') {
       const packageId = Number(field(req.body, 'package_id'));
       const pkg = await getPackageById(db, coach.id, packageId);
@@ -513,26 +462,20 @@ publicRouter.post('/c/:handle/checkout/:bookingId', async (req, res) => {
         res.status(404).send(notFound());
         return;
       }
-      const result = await chargeForBooking(
+      const urls = checkoutUrls(coach, bookingId);
+      const result = await startChargeCheckoutForBooking(
         recipientKey,
         bookingId,
         'package',
         pkg.price_cents,
-        cardNonce!,
+        urls.successUrl,
+        urls.cancelUrl,
         `Package: ${pkg.name}`,
+        ctx.booking.contact_email,
       );
-      const expiresAt = pkg.expires_days ? new Date(Date.now() + pkg.expires_days * 24 * 60 * 60 * 1000) : null;
-      // One credit of this package is consumed immediately by this booking,
-      // so the ledger starts at credits - 1.
-      const creditId = await createCredit(db, coach.id, phone, pkg.id, `package:${pkg.id}`, pkg.credits - 1, expiresAt);
-      await markBookingBooked(db, bookingId, {
-        paymentSource: 'PackageCredit',
-        creditId,
-        chargeId: result.id,
-        grossCents: result.amountCents,
-      });
-      // Check if this session needs overflow cascade triggered
-      void checkOverflow(db, ctx.session.id);
+      await saveCheckoutSession(db, bookingId, result.sessionId, 'package', packageId, null);
+      res.redirect(303, result.url);
+      return;
     } else if (mode === 'plan') {
       const planId = Number(field(req.body, 'plan_id'));
       const plan = await getPlanById(db, coach.id, planId);
@@ -540,49 +483,34 @@ publicRouter.post('/c/:handle/checkout/:bookingId', async (req, res) => {
         res.status(404).send(notFound());
         return;
       }
-      const result = await subscribeForBooking(
+      if (!plan.stripe_price_id) {
+        res.status(422).send(notFound());
+        return;
+      }
+      const urls = checkoutUrls(coach, bookingId);
+      const result = await startSubscriptionCheckoutForBooking(
         recipientKey,
         bookingId,
-        plan.price_cents,
-        phone,
-        plan.name,
-        cardNonce!,
+        plan.stripe_price_id,
+        urls.successUrl,
+        ctx.booking.contact_email ?? phone,
       );
-      await createSubscriptionRecord(db, plan.id, phone, result.id);
-      // First month's credit, one consumed immediately by this booking.
-      // Renewal (granting credits_per_month again each billing cycle) needs
-      // a Connect Hub webhook and is explicitly out of scope for Slice 1.
-      const creditId = await createCredit(db, coach.id, phone, null, `plan:${plan.id}`, plan.credits_per_month - 1, null);
-      await markBookingBooked(db, bookingId, {
-        paymentSource: 'Subscription',
-        creditId,
-        chargeId: result.id,
-        grossCents: plan.price_cents,
-      });
-      // Check if this session needs overflow cascade triggered
-      void checkOverflow(db, ctx.session.id);
+      await saveCheckoutSession(db, bookingId, result.sessionId, 'plan', null, planId);
+      res.redirect(303, result.url);
+      return;
     } else {
       res.status(422).send(notFound());
       return;
     }
-  } catch {
-    // Connect Hub call failed (non-2xx or network error): leave the booking
-    // pending and let the parent retry, per this milestone's plan — never a
-    // 500, never a silently-lost charge.
+  } catch (err) {
     const packages = await getPackagesForCoach(db, coach.id);
     const plans = await getPlansForCoach(db, coach.id);
     const credit = await getCreditBalance(db, coach.id, phone);
-    res
-      .status(502)
-      .send(
-        await renderCheckoutPage(
-          coach,
-          ctx.session,
-          bookingId,
-          { packages, plans, credit },
-          'Payment failed. Please try again.',
-        ),
-      );
+    const message =
+      err instanceof ConnectHubError && err.status === 428
+        ? 'This coach must finish payment setup before you can pay.'
+        : 'Payment failed. Please try again.';
+    res.status(502).send(renderCheckoutPage(coach, ctx.session, bookingId, { packages, plans, credit }, message));
     return;
   }
 

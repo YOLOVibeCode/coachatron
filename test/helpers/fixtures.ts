@@ -25,6 +25,8 @@ export async function seedCoachWithSession(
     email: 'jamie@example.com',
     tz: 'America/Chicago',
   });
+  await db.query("update coach set connect_status = 'ready' where id = $1", [coach.id]);
+  coach.connect_status = 'ready';
 
   const typeResult = await db.query<{ id: number }>(
     `insert into session_type (coach_id, name, duration_min, capacity, price_cents, active)
@@ -56,11 +58,12 @@ export async function seedPackage(db: DbClient, coachId: number, credits: number
 }
 
 export async function seedPlan(db: DbClient, coachId: number, creditsPerMonth: number, priceCents: number): Promise<number> {
+  const stripePriceId = `price_test_${coachId}_${priceCents}`;
   const result = await db.query<{ id: number }>(
-    `insert into plan (coach_id, name, price_cents, credits_per_month, active)
-     values ($1, 'Monthly', $2, $3, true)
+    `insert into plan (coach_id, name, price_cents, credits_per_month, stripe_price_id, active)
+     values ($1, 'Monthly', $2, $3, $4, true)
      returning id`,
-    [coachId, priceCents, creditsPerMonth],
+    [coachId, priceCents, creditsPerMonth, stripePriceId],
   );
   return result.rows[0].id;
 }

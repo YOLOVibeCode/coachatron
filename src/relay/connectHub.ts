@@ -7,174 +7,159 @@ function recipientPath(recipientKey: string, suffix: string): string {
   return `/connect/${PRODUCT}/recipients/${encodeURIComponent(recipientKey)}${suffix}`;
 }
 
-export interface FrontendConfig {
-  applicationId: string;
-  locationId: string;
-  scriptUrl: string;
-}
+export class ConnectHubError extends Error {
+  readonly status: number;
+  readonly code: string | null;
 
-export async function getFrontendConfig(recipientKey: string): Promise<FrontendConfig> {
-  const res = await relayFetch(recipientPath(recipientKey, '/frontend-config'));
-  if (!res.ok) throw new Error(`connect hub frontend-config failed: ${res.status}`);
-  const body = (await res.json()) as Record<string, unknown>;
-  const applicationId = String(body.application_id ?? body.applicationId ?? '');
-  const locationId = String(body.location_id ?? body.locationId ?? '');
-  const scriptUrl = String(
-    body.script_url ?? body.scriptUrl ?? 'https://sandbox.web.squarecdn.com/v1/square.js',
-  );
-  if (!applicationId || !locationId) {
-    throw new Error('connect hub frontend-config missing application or location id');
+  constructor(status: number, message: string, code: string | null = null) {
+    super(message);
+    this.status = status;
+    this.code = code;
   }
-  return { applicationId, locationId, scriptUrl };
 }
 
-export interface ChargeRequest {
+async function parseConnectResponse(res: Response, context: string): Promise<Record<string, unknown>> {
+  const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  if (res.ok) return body;
+  const code =
+    typeof body.error === 'string'
+      ? body.error
+      : typeof body.code === 'string'
+        ? body.code
+        : null;
+  throw new ConnectHubError(res.status, `${context}: ${res.status}`, code);
+}
+
+export async function postAgreement(recipientKey: string): Promise<void> {
+  const res = await relayFetch(recipientPath(recipientKey, '/agreement'), {
+    method: 'POST',
+    body: JSON.stringify({ agreement_version: 'v1' }),
+  });
+  await parseConnectResponse(res, 'connect hub agreement');
+}
+
+export interface OnboardResult {
+  url: string;
+  stripeAccountId: string;
+}
+
+export async function postOnboard(
+  recipientKey: string,
+  input: { email?: string; refreshUrl: string; returnUrl: string },
+): Promise<OnboardResult> {
+  const res = await relayFetch(recipientPath(recipientKey, '/onboard'), {
+    method: 'POST',
+    body: JSON.stringify({
+      email: input.email,
+      refresh_url: input.refreshUrl,
+      return_url: input.returnUrl,
+    }),
+  });
+  const body = await parseConnectResponse(res, 'connect hub onboard');
+  const url = String(body.url ?? '');
+  const stripeAccountId = String(body.stripe_account_id ?? body.stripeAccountId ?? '');
+  if (!url) throw new Error('connect hub onboard missing url');
+  return { url, stripeAccountId };
+}
+
+export interface ChargeCheckoutRequest {
   recipientKey: string;
   idempotencyKey: string;
   amountCents: number;
-  sourceId: string;
-  note: string;
+  successUrl: string;
+  cancelUrl?: string;
+  note?: string;
+  buyerEmailAddress?: string;
 }
 
-export interface ChargeResult {
-  id: string;
-  status: 'COMPLETED' | 'FAILED';
-  amountCents: number;
-  appFeeCents: number;
+export interface ChargeCheckoutResult {
+  url: string;
+  sessionId: string;
+  applicationFeeAmount: number;
 }
 
-function mapChargeResult(body: Record<string, unknown>): ChargeResult {
-  return {
-    id: String(body.id ?? body.charge_id ?? ''),
-    status: (body.status === 'FAILED' ? 'FAILED' : 'COMPLETED') as ChargeResult['status'],
-    amountCents: Number(body.amount_cents ?? body.amountCents ?? 0),
-    appFeeCents: Number(body.app_fee_cents ?? body.appFeeCents ?? 0),
-  };
-}
-
-export async function charge(req: ChargeRequest): Promise<ChargeResult> {
+export async function createChargeCheckout(req: ChargeCheckoutRequest): Promise<ChargeCheckoutResult> {
   const res = await relayFetch(recipientPath(req.recipientKey, '/charge'), {
     method: 'POST',
     body: JSON.stringify({
-      source_id: req.sourceId,
       amount_cents: req.amountCents,
-      idempotency_key: req.idempotencyKey,
+      success_url: req.successUrl,
+      cancel_url: req.cancelUrl,
       note: req.note,
+      buyer_email_address: req.buyerEmailAddress,
       app_fee_bps: APP_FEE_BPS,
+      idempotency_key: req.idempotencyKey,
     }),
   });
-  if (!res.ok) throw new Error(`connect hub charge failed: ${res.status}`);
-  return mapChargeResult((await res.json()) as Record<string, unknown>);
+  const body = await parseConnectResponse(res, 'connect hub charge');
+  const payment = (body.payment ?? {}) as Record<string, unknown>;
+  const url = String(body.url ?? '');
+  const sessionId = String(body.sessionId ?? body.session_id ?? '');
+  if (!url || !sessionId) throw new Error('connect hub charge missing url or sessionId');
+  return {
+    url,
+    sessionId,
+    applicationFeeAmount: Number(payment.application_fee_amount ?? payment.applicationFeeAmount ?? 0),
+  };
 }
 
-interface CatalogPlanResult {
-  planVariationId: string;
-}
-
-async function ensureCatalogPlan(
-  recipientKey: string,
-  planName: string,
-  priceCents: number,
-  idempotencyKey: string,
-): Promise<CatalogPlanResult> {
-  const res = await relayFetch(recipientPath(recipientKey, '/plans'), {
-    method: 'POST',
-    body: JSON.stringify({
-      name: planName,
-      price_cents: priceCents,
-      cadence: 'MONTHLY',
-      idempotency_key: idempotencyKey,
-    }),
-  });
-  if (!res.ok) throw new Error(`connect hub plan failed: ${res.status}`);
-  const body = (await res.json()) as Record<string, unknown>;
-  const planVariationId = String(
-    body.plan_variation_id ?? body.planVariationId ?? body.variation_id ?? body.id ?? '',
-  );
-  if (!planVariationId) throw new Error('connect hub plan missing variation id');
-  return { planVariationId };
-}
-
-async function createCustomer(
-  recipientKey: string,
-  contactPhone: string,
-  idempotencyKey: string,
-): Promise<string> {
-  const res = await relayFetch(recipientPath(recipientKey, '/customers'), {
-    method: 'POST',
-    body: JSON.stringify({
-      phone: contactPhone,
-      idempotency_key: `${idempotencyKey}:customer`,
-    }),
-  });
-  if (!res.ok) throw new Error(`connect hub customer failed: ${res.status}`);
-  const body = (await res.json()) as Record<string, unknown>;
-  const customerId = String(body.customer_id ?? body.customerId ?? body.id ?? '');
-  if (!customerId) throw new Error('connect hub customer missing id');
-  return customerId;
-}
-
-async function storeCardOnFile(
-  recipientKey: string,
-  customerId: string,
-  sourceId: string,
-  idempotencyKey: string,
-): Promise<string> {
-  const res = await relayFetch(
-    recipientPath(recipientKey, `/customers/${encodeURIComponent(customerId)}/cards`),
-    {
-      method: 'POST',
-      body: JSON.stringify({
-        source_id: sourceId,
-        idempotency_key: `${idempotencyKey}:card`,
-      }),
-    },
-  );
-  if (!res.ok) throw new Error(`connect hub card failed: ${res.status}`);
-  const body = (await res.json()) as Record<string, unknown>;
-  const cardId = String(body.card_id ?? body.cardId ?? body.id ?? '');
-  if (!cardId) throw new Error('connect hub card missing id');
-  return cardId;
-}
-
-export interface SubscribeRequest {
+export interface SubscriptionCheckoutRequest {
   recipientKey: string;
   idempotencyKey: string;
-  priceCents: number;
-  contactPhone: string;
-  planName: string;
-  sourceId: string;
+  priceId: string;
+  successUrl: string;
+  email?: string;
 }
 
-export interface SubscribeResult {
-  id: string;
-  status: 'ACTIVE' | 'FAILED';
+export interface SubscriptionCheckoutResult {
+  url: string;
+  applicationFeePercent: number;
+  sessionId: string;
 }
 
-export async function subscribe(req: SubscribeRequest): Promise<SubscribeResult> {
-  const { planVariationId } = await ensureCatalogPlan(
-    req.recipientKey,
-    req.planName,
-    req.priceCents,
-    req.idempotencyKey,
-  );
-  const customerId = await createCustomer(req.recipientKey, req.contactPhone, req.idempotencyKey);
-  const cardId = await storeCardOnFile(req.recipientKey, customerId, req.sourceId, req.idempotencyKey);
-
+export async function createSubscriptionCheckout(
+  req: SubscriptionCheckoutRequest,
+): Promise<SubscriptionCheckoutResult> {
   const res = await relayFetch(recipientPath(req.recipientKey, '/subscriptions'), {
     method: 'POST',
     body: JSON.stringify({
-      plan_variation_id: planVariationId,
-      customer_id: customerId,
-      card_id: cardId,
-      idempotency_key: req.idempotencyKey,
+      price_id: req.priceId,
+      success_url: req.successUrl,
+      email: req.email,
       app_fee_bps: APP_FEE_BPS,
+      idempotency_key: req.idempotencyKey,
     }),
   });
-  if (!res.ok) throw new Error(`connect hub subscribe failed: ${res.status}`);
-  const body = (await res.json()) as Record<string, unknown>;
+  const body = await parseConnectResponse(res, 'connect hub subscription');
+  const url = String(body.url ?? '');
+  const sessionId = String(body.sessionId ?? body.session_id ?? '');
+  if (!url) throw new Error('connect hub subscription missing url');
   return {
-    id: String(body.id ?? body.subscription_id ?? ''),
-    status: body.status === 'FAILED' ? 'FAILED' : 'ACTIVE',
+    url,
+    sessionId: sessionId || `sub_${req.idempotencyKey}`,
+    applicationFeePercent: Number(body.application_fee_percent ?? body.applicationFeePercent ?? 0),
   };
+}
+
+export interface CreatePlanPriceRequest {
+  recipientKey: string;
+  name: string;
+  priceCents: number;
+  idempotencyKey: string;
+}
+
+export async function createPlanPrice(req: CreatePlanPriceRequest): Promise<string> {
+  const res = await relayFetch(recipientPath(req.recipientKey, '/prices'), {
+    method: 'POST',
+    body: JSON.stringify({
+      name: req.name,
+      price_cents: req.priceCents,
+      cadence: 'monthly',
+      idempotency_key: req.idempotencyKey,
+    }),
+  });
+  const body = await parseConnectResponse(res, 'connect hub price');
+  const priceId = String(body.price_id ?? body.priceId ?? body.id ?? '');
+  if (!priceId) throw new Error('connect hub price missing price_id');
+  return priceId;
 }

@@ -3,11 +3,13 @@ import { PORT } from './config.js';
 import { coachRouter } from './routes/coach.js';
 import { publicRouter } from './routes/public.js';
 import { webhooksRouter } from './routes/webhooks.js';
+import { handleConnectWebhookRequest } from './routes/connectWebhook.js';
 import { getDb } from './db/client.js';
 import { runMigrations } from './db/migrate.js';
 
 export function createApp() {
   const app = express();
+  app.post('/webhooks/connect', express.raw({ type: 'application/json' }), handleConnectWebhookRequest);
   app.use(express.urlencoded({ extended: true }));
   app.use(express.json());
 

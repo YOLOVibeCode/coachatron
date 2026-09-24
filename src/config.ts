@@ -7,7 +7,18 @@ export const RELAY_API_KEY = process.env.RELAY_API_KEY ?? '';
 /** When set to `dev`, relay email sends are captured (e.g. smtp4dev) instead of delivered. */
 export const RELAY_APP_ENV = process.env.RELAY_APP_ENV ?? '';
 export const SESSION_SECRET = process.env.SESSION_SECRET ?? 'dev-only-not-a-secret';
+export function appBaseUrl(): string {
+  return (process.env.APP_BASE_URL ?? 'https://coachatron.com').replace(/\/$/, '');
+}
+
+/** @deprecated use appBaseUrl() in code paths that must respect test env overrides */
 export const APP_BASE_URL = process.env.APP_BASE_URL ?? 'https://coachatron.com';
+
+export function connectWebhookSecret(): string {
+  return process.env.CONNECT_WEBHOOK_SECRET ?? '';
+}
+
+export const CONNECT_WEBHOOK_PATH = '/webhooks/connect';
 export const LITELLM_BASE = process.env.LITELLM_BASE ?? 'https://ai.noctusoft.com/v1';
 export const LITELLM_MODEL = process.env.LITELLM_MODEL ?? 'coachatron';
 export const LITELLM_API_KEY = process.env.LITELLM_API_KEY ?? '';

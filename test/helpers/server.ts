@@ -8,9 +8,14 @@ export async function withServer(fn: (base: string) => Promise<void>): Promise<v
   const server: Server = app.listen(0);
   const address = server.address();
   const port = typeof address === 'object' && address ? address.port : 0;
+  const base = `http://127.0.0.1:${port}`;
+  const prevBase = process.env.APP_BASE_URL;
+  process.env.APP_BASE_URL = base;
   try {
-    await fn(`http://127.0.0.1:${port}`);
+    await fn(base);
   } finally {
+    if (prevBase === undefined) delete process.env.APP_BASE_URL;
+    else process.env.APP_BASE_URL = prevBase;
     server.close();
   }
 }

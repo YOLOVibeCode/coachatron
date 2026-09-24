@@ -1,24 +1,19 @@
 import express from 'express';
 import type { Server } from 'node:http';
 
-/** In-process fake for the Noctusoft relay (Connect Hub + SMS + email).
- * Tests point RELAY_BASE_URL at this instead of a live Square/Twilio/
- * SendGrid account, per SPEC.md: "Tests use a fake HTTP relay, not Square." */
-
 export interface FakeCharge {
   recipientKey: string;
   idempotencyKey: string;
   amountCents: number;
-  sourceId: string;
   appFeeBps: number;
+  sessionId: string;
 }
 
 export interface FakeSubscription {
   recipientKey: string;
   idempotencyKey: string;
-  priceCents: number;
+  priceId: string;
   appFeeBps: number;
-  contactPhone: string;
 }
 
 export interface FakeSms {
@@ -31,6 +26,7 @@ export interface FakeRelay {
   charges: FakeCharge[];
   subscriptions: FakeSubscription[];
   sms: FakeSms[];
+  enableCharges(recipientKey: string): void;
   close(): Promise<void>;
 }
 
@@ -50,37 +46,38 @@ export async function startFakeRelay(): Promise<FakeRelay> {
   const charges: FakeCharge[] = [];
   const chargeByKey = new Map<string, Record<string, unknown>>();
   const subscriptions: FakeSubscription[] = [];
+  const subByKey = new Map<string, Record<string, unknown>>();
   const sms: FakeSms[] = [];
-  const connectedRecipients = new Set<string>();
-  const lastPlanPriceByRecipient = new Map<string, number>();
-  const lastCustomerPhoneByRecipient = new Map<string, string>();
+  const agreedRecipients = new Set<string>();
+  const chargesEnabled = new Set<string>();
 
   const product = 'coachatron';
 
-  app.use(`/connect/${product}/recipients/:recipientKey`, (req, _res, next) => {
-    connectedRecipients.add(req.params.recipientKey);
-    next();
-  });
-
-  app.get(`/connect/${product}/recipients/:recipientKey/frontend-config`, (req, res) => {
-    if (!requireApiKey(req, res)) return;
-    res.json({
-      application_id: 'sandbox-sq0idb-test',
-      location_id: 'LTESTLOCATION',
-      script_url: 'https://sandbox.web.squarecdn.com/v1/square.js',
-    });
-  });
-
   app.post(`/connect/${product}/recipients/:recipientKey/agreement`, (req, res) => {
     if (!requireApiKey(req, res)) return;
-    connectedRecipients.add(req.params.recipientKey);
+    agreedRecipients.add(req.params.recipientKey);
     res.json({ ok: true });
+  });
+
+  app.post(`/connect/${product}/recipients/:recipientKey/onboard`, (req, res) => {
+    if (!requireApiKey(req, res)) return;
+    const recipientKey = req.params.recipientKey;
+    agreedRecipients.add(recipientKey);
+    const accountId = `acct_${recipientKey}`;
+    res.json({
+      url: `https://stripe.test/onboard/${recipientKey}`,
+      stripe_account_id: accountId,
+    });
   });
 
   app.post(`/connect/${product}/recipients/:recipientKey/charge`, (req, res) => {
     if (!requireApiKey(req, res)) return;
     const recipientKey = req.params.recipientKey;
-    if (!connectedRecipients.has(recipientKey)) {
+    if (!agreedRecipients.has(recipientKey)) {
+      res.status(428).json({ error: 'AGREEMENT_REQUIRED' });
+      return;
+    }
+    if (!chargesEnabled.has(recipientKey)) {
       res.status(428).json({ error: 'recipient not connected' });
       return;
     }
@@ -91,70 +88,57 @@ export async function startFakeRelay(): Promise<FakeRelay> {
     }
     const amountCents = Number(req.body.amount_cents);
     const appFeeBps = Number(req.body.app_fee_bps);
-    const sourceId = String(req.body.source_id ?? '');
+    const sessionId = `cs_test_${charges.length + 1}`;
     const body = {
-      id: `ch_${charges.length + 1}`,
-      status: 'COMPLETED',
-      amount_cents: amountCents,
-      app_fee_cents: Math.round((amountCents * appFeeBps) / 10000),
+      url: `https://stripe.test/checkout/${sessionId}`,
+      sessionId,
+      payment: { application_fee_amount: Math.round((amountCents * appFeeBps) / 10000) },
     };
     charges.push({
       recipientKey,
       idempotencyKey,
       amountCents,
-      sourceId,
       appFeeBps,
+      sessionId,
     });
     if (idempotencyKey) chargeByKey.set(idempotencyKey, body);
     res.json(body);
   });
 
-  app.post(`/connect/${product}/recipients/:recipientKey/plans`, (req, res) => {
+  app.post(`/connect/${product}/recipients/:recipientKey/prices`, (req, res) => {
     if (!requireApiKey(req, res)) return;
-    if (!connectedRecipients.has(req.params.recipientKey)) {
+    const recipientKey = req.params.recipientKey;
+    if (!chargesEnabled.has(recipientKey)) {
       res.status(428).json({ error: 'recipient not connected' });
       return;
     }
     const priceCents = Number(req.body.price_cents);
-    lastPlanPriceByRecipient.set(req.params.recipientKey, priceCents);
-    res.json({
-      plan_variation_id: `pv_${priceCents}`,
-    });
-  });
-
-  app.post(`/connect/${product}/recipients/:recipientKey/customers`, (req, res) => {
-    if (!requireApiKey(req, res)) return;
-    if (!connectedRecipients.has(req.params.recipientKey)) {
-      res.status(428).json({ error: 'recipient not connected' });
-      return;
-    }
-    const phone = String(req.body.phone ?? '');
-    lastCustomerPhoneByRecipient.set(req.params.recipientKey, phone);
-    res.json({ customer_id: `cust_${phone.replace(/\W/g, '')}` });
-  });
-
-  app.post(`/connect/${product}/recipients/:recipientKey/customers/:customerId/cards`, (req, res) => {
-    if (!requireApiKey(req, res)) return;
-    res.json({ card_id: `card_${req.params.customerId}` });
+    res.json({ price_id: `price_${recipientKey}_${priceCents}` });
   });
 
   app.post(`/connect/${product}/recipients/:recipientKey/subscriptions`, (req, res) => {
     if (!requireApiKey(req, res)) return;
     const recipientKey = req.params.recipientKey;
-    if (!connectedRecipients.has(recipientKey)) {
+    if (!agreedRecipients.has(recipientKey) || !chargesEnabled.has(recipientKey)) {
       res.status(428).json({ error: 'recipient not connected' });
       return;
     }
     const idempotencyKey = String(req.body.idempotency_key ?? '');
+    if (idempotencyKey && subByKey.has(idempotencyKey)) {
+      res.json(subByKey.get(idempotencyKey));
+      return;
+    }
     const appFeeBps = Number(req.body.app_fee_bps);
-    subscriptions.push({
-      recipientKey,
-      idempotencyKey,
-      priceCents: lastPlanPriceByRecipient.get(recipientKey) ?? 0,
-      appFeeBps,
-      contactPhone: lastCustomerPhoneByRecipient.get(recipientKey) ?? '',
-    });
-    res.json({ id: `sub_${subscriptions.length}`, status: 'ACTIVE' });
+    const priceId = String(req.body.price_id ?? '');
+    const sessionId = `cs_sub_${subscriptions.length + 1}`;
+    const body = {
+      url: `https://stripe.test/checkout/${sessionId}`,
+      sessionId,
+      application_fee_percent: appFeeBps / 100,
+    };
+    subscriptions.push({ recipientKey, idempotencyKey, priceId, appFeeBps });
+    if (idempotencyKey) subByKey.set(idempotencyKey, body);
+    res.json(body);
   });
 
   app.post('/sms/send', (req, res) => {
@@ -172,11 +156,17 @@ export async function startFakeRelay(): Promise<FakeRelay> {
   const address = server.address();
   const port = typeof address === 'object' && address ? address.port : 0;
 
-  return {
+  const relay: FakeRelay = {
     url: `http://127.0.0.1:${port}`,
     charges,
     subscriptions,
     sms,
+    enableCharges(recipientKey: string) {
+      agreedRecipients.add(recipientKey);
+      chargesEnabled.add(recipientKey);
+    },
     close: () => new Promise((resolve) => server.close(() => resolve())),
   };
+
+  return relay;
 }
