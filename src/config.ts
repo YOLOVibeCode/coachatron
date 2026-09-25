@@ -4,6 +4,14 @@ export const DATABASE_URL = process.env.DATABASE_URL ?? '';
 export const NODE_ENV = process.env.NODE_ENV ?? 'development';
 export const RELAY_BASE_URL = process.env.RELAY_BASE_URL ?? 'http://localhost:4000';
 export const RELAY_API_KEY = process.env.RELAY_API_KEY ?? '';
+/** HMAC secret for connect buy links and event v1. Never a Square/Stripe key. */
+export const RELAY_WEBHOOK_SECRET = process.env.RELAY_WEBHOOK_SECRET ?? '';
+export const STORE_BASE_URL = (process.env.STORE_BASE_URL ?? process.env.RELAY_BASE_URL ?? 'https://store.noctusoft.com').replace(
+  /\/$/,
+  '',
+);
+export const STORE_WEBHOOK_URL =
+  process.env.STORE_WEBHOOK_URL ?? `${process.env.APP_BASE_URL ?? 'https://coachatron.com'}/webhooks/store`;
 /** When set to `dev`, relay email sends are captured (e.g. smtp4dev) instead of delivered. */
 export const RELAY_APP_ENV = process.env.RELAY_APP_ENV ?? '';
 export const SESSION_SECRET = process.env.SESSION_SECRET ?? 'dev-only-not-a-secret';

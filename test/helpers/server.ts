@@ -8,9 +8,14 @@ export async function withServer(fn: (base: string) => Promise<void>): Promise<v
   const server: Server = app.listen(0);
   const address = server.address();
   const port = typeof address === 'object' && address ? address.port : 0;
+  const base = `http://127.0.0.1:${port}`;
+  const prev = process.env.STORE_WEBHOOK_URL;
+  process.env.STORE_WEBHOOK_URL = `${base}/webhooks/store`;
   try {
-    await fn(`http://127.0.0.1:${port}`);
+    await fn(base);
   } finally {
+    if (prev === undefined) delete process.env.STORE_WEBHOOK_URL;
+    else process.env.STORE_WEBHOOK_URL = prev;
     server.close();
   }
 }
