@@ -26,11 +26,19 @@ export interface FakeSms {
   body: string;
 }
 
+export interface FakeBuyLink {
+  product: string;
+  seller: string;
+  amountCents: number;
+  user: string;
+}
+
 export interface FakeRelay {
   url: string;
   charges: FakeCharge[];
   subscriptions: FakeSubscription[];
   sms: FakeSms[];
+  buyLinks: FakeBuyLink[];
   close(): Promise<void>;
 }
 
@@ -51,6 +59,7 @@ export async function startFakeRelay(): Promise<FakeRelay> {
   const chargeByKey = new Map<string, Record<string, unknown>>();
   const subscriptions: FakeSubscription[] = [];
   const sms: FakeSms[] = [];
+  const buyLinks: FakeBuyLink[] = [];
   const connectedRecipients = new Set<string>();
   const lastPlanPriceByRecipient = new Map<string, number>();
   const lastCustomerPhoneByRecipient = new Map<string, string>();
@@ -157,6 +166,17 @@ export async function startFakeRelay(): Promise<FakeRelay> {
     res.json({ id: `sub_${subscriptions.length}`, status: 'ACTIVE' });
   });
 
+  app.get('/buy/connect/:product/:seller', (req, res) => {
+    buyLinks.push({
+      product: String(req.params.product),
+      seller: String(req.params.seller),
+      amountCents: Number(req.query.amount ?? 0),
+      user: String(req.query.user ?? ''),
+    });
+    const ret = String(req.query.return ?? '/');
+    res.redirect(303, ret);
+  });
+
   app.post('/sms/send', (req, res) => {
     if (!requireApiKey(req, res)) return;
     sms.push({ to: String(req.body.to), body: String(req.body.body) });
@@ -177,6 +197,7 @@ export async function startFakeRelay(): Promise<FakeRelay> {
     charges,
     subscriptions,
     sms,
+    buyLinks,
     close: () => new Promise((resolve) => server.close(() => resolve())),
   };
 }
