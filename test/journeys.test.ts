@@ -5,6 +5,7 @@ import { withServer } from './helpers/server.js';
 import { withRelay } from './helpers/relay.js';
 import { seedCoachWithSession, seedRosterMember, seedBookedSession, seedWaitlistEntry } from './helpers/fixtures.js';
 import { checkOverflow } from '../src/domain/cascade.js';
+import { buyerFromLocation, postStorePaid } from './helpers/store-event.js';
 
 /**
  * End-to-end smoke test for the three journeys named in the idea's "I will
@@ -117,16 +118,19 @@ test('journey 2: parent books and pays a drop-in via the fake relay', async () =
       const checkoutRes = await fetch(`${base}/c/${seed.coach.handle}/checkout/${bookingId}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ mode: 'dropin', source_id: 'cnon:test-nonce' }),
+        body: JSON.stringify({ mode: 'dropin' }),
         redirect: 'manual',
       });
-      assert.equal(checkoutRes.status, 303, 'a successful drop-in payment redirects to the confirmation view');
+      assert.equal(checkoutRes.status, 303, 'a successful drop-in starts the hosted buy link');
+      const location = checkoutRes.headers.get('location');
+      assert.match(location ?? '', /\/buy\/connect\/coachatron\//);
 
-      // The charge went through the fake Connect Hub relay, not a real
-      // Square account, with the locked 5% application fee.
-      assert.equal(relay.charges.length, 1);
-      assert.equal(relay.charges[0].amountCents, 3500);
-      assert.equal(relay.charges[0].appFeeBps, 500);
+      const hook = await postStorePaid(base, {
+        userId: buyerFromLocation(location),
+        amountCents: 3500,
+        paymentId: 'ch_journey',
+      });
+      assert.equal(hook.status, 200);
 
       const bookingRows = await db.query<{ status: string; payment_source: string }>(
         'select status, payment_source from booking where id = $1',
