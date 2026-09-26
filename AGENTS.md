@@ -9,7 +9,7 @@ files win over a generic stack preference.
 - `design/index.html` is the Postcard reference. Match it. Do not replace the product with that file.
 - Server-rendered HTML. No SPA. Mobile first.
 - One service. Postgres in production. Tests may use PGlite so `npm test` needs no daemon.
-- Payments go through the Noctusoft Connect Hub HTTP API (`productKey` `coachatron`, fee 500 bps). Do not import a Square SDK.
+- Payments go through signed Noctusoft marketplace buy links (`GET /buy/connect/coachatron/:seller`). Do not import a Square SDK or card form.
 - SMS and email go through the Noctusoft relay. Do not import Twilio or SendGrid.
 - The model is one interface. The production client calls LiteLLM on litellm-vm at `https://ai.noctusoft.com/v1`. No provider SDK. Tests use a fake. The text assistant (SMS + the schedule-screen field) is the only caller.
 

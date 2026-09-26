@@ -1,0 +1,17 @@
+{
+  "name": "@noctusoft/store-client",
+  "version": "1.0.0",
+  "description": "App side of the Noctusoft store: buy links, webhook verification, event v1 dispatch, and relay calls. No payment-provider types.",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}
