@@ -4,10 +4,7 @@ import { freshDb } from './helpers/db.js';
 import { withServer } from './helpers/server.js';
 import { withRelay } from './helpers/relay.js';
 import { seedCoachWithSession, seedPackage, seedPlan } from './helpers/fixtures.js';
-import { charge } from '../src/relay/connectHub.js';
 import { buyerFromLocation, postStorePaid } from './helpers/store-event.js';
-
-const TEST_NONCE = 'cnon:test-nonce';
 
 function bookingIdFromLocation(location: string | null): number {
   assert.ok(location, 'expected a redirect Location header');
@@ -169,25 +166,25 @@ test('idempotency: a second paid event does not double-book', async () => {
   });
 });
 
-test('fake relay idempotency: two charge() calls with the same key return the cached result, not a second charge', async () => {
-  await withRelay(async (relay) => {
-    await freshDb();
-    const recipientKey = 'test-recipient';
-    const first = await charge({
-      recipientKey,
-      idempotencyKey: 'key-1',
-      amountCents: 1000,
-      sourceId: TEST_NONCE,
-      note: 'n',
-    });
-    const second = await charge({
-      recipientKey,
-      idempotencyKey: 'key-1',
-      amountCents: 1000,
-      sourceId: TEST_NONCE,
-      note: 'n',
-    });
-    assert.equal(first.id, second.id);
-    assert.equal(relay.charges.length, 1);
+test('the buy link names the Connect app from RELAY_CONNECT_PRODUCT', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 2, priceCents: 3500 });
+    process.env.RELAY_CONNECT_PRODUCT = 'coachatron-dev';
+    try {
+      await withServer(async (base) => {
+        const bookingId = await bookSession(base, seed.coach.handle, seed.sessionId, 'Eli', '5553334444');
+        const res = await fetch(`${base}/c/${seed.coach.handle}/checkout/${bookingId}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ mode: 'dropin' }),
+          redirect: 'manual',
+        });
+        assert.equal(res.status, 303);
+        assert.match(res.headers.get('location') ?? '', new RegExp(`/buy/connect/coachatron-dev/${seed.coach.handle}\\?`));
+      });
+    } finally {
+      delete process.env.RELAY_CONNECT_PRODUCT;
+    }
   });
 });

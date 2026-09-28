@@ -1,5 +1,6 @@
 import { APP_BASE_URL } from '../config.js';
 import { signConnectBuyLink } from '../lib/store-client.js';
+import { connectProduct } from './seller.js';
 
 export type PayMode = 'dropin' | 'package' | 'plan';
 
@@ -41,7 +42,7 @@ export function connectBuyUrl(args: {
   if (!secret) throw new Error('RELAY_WEBHOOK_SECRET is not configured');
   const { url } = signConnectBuyLink({
     secret,
-    product: 'coachatron',
+    product: connectProduct(),
     seller: args.seller,
     amountCents: args.amountCents,
     currency: 'USD',

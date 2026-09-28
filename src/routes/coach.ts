@@ -11,8 +11,11 @@ import {
   findCoachByPhone,
   findCoachById,
   createCoach,
+  getConnectRecipientKey,
   type CoachRow,
 } from '../domain/auth.js';
+import { APP_BASE_URL, APP_FEE_BPS, SELLER_AGREEMENT_VERSION } from '../config.js';
+import { acceptSellerAgreement, getSellerStatus, startSellerOnboarding } from '../relay/seller.js';
 import { generateWeekSessions, type WeeklySlot } from '../domain/scheduling.js';
 import { html, page, raw } from '../lib/html.js';
 import { formatLocal } from '../lib/time.js';
@@ -762,22 +765,71 @@ coachRouter.post('/app/roster/:id/priority', requireAuth, async (req, res) => {
   res.redirect(303, '/app/roster');
 });
 
-// ---- Screen 7: money (read-only summary) ----
+// ---- Screen 7: money (read-only summary + connecting payments) ----
 
-coachRouter.get('/app/money', requireAuth, async (_req, res) => {
+type PaymentsState = { kind: 'connected' } | { kind: 'finish' } | { kind: 'start' } | { kind: 'unavailable' };
+
+async function loadPaymentsState(coach: CoachRow): Promise<PaymentsState> {
+  try {
+    const status = await getSellerStatus(getConnectRecipientKey(coach));
+    if (status?.chargesEnabled) return { kind: 'connected' };
+    if (status?.agreementVersion === SELLER_AGREEMENT_VERSION) return { kind: 'finish' };
+    return { kind: 'start' };
+  } catch {
+    return { kind: 'unavailable' };
+  }
+}
+
+const RETURN_NOTICES: Record<string, string> = {
+  connected: 'Payments are connected.',
+  pending: 'Your payment account is still being reviewed. Athletes can pay you once it is approved.',
+  failed: 'Payments were not connected. Try again.',
+};
+
+function renderPaymentsCard(state: PaymentsState, notice: string | null, error: string | null) {
+  const feePercent = `${APP_FEE_BPS / 100}%`;
+  const body =
+    state.kind === 'connected'
+      ? html`<p><strong>Payments connected.</strong></p>
+          <p class="muted">Athletes pay you directly. Coachatron keeps ${feePercent} of each payment.</p>`
+      : state.kind === 'unavailable'
+        ? html`<p class="muted">Payments status is unavailable right now. Try again in a minute.</p>`
+        : state.kind === 'finish'
+          ? html`<p class="muted">Finish setting up your payment account so athletes can pay you.</p>
+              <form method="post" action="/app/money/payments">
+                <button type="submit">Finish connecting payments</button>
+              </form>`
+          : html`<p class="muted">Connect a payment account so athletes can pay you when they book.</p>
+              <ul class="muted">
+                <li>You are the merchant. Payments settle to your own account; Coachatron never holds them.</li>
+                <li>Coachatron keeps ${feePercent} of each payment, on top of card processing.</li>
+                <li>You issue refunds and handle disputes. Coachatron does not refund its fee on partial refunds.</li>
+              </ul>
+              <form method="post" action="/app/money/payments">
+                <label><input type="checkbox" name="agree" value="1" /> I accept the Coachatron marketplace terms (${SELLER_AGREEMENT_VERSION}).</label>
+                <button type="submit">Connect payments</button>
+              </form>`;
+  return html`<h2>Payments</h2>
+    <div class="card">
+      ${notice ? html`<p>${notice}</p>` : raw('')}
+      ${body}
+      ${error ? html`<p class="error">${error}</p>` : raw('')}
+    </div>`;
+}
+
+async function renderMoney(res: Response, coach: CoachRow, opts: { status?: number; notice?: string | null; error?: string | null } = {}) {
   const db = getDb();
-  const coachId = res.locals.coachId as number;
-  const now = new Date();
-
-  const summary = await summarizeMoney(db, coachId, now);
+  const summary = await summarizeMoney(db, coach.id, new Date());
+  const payments = await loadPaymentsState(coach);
 
   // Format dollars for display
   const formatDollars = (cents: number) => `$${(cents / 100).toFixed(2)}`;
 
-  res.status(200).send(
+  res.status(opts.status ?? 200).send(
     page(
       'Money',
       html`<h1>Money</h1>
+        ${renderPaymentsCard(payments, opts.notice ?? null, opts.error ?? null)}
         <h2>This week</h2>
         <p class="money-figure">${formatDollars(summary.collectedThisWeekCents)}</p>
         <p class="muted">Collected (gross): ${formatDollars(summary.collectedThisWeekCents)}</p>
@@ -794,6 +846,42 @@ coachRouter.get('/app/money', requireAuth, async (_req, res) => {
         <a class="action" href="/app/schedule">Back to schedule</a>`,
     ),
   );
+}
+
+coachRouter.get('/app/money', requireAuth, async (req, res) => {
+  const coach = await findCoachById(getDb(), res.locals.coachId as number);
+  if (!coach) {
+    res.redirect(303, '/signin');
+    return;
+  }
+  const returned = typeof req.query.seller === 'string' ? req.query.seller : '';
+  await renderMoney(res, coach, { notice: Object.hasOwn(RETURN_NOTICES, returned) ? RETURN_NOTICES[returned] : null });
+});
+
+coachRouter.post('/app/money/payments', requireAuth, async (req, res) => {
+  const coach = await findCoachById(getDb(), res.locals.coachId as number);
+  if (!coach) {
+    res.redirect(303, '/signin');
+    return;
+  }
+  const sellerKey = getConnectRecipientKey(coach);
+  try {
+    const status = await getSellerStatus(sellerKey);
+    if (status?.agreementVersion !== SELLER_AGREEMENT_VERSION) {
+      if (field(req.body, 'agree') !== '1') {
+        await renderMoney(res, coach, { status: 422, error: 'Check the box to accept the marketplace terms.' });
+        return;
+      }
+      await acceptSellerAgreement(sellerKey, SELLER_AGREEMENT_VERSION);
+    }
+    const url = await startSellerOnboarding(sellerKey, {
+      returnUrl: `${process.env.APP_BASE_URL ?? APP_BASE_URL}/app/money`,
+      email: coach.email,
+    });
+    res.redirect(303, url);
+  } catch {
+    await renderMoney(res, coach, { status: 502, error: 'Payments could not start. Try again in a minute.' });
+  }
 });
 
 export { requireAuth, formatLocal };

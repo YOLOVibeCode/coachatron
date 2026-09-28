@@ -1,25 +1,9 @@
 import express from 'express';
 import type { Server } from 'node:http';
 
-/** In-process fake for the Noctusoft relay (Connect Hub + SMS + email).
- * Tests point RELAY_BASE_URL at this instead of a live Square/Twilio/
- * SendGrid account, per SPEC.md: "Tests use a fake HTTP relay, not Square." */
-
-export interface FakeCharge {
-  recipientKey: string;
-  idempotencyKey: string;
-  amountCents: number;
-  sourceId: string;
-  appFeeBps: number;
-}
-
-export interface FakeSubscription {
-  recipientKey: string;
-  idempotencyKey: string;
-  priceCents: number;
-  appFeeBps: number;
-  contactPhone: string;
-}
+/** In-process fake for the Noctusoft relay (Connect sellers + SMS + email).
+ * Tests point RELAY_BASE_URL at this instead of a live relay, per SPEC.md:
+ * "Tests use a fake HTTP relay, not Square." */
 
 export interface FakeSms {
   to: string;
@@ -33,12 +17,30 @@ export interface FakeBuyLink {
   user: string;
 }
 
+export interface FakeSeller {
+  product: string;
+  sellerKey: string;
+  agreementVersion: string | null;
+  chargesEnabled: boolean;
+}
+
+export interface FakeOnboard {
+  product: string;
+  sellerKey: string;
+  returnUrl: string;
+  email: string | null;
+}
+
 export interface FakeRelay {
   url: string;
-  charges: FakeCharge[];
-  subscriptions: FakeSubscription[];
   sms: FakeSms[];
   buyLinks: FakeBuyLink[];
+  onboards: FakeOnboard[];
+  /** The relay's current agreement_version for every product. */
+  agreementVersion: string;
+  seller(product: string, sellerKey: string): FakeSeller | undefined;
+  /** What the provider's onboarding does once the coach finishes it. */
+  enableCharges(product: string, sellerKey: string): void;
   close(): Promise<void>;
 }
 
@@ -55,115 +57,58 @@ export async function startFakeRelay(): Promise<FakeRelay> {
   const app = express();
   app.use(express.json());
 
-  const charges: FakeCharge[] = [];
-  const chargeByKey = new Map<string, Record<string, unknown>>();
-  const subscriptions: FakeSubscription[] = [];
   const sms: FakeSms[] = [];
   const buyLinks: FakeBuyLink[] = [];
-  const connectedRecipients = new Set<string>();
-  const lastPlanPriceByRecipient = new Map<string, number>();
-  const lastCustomerPhoneByRecipient = new Map<string, string>();
+  const onboards: FakeOnboard[] = [];
+  const sellers = new Map<string, FakeSeller>();
+  const id = (product: string, sellerKey: string) => `${product}/${sellerKey}`;
 
-  const product = 'coachatron';
+  const relay = {
+    agreementVersion: 'v1',
+  };
 
-  app.use(`/connect/${product}/recipients/:recipientKey`, (req, _res, next) => {
-    connectedRecipients.add(req.params.recipientKey);
-    next();
-  });
+  const seller = '/connect/:product/recipients/:sellerKey';
 
-  app.get(`/connect/${product}/recipients/:recipientKey/frontend-config`, (req, res) => {
+  app.get(seller, (req, res) => {
     if (!requireApiKey(req, res)) return;
+    const s = sellers.get(id(req.params.product, req.params.sellerKey));
+    if (!s) {
+      res.status(404).json({ code: 'RECIPIENT_NOT_FOUND' });
+      return;
+    }
     res.json({
-      application_id: 'sandbox-sq0idb-test',
-      location_id: 'LTESTLOCATION',
-      script_url: 'https://sandbox.web.squarecdn.com/v1/square.js',
+      sellerKey: s.sellerKey,
+      status: s.chargesEnabled ? 'active' : 'not_connected',
+      chargesEnabled: s.chargesEnabled,
+      payoutsEnabled: s.chargesEnabled,
+      agreementVersion: s.agreementVersion,
     });
   });
 
-  app.post(`/connect/${product}/recipients/:recipientKey/agreement`, (req, res) => {
+  app.post(`${seller}/agreement`, (req, res) => {
     if (!requireApiKey(req, res)) return;
-    connectedRecipients.add(req.params.recipientKey);
-    res.json({ ok: true });
-  });
-
-  app.post(`/connect/${product}/recipients/:recipientKey/charge`, (req, res) => {
-    if (!requireApiKey(req, res)) return;
-    const recipientKey = req.params.recipientKey;
-    if (!connectedRecipients.has(recipientKey)) {
-      res.status(428).json({ error: 'recipient not connected' });
+    const { product, sellerKey } = req.params;
+    const version = String(req.body.agreement_version ?? '');
+    if (version !== relay.agreementVersion) {
+      res.status(428).json({ code: 'AGREEMENT_STALE' });
       return;
     }
-    const idempotencyKey = String(req.body.idempotency_key ?? '');
-    if (idempotencyKey && chargeByKey.has(idempotencyKey)) {
-      res.json(chargeByKey.get(idempotencyKey));
-      return;
-    }
-    const amountCents = Number(req.body.amount_cents);
-    const appFeeBps = Number(req.body.app_fee_bps);
-    const sourceId = String(req.body.source_id ?? '');
-    const body = {
-      id: `ch_${charges.length + 1}`,
-      status: 'COMPLETED',
-      amount_cents: amountCents,
-      app_fee_cents: Math.round((amountCents * appFeeBps) / 10000),
-    };
-    charges.push({
-      recipientKey,
-      idempotencyKey,
-      amountCents,
-      sourceId,
-      appFeeBps,
-    });
-    if (idempotencyKey) chargeByKey.set(idempotencyKey, body);
-    res.json(body);
+    const s = sellers.get(id(product, sellerKey)) ?? { product, sellerKey, agreementVersion: null, chargesEnabled: false };
+    s.agreementVersion = version;
+    sellers.set(id(product, sellerKey), s);
+    res.json({ recipient_key: sellerKey, agreement_version_accepted: version });
   });
 
-  app.post(`/connect/${product}/recipients/:recipientKey/plans`, (req, res) => {
+  app.post(`${seller}/onboard`, (req, res) => {
     if (!requireApiKey(req, res)) return;
-    if (!connectedRecipients.has(req.params.recipientKey)) {
-      res.status(428).json({ error: 'recipient not connected' });
+    const { product, sellerKey } = req.params;
+    const s = sellers.get(id(product, sellerKey));
+    if (!s?.agreementVersion) {
+      res.status(428).json({ code: 'AGREEMENT_REQUIRED' });
       return;
     }
-    const priceCents = Number(req.body.price_cents);
-    lastPlanPriceByRecipient.set(req.params.recipientKey, priceCents);
-    res.json({
-      plan_variation_id: `pv_${priceCents}`,
-    });
-  });
-
-  app.post(`/connect/${product}/recipients/:recipientKey/customers`, (req, res) => {
-    if (!requireApiKey(req, res)) return;
-    if (!connectedRecipients.has(req.params.recipientKey)) {
-      res.status(428).json({ error: 'recipient not connected' });
-      return;
-    }
-    const phone = String(req.body.phone ?? '');
-    lastCustomerPhoneByRecipient.set(req.params.recipientKey, phone);
-    res.json({ customer_id: `cust_${phone.replace(/\W/g, '')}` });
-  });
-
-  app.post(`/connect/${product}/recipients/:recipientKey/customers/:customerId/cards`, (req, res) => {
-    if (!requireApiKey(req, res)) return;
-    res.json({ card_id: `card_${req.params.customerId}` });
-  });
-
-  app.post(`/connect/${product}/recipients/:recipientKey/subscriptions`, (req, res) => {
-    if (!requireApiKey(req, res)) return;
-    const recipientKey = req.params.recipientKey;
-    if (!connectedRecipients.has(recipientKey)) {
-      res.status(428).json({ error: 'recipient not connected' });
-      return;
-    }
-    const idempotencyKey = String(req.body.idempotency_key ?? '');
-    const appFeeBps = Number(req.body.app_fee_bps);
-    subscriptions.push({
-      recipientKey,
-      idempotencyKey,
-      priceCents: lastPlanPriceByRecipient.get(recipientKey) ?? 0,
-      appFeeBps,
-      contactPhone: lastCustomerPhoneByRecipient.get(recipientKey) ?? '',
-    });
-    res.json({ id: `sub_${subscriptions.length}`, status: 'ACTIVE' });
+    onboards.push({ product, sellerKey, returnUrl: String(req.body.returnUrl ?? ''), email: req.body.email ?? null });
+    res.json({ url: `${base}/connect/${product}/onboard?state=fake-${sellerKey}`, expiresAt: new Date(Date.now() + 3600_000).toISOString() });
   });
 
   app.get('/buy/connect/:product/:seller', (req, res) => {
@@ -191,13 +136,18 @@ export async function startFakeRelay(): Promise<FakeRelay> {
   const server: Server = app.listen(0);
   const address = server.address();
   const port = typeof address === 'object' && address ? address.port : 0;
+  const base = `http://127.0.0.1:${port}`;
 
-  return {
-    url: `http://127.0.0.1:${port}`,
-    charges,
-    subscriptions,
+  return Object.assign(relay, {
+    url: base,
     sms,
     buyLinks,
-    close: () => new Promise((resolve) => server.close(() => resolve())),
-  };
+    onboards,
+    seller: (product: string, sellerKey: string) => sellers.get(id(product, sellerKey)),
+    enableCharges: (product: string, sellerKey: string) => {
+      const s = sellers.get(id(product, sellerKey));
+      if (s) s.chargesEnabled = true;
+    },
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  });
 }
