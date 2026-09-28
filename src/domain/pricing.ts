@@ -1,13 +1,5 @@
 import crypto from 'node:crypto';
 import type { DbClient } from '../db/client.js';
-import {
-  charge as connectHubCharge,
-  subscribe as connectHubSubscribe,
-  type ChargeResult,
-  type SubscribeResult,
-} from '../relay/connectHub.js';
-
-export type { ChargeResult, SubscribeResult };
 
 export interface PackageRow {
   id: number;
@@ -159,49 +151,6 @@ export async function createSubscriptionRecord(db: DbClient, planId: number, con
     [planId, contactPhone, squareSubscriptionId],
   );
   return result.rows[0].id;
-}
-
-/** Idempotency key for a payment attempt on a specific booking. Stable
- * across retries of the *same* checkout submission (same booking, same
- * mode) so a network retry cannot double-charge; a different mode or a
- * different booking gets its own key. */
-export function paymentIdempotencyKey(bookingId: number, mode: string): string {
-  return `booking:${bookingId}:${mode}`;
-}
-
-export async function chargeForBooking(
-  recipientKey: string,
-  bookingId: number,
-  mode: 'dropin' | 'package',
-  amountCents: number,
-  sourceId: string,
-  note: string,
-): Promise<ChargeResult> {
-  return connectHubCharge({
-    recipientKey,
-    idempotencyKey: paymentIdempotencyKey(bookingId, mode),
-    amountCents,
-    sourceId,
-    note,
-  });
-}
-
-export async function subscribeForBooking(
-  recipientKey: string,
-  bookingId: number,
-  priceCents: number,
-  contactPhone: string,
-  planName: string,
-  sourceId: string,
-): Promise<SubscribeResult> {
-  return connectHubSubscribe({
-    recipientKey,
-    idempotencyKey: paymentIdempotencyKey(bookingId, 'plan'),
-    priceCents,
-    contactPhone,
-    planName,
-    sourceId,
-  });
 }
 
 /** Creates the booking in `pending` status with no payment mode chosen yet

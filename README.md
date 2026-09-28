@@ -96,7 +96,7 @@ The twelve screens of Coachatron (Slice 1):
 | 4 | Session types | `/app/session-types`, `/app/session-types/:id/generate-week` | Coach |
 | 5 | Pricing | `/app/pricing`, `/app/pricing/package`, `/app/pricing/plan` | Coach |
 | 6 | Roster | `/app/roster`, `/app/roster/:id/priority` | Coach |
-| 7 | Money | `/app/money` | Coach |
+| 7 | Money (and connecting payments) | `/app/money`, `/app/money/payments` | Coach |
 | 8 | Public page | `/c/:handle` | Athlete |
 | 9 | Booking form | `/c/:handle/sessions/:sessionId/book`, `/c/:handle/sessions/:sessionId/waitlist` | Athlete |
 | 10 | Checkout | `/c/:handle/checkout/:bookingId` | Athlete |
@@ -112,7 +112,9 @@ To exercise real Connect Hub, SMS, and email against Noctusoft `ns` (not used in
 | Variable | Purpose |
 | --- | --- |
 | `RELAY_BASE_URL` | Hub base URL (sandbox: `https://api.square.noctusoft.com`) |
-| `RELAY_API_KEY` | Product key for `coachatron`, sent as `X-Api-Key` |
+| `RELAY_API_KEY` | Relay key for this environment's Connect app, sent as `X-Api-Key` |
+| `RELAY_CONNECT_PRODUCT` | The relay Connect app: `coachatron-dev`, `coachatron-uat`, or `coachatron` (default) |
+| `RELAY_WEBHOOK_SECRET` | That Connect app's signing key: signs buy links and verifies `/webhooks/store` |
 | `RELAY_APP_ENV` | Set to `dev` so relay email is captured (smtp4dev) instead of delivered |
 
 Do not commit secrets. `npm test` uses the in-process fake in `test/fakes/relay.ts`.
