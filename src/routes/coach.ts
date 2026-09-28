@@ -767,12 +767,16 @@ coachRouter.post('/app/roster/:id/priority', requireAuth, async (req, res) => {
 
 // ---- Screen 7: money (read-only summary + connecting payments) ----
 
-type PaymentsState = { kind: 'connected' } | { kind: 'finish' } | { kind: 'start' } | { kind: 'unavailable' };
+type PaymentsState =
+  | { kind: 'connected'; payoutsEnabled: boolean }
+  | { kind: 'finish' }
+  | { kind: 'start' }
+  | { kind: 'unavailable' };
 
 async function loadPaymentsState(coach: CoachRow): Promise<PaymentsState> {
   try {
     const status = await getSellerStatus(getConnectRecipientKey(coach));
-    if (status?.chargesEnabled) return { kind: 'connected' };
+    if (status?.chargesEnabled) return { kind: 'connected', payoutsEnabled: status.payoutsEnabled };
     if (status?.agreementVersion === SELLER_AGREEMENT_VERSION) return { kind: 'finish' };
     return { kind: 'start' };
   } catch {
@@ -791,7 +795,15 @@ function renderPaymentsCard(state: PaymentsState, notice: string | null, error: 
   const body =
     state.kind === 'connected'
       ? html`<p><strong>Payments connected.</strong></p>
-          <p class="muted">Athletes pay you directly. Coachatron keeps ${feePercent} of each payment.</p>`
+          <p class="muted">Athletes pay you directly. Coachatron keeps ${feePercent} of each payment.</p>
+          <p class="muted">
+            ${state.payoutsEnabled
+              ? 'Payouts go to your bank account.'
+              : 'Payouts are paused until your bank details are complete.'}
+          </p>
+          <form method="post" action="/app/money/payments">
+            <button type="submit">Update payout details</button>
+          </form>`
       : state.kind === 'unavailable'
         ? html`<p class="muted">Payments status is unavailable right now. Try again in a minute.</p>`
         : state.kind === 'finish'
@@ -803,7 +815,7 @@ function renderPaymentsCard(state: PaymentsState, notice: string | null, error: 
               <ul class="muted">
                 <li>You are the merchant. Payments settle to your own account; Coachatron never holds them.</li>
                 <li>Coachatron keeps ${feePercent} of each payment, on top of card processing.</li>
-                <li>You issue refunds and handle disputes. Coachatron does not refund its fee on partial refunds.</li>
+                <li>Ask Coachatron to refund an athlete; Coachatron's fee is returned with the refund. A card dispute is charged to your payment account.</li>
               </ul>
               <form method="post" action="/app/money/payments">
                 <label><input type="checkbox" name="agree" value="1" /> I accept the Coachatron marketplace terms (${SELLER_AGREEMENT_VERSION}).</label>

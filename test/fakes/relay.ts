@@ -22,6 +22,8 @@ export interface FakeSeller {
   sellerKey: string;
   agreementVersion: string | null;
   chargesEnabled: boolean;
+  /** Defaults to chargesEnabled. */
+  payoutsEnabled?: boolean;
 }
 
 export interface FakeOnboard {
@@ -80,7 +82,7 @@ export async function startFakeRelay(): Promise<FakeRelay> {
       sellerKey: s.sellerKey,
       status: s.chargesEnabled ? 'active' : 'not_connected',
       chargesEnabled: s.chargesEnabled,
-      payoutsEnabled: s.chargesEnabled,
+      payoutsEnabled: s.payoutsEnabled ?? s.chargesEnabled,
       agreementVersion: s.agreementVersion,
     });
   });
