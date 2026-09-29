@@ -112,7 +112,7 @@ export interface SignedLink<P> {
 }
 
 export interface BuyLinkPayload { store: string; code: string; user: string; email: string; return: string; qty: number; exp: number; nonce: string }
-export interface ConnectBuyLinkPayload { product: string; seller: string; amountCents: number; currency: string; user: string; email: string; return: string; exp: number; nonce: string }
+export interface ConnectBuyLinkPayload { product: string; seller: string; amountCents: number; currency: string; user: string; email: string; return: string; exp: number; nonce: string; description?: string }
 export interface WalletLinkPayload { store: string; user: string; email: string; return: string; exp: number; nonce: string; mode: Mode }
 
 /** A plan or SKU of a store, signed with the store's signing secret. The relay prices it. */
@@ -136,6 +136,8 @@ export declare function signConnectBuyLink(args: LinkLifetime & {
   user?: string;
   email?: string;
   returnUrl?: string;
+  /** What the buyer sees they pay for on the hosted page, up to 120 characters. Without it the page names the seller key. */
+  description?: string;
 }): SignedLink<ConnectBuyLinkPayload>;
 
 /** The relay's save-a-card page for one buyer, signed with the store's signing secret. */
