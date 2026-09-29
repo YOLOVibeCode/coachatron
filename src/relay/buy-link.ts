@@ -37,6 +37,7 @@ export function connectBuyUrl(args: {
   itemId?: number;
   email: string;
   handle: string;
+  description: string;
 }): string {
   const secret = signingSecret();
   if (!secret) throw new Error('RELAY_WEBHOOK_SECRET is not configured');
@@ -48,6 +49,7 @@ export function connectBuyUrl(args: {
     currency: 'USD',
     user: buyerRef(args.bookingId, args.mode, args.itemId),
     email: args.email,
+    description: args.description,
     returnUrl: `${process.env.APP_BASE_URL ?? APP_BASE_URL}/c/${args.handle}/checkout/${args.bookingId}`,
     baseUrl: storeBaseUrl(),
   });
