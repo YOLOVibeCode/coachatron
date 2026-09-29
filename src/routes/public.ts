@@ -398,6 +398,7 @@ publicRouter.post('/c/:handle/checkout/:bookingId', async (req, res) => {
         mode: 'dropin',
         email,
         handle: coach.handle,
+        description: `${ctx.session.name} — ${formatLocal(ctx.session.starts_at_utc, ctx.session.tz)}`,
       });
       res.redirect(303, url);
       return;
@@ -418,6 +419,7 @@ publicRouter.post('/c/:handle/checkout/:bookingId', async (req, res) => {
         itemId: pkg.id,
         email,
         handle: coach.handle,
+        description: `${pkg.name} — ${coach.name}`,
       });
       res.redirect(303, url);
       return;
@@ -438,6 +440,7 @@ publicRouter.post('/c/:handle/checkout/:bookingId', async (req, res) => {
         itemId: plan.id,
         email,
         handle: coach.handle,
+        description: `${plan.name} — ${coach.name}`,
       });
       res.redirect(303, url);
       return;

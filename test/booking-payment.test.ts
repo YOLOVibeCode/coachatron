@@ -72,6 +72,23 @@ test('drop-in payment: signed buy link then event v1 books the session at 500 bp
   });
 });
 
+test('the hosted pay page names what the athlete pays for, not the coach handle', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 3, priceCents: 3500 });
+    const packageId = await seedPackage(db, seed.coach.id, 10, 30000);
+    await withServer(async (base) => {
+      const described = async (fields: Record<string, string>, phone: string) => {
+        const bookingId = await bookSession(base, seed.coach.handle, seed.sessionId, 'Rae', phone);
+        const { location } = await startHostedPay(base, seed.coach.handle, bookingId, fields);
+        return new URL(location, base).searchParams.get('desc');
+      };
+      assert.match((await described({ mode: 'dropin' }, '5557770001')) ?? '', /^Goalkeeper Group — \w{3}, \w{3} \d{1,2}, \d{1,2}:\d{2}\s[AP]M$/);
+      assert.equal(await described({ mode: 'package', package_id: String(packageId) }, '5557770002'), '10-pack — Jamie Coach');
+    });
+  });
+});
+
 test('package payment: buy link + paid event creates a credit ledger row', async () => {
   await withRelay(async () => {
     const db = await freshDb();

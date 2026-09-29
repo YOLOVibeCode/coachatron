@@ -118,17 +118,20 @@ function signBuyLink({ secret, store, code, user = "", email = "", returnUrl = "
 
 /**
  * A marketplace buy link: one amount paid to one seller, signed with the
- * product's Connect signing key. The amount is inside the signature.
+ * product's Connect signing key. The amount is inside the signature, and so
+ * is `description` (what the buyer sees they pay for, up to 120 characters).
  */
-function signConnectBuyLink({ secret, product, seller, amountCents, currency = "USD", user = "", email = "", returnUrl = "", exp, nonce, ttlSeconds, baseUrl }) {
+function signConnectBuyLink({ secret, product, seller, amountCents, currency = "USD", user = "", email = "", returnUrl = "", description = "", exp, nonce, ttlSeconds, baseUrl }) {
   need({ secret, product, seller }, ["secret", "product", "seller"]);
   if (!Number.isInteger(amountCents)) throw new TypeError("amountCents must be a whole number of cents");
   const life = lifetime({ exp, nonce, ttlSeconds });
-  const payload = { product, seller, amountCents, currency, user, email, return: returnUrl, exp: life.exp, nonce: life.nonce };
-  const sig = hmacHex(secret, canon(["buy-link-v1", "connect", payload.product, payload.seller, payload.amountCents, payload.currency, payload.user, payload.email, payload.return, payload.exp, payload.nonce]));
+  const desc = String(description || "").trim().slice(0, 120);
+  const payload = { product, seller, amountCents, currency, user, email, return: returnUrl, exp: life.exp, nonce: life.nonce, ...(desc ? { description: desc } : {}) };
+  const fields = [payload.product, payload.seller, payload.amountCents, payload.currency, payload.user, payload.email, payload.return, payload.exp, payload.nonce];
+  const sig = hmacHex(secret, canon(desc ? ["buy-link-v1", "connect-desc", ...fields, desc] : ["buy-link-v1", "connect", ...fields]));
   const q = new URLSearchParams({
     amount: String(payload.amountCents), currency: payload.currency, user: payload.user, email: payload.email, return: payload.return,
-    exp: String(payload.exp), nonce: payload.nonce, sig,
+    ...(desc ? { desc } : {}), exp: String(payload.exp), nonce: payload.nonce, sig,
   });
   return { url: absolute(baseUrl, `/buy/connect/${encodeURIComponent(product)}/${encodeURIComponent(seller)}?${q}`), sig, payload };
 }
