@@ -26,6 +26,7 @@ async function fail(res: Response): Promise<never> {
 export interface SellerStatus {
   status: string;
   chargesEnabled: boolean;
+  payoutsEnabled: boolean;
   /** The agreement version the coach accepted, or null. */
   agreementVersion: string | null;
 }
@@ -39,6 +40,7 @@ export async function getSellerStatus(sellerKey: string): Promise<SellerStatus |
   return {
     status: String(body.status ?? 'not_connected'),
     chargesEnabled: body.chargesEnabled === true,
+    payoutsEnabled: body.payoutsEnabled === true,
     agreementVersion: typeof body.agreementVersion === 'string' ? body.agreementVersion : null,
   };
 }
@@ -51,7 +53,10 @@ export async function acceptSellerAgreement(sellerKey: string, version: string):
   if (!res.ok) return fail(res);
 }
 
-/** A relay onboarding link. The relay sends the coach back to `returnUrl?seller=connected|pending|failed`. */
+/**
+ * A relay onboarding link. The relay sends the coach back to `returnUrl?seller=connected|pending|failed`.
+ * For a connected coach the same link opens the form for changing bank and identity details.
+ */
 export async function startSellerOnboarding(sellerKey: string, args: { returnUrl: string; email: string | null }): Promise<string> {
   const res = await relayFetch(sellerPath(sellerKey, '/onboard'), {
     method: 'POST',

@@ -104,7 +104,40 @@ test('once onboarding enables charges the Money screen says payments are connect
       const page = await moneyPage(base, cookie, '?seller=connected');
       assert.match(page, /Payments are connected\./);
       assert.match(page, /Athletes pay you directly/);
-      assert.doesNotMatch(page, /action="\/app\/money\/payments"/);
+      assert.match(page, /Payouts go to your bank account\./);
+      assert.match(page, /Update payout details/);
+      assert.doesNotMatch(page, /name="agree"/);
+    });
+  });
+});
+
+test('a connected coach updates payout details through the same relay link, without re-accepting terms', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const { coach, cookie } = await signedInCoach(db);
+    await withServer(async (base) => {
+      await connect(base, cookie, { agree: '1' });
+      relay.enableCharges('coachatron', coach.handle);
+      const res = await connect(base, cookie, {});
+      assert.equal(res.status, 303);
+      assert.match(res.headers.get('location') ?? '', /\/connect\/coachatron\/onboard\?state=/);
+      assert.equal(relay.onboards.length, 2);
+      assert.equal(relay.seller('coachatron', coach.handle)?.agreementVersion, 'v1');
+    });
+  });
+});
+
+test('a connected coach whose payouts are paused is told to finish bank details', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const { coach, cookie } = await signedInCoach(db);
+    await withServer(async (base) => {
+      await connect(base, cookie, { agree: '1' });
+      relay.enableCharges('coachatron', coach.handle);
+      relay.seller('coachatron', coach.handle)!.payoutsEnabled = false;
+      const page = await moneyPage(base, cookie);
+      assert.match(page, /Payouts are paused until your bank details are complete\./);
+      assert.match(page, /Update payout details/);
     });
   });
 });
