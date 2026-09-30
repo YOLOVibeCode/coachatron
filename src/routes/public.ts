@@ -15,7 +15,7 @@ import {
   markBookingBooked,
   countBookedForSession,
 } from '../domain/pricing.js';
-import { checkOverflow, acceptOffer, declineOffer, getOfferByToken } from '../domain/cascade.js';
+import { checkOverflow, acceptOffer, declineOffer, describeOffer, getOfferByToken } from '../domain/cascade.js';
 import { buyerEmail, connectBuyUrl } from '../relay/buy-link.js';
 
 export const publicRouter = Router();
@@ -475,21 +475,22 @@ publicRouter.get('/offer/:token', async (req, res) => {
     res.status(404).send(notFound());
     return;
   }
-  res.status(200).send(renderOfferPage(offer.state));
+  res.status(200).send(renderOfferPage(offer.state, await describeOffer(db, offer.sessionId)));
 });
 
-function renderOfferPage(state: string, message?: string) {
+function renderOfferPage(state: string, summary: string | null, message?: string) {
   const resolved = state !== 'sent';
   return page(
     'Overflow offer',
     html`<h1>Backup coach needed</h1>
+      ${summary ? html`<p>${summary}</p>` : raw('')}
       ${resolved
         ? html`<p class="muted">This offer is no longer open (${state}).</p>`
         : html`<form method="post">
             <button type="submit" name="action" value="accept">Accept</button>
           </form>
           <form method="post">
-            <button type="submit" name="action" value="decline">Decline</button>
+            <button type="submit" name="action" value="decline" class="ghost">Decline</button>
           </form>`}
       ${message ? html`<p class="muted">${message}</p>` : raw('')}`,
   );
@@ -504,8 +505,9 @@ publicRouter.post('/offer/:token', async (req, res) => {
   }
 
   const action = field(req.body, 'action');
+  const summary = await describeOffer(db, offer.sessionId);
   if (offer.state !== 'sent') {
-    res.status(200).send(renderOfferPage(offer.state));
+    res.status(200).send(renderOfferPage(offer.state, summary));
     return;
   }
 
@@ -513,15 +515,15 @@ publicRouter.post('/offer/:token', async (req, res) => {
     const accepted = await acceptOffer(db, offer.id);
     res
       .status(200)
-      .send(renderOfferPage(accepted ? 'accepted' : offer.state, accepted ? undefined : 'Too late — someone else already claimed it.'));
+      .send(renderOfferPage(accepted ? 'accepted' : offer.state, summary, accepted ? undefined : 'Too late — someone else already claimed it.'));
     return;
   }
   if (action === 'decline') {
     await declineOffer(db, offer.id);
-    res.status(200).send(renderOfferPage('declined'));
+    res.status(200).send(renderOfferPage('declined', summary));
     return;
   }
-  res.status(422).send(renderOfferPage(offer.state, 'Choose accept or decline.'));
+  res.status(422).send(renderOfferPage(offer.state, summary, 'Choose accept or decline.'));
 });
 
 // ---- Screen 11: manage booking (M5 self-service) ----

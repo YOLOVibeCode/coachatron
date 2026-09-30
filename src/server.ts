@@ -6,6 +6,10 @@ import { webhooksRouter } from './routes/webhooks.js';
 import { storeWebhookRouter } from './routes/store-webhook.js';
 import { getDb } from './db/client.js';
 import { runMigrations } from './db/migrate.js';
+import { runTick } from './jobs/tick.js';
+import { html, page } from './lib/html.js';
+
+const TICK_MS = 60_000;
 
 export function createApp() {
   const app = express();
@@ -13,8 +17,16 @@ export function createApp() {
   app.use(express.urlencoded({ extended: true }));
   app.use(express.json());
 
+  // Also the Railway healthcheck, so it never touches the database.
   app.get('/', (_req, res) => {
-    res.status(200).type('html').send('<!doctype html><html><body><h1>Coachatron</h1></body></html>');
+    res.status(200).send(
+      page(
+        'Coachatron',
+        html`<h1>Coachatron</h1>
+          <p class="muted">Tell us your week. Get a link parents can book and pay on.</p>
+          <a class="action" href="/signin">Start</a>`,
+      ),
+    );
   });
 
   app.use(coachRouter);
@@ -45,6 +57,21 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   process.on('unhandledRejection', (reason) => {
     console.error('Unhandled rejection (request may hang, but the process stays up):', reason);
   });
+
+  // One replica on Railway. Running more would need pg_try_advisory_lock
+  // around runTick so two processes never tick at once.
+  let ticking = false;
+  const tick = async () => {
+    if (ticking) return;
+    ticking = true;
+    try {
+      await runTick(getDb(), new Date());
+    } finally {
+      ticking = false;
+    }
+  };
+  void tick();
+  setInterval(() => void tick(), TICK_MS);
 
   createApp().listen(PORT, () => {
     console.log(`Coachatron listening on ${PORT}`);

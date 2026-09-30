@@ -219,6 +219,17 @@ export const POSTCARD_TOKENS_CSS = `
   .btn-row { display: flex; gap: 8px; }
   .btn-row button { margin-top: 8px; flex: 1; }
   button.ghost { background: transparent; color: var(--teal); border: 1px solid var(--teal); }
+  a.card { display: block; color: inherit; text-decoration: none; }
+  .coach-nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    margin: 0 0 14px;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 0.9rem;
+  }
+  .coach-nav a { color: var(--screen-muted); text-decoration: none; padding: 6px 0; }
+  .coach-nav a[aria-current="page"] { color: var(--teal); font-weight: 600; }
   @media (min-width: 768px) {
     :root { --shell-max: min(640px, 100%); }
     body {
@@ -246,6 +257,26 @@ export const POSTCARD_TOKENS_CSS = `
     }
   }
 `;
+
+export type CoachNavKey = 'schedule' | 'types' | 'pricing' | 'roster' | 'money';
+
+const COACH_NAV: Array<[CoachNavKey, string, string]> = [
+  ['schedule', '/app/schedule', 'Schedule'],
+  ['types', '/app/session-types', 'Types'],
+  ['pricing', '/app/pricing', 'Pricing'],
+  ['roster', '/app/roster', 'Roster'],
+  ['money', '/app/money', 'Money'],
+];
+
+/** Plain links across the coach screens. Muted text, not buttons, so each
+ * screen keeps its one teal action. */
+export function coachNav(active?: CoachNavKey): SafeHtml {
+  return html`<nav class="coach-nav" aria-label="Coach">
+    ${COACH_NAV.map(([key, href, label]) =>
+      key === active ? html`<a href="${href}" aria-current="page">${label}</a>` : html`<a href="${href}">${label}</a>`,
+    )}
+  </nav>`;
+}
 
 export function page(title: string, body: SafeHtml): string {
   return `<!doctype html>

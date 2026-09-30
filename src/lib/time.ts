@@ -43,3 +43,16 @@ export function clipSms(text: string, max = 160): string {
   if (t.length <= max) return t;
   return `${t.slice(0, max - 1)}…`;
 }
+
+export const DEFAULT_TZ = 'America/Chicago';
+
+/** True for an IANA zone Intl accepts, e.g. "America/Denver". */
+export function isValidTimeZone(tz: string): boolean {
+  if (!tz || !tz.includes('/')) return false;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
