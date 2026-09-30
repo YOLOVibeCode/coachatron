@@ -30,9 +30,10 @@ test('production complete posts to LITELLM_BASE /chat/completions and retries on
     assert.equal(req.body.temperature, 0);
     assert.equal(req.header('authorization'), 'Bearer test-key');
     if (hits === 1) {
-      res.status(500).json({ error: 'boom' });
+      res.set('connection', 'close').status(500).json({ error: 'boom' });
       return;
     }
+    res.set('connection', 'close');
     res.json({
       choices: [{ message: { content: JSON.stringify({ intent: 'unknown', confidence: 0 }) } }],
     });

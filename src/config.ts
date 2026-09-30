@@ -25,3 +25,9 @@ export const LITELLM_TIMEOUT_MS = 3000;
 export const ASSISTANT_CONFIRM_TTL_MS = 10 * 60 * 1000;
 export const ASSISTANT_MODEL_DAILY_CAP = 30;
 export const ASSISTANT_MODEL_MONTHLY_CAP = 400;
+/** Outbound SMS ceilings (SPEC.md §10, PLATFORM.md §4.5). A loop stops here. */
+export const SMS_COACH_DAILY_CAP = 300;
+export const SMS_COACH_MONTHLY_CAP = 2000;
+export const SMS_PRODUCT_DAILY_PER_COACH = 400;
+export const SMS_PRODUCT_DAILY_FLOOR = 500;
+export const OTP_DAILY_MAX_PER_PHONE = 5;

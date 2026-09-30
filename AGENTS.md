@@ -23,6 +23,7 @@ Fill these in as the project gains them, and keep them true:
 | Test | `npm test` |
 | Typecheck | `npm run typecheck` |
 | Dev | `npm run dev` |
+| Eval voice setup (calls the live model; run on purpose only) | `LITELLM_API_KEY=... npm run eval:setup` |
 
 ## Never
 

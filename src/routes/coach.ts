@@ -1,6 +1,6 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { getDb, type DbClient } from '../db/client.js';
-import { sendSms } from '../relay/sms.js';
+import { sendText } from '../domain/outbound.js';
 import {
   normalizePhone,
   createOtp,
@@ -14,7 +14,7 @@ import {
   getConnectRecipientKey,
   type CoachRow,
 } from '../domain/auth.js';
-import { APP_BASE_URL, APP_FEE_BPS, SELLER_AGREEMENT_VERSION } from '../config.js';
+import { APP_BASE_URL, APP_FEE_BPS, OTP_DAILY_MAX_PER_PHONE, SELLER_AGREEMENT_VERSION } from '../config.js';
 import { acceptSellerAgreement, getSellerStatus, startSellerOnboarding } from '../relay/seller.js';
 import { createWeeklySlots, deactivateSlot, listWeeklySlots, type WeeklySlot } from '../domain/scheduling.js';
 import { coachNav, html, page, raw } from '../lib/html.js';
@@ -92,42 +92,53 @@ async function requireAuth(req: Request, res: Response, next: NextFunction): Pro
 
 // ---- Screen 1: sign in ----
 
-coachRouter.get('/signin', (_req, res) => {
-  res.status(200).send(
-    page(
-      'Sign in',
-      html`<h1>Coachatron</h1>
-        <p class="muted">Enter your phone number to sign in or sign up.</p>
-        <form method="post" action="/signin/otp">
-          <label for="phone">Phone</label>
-          <input id="phone" name="phone" type="tel" autocomplete="tel" placeholder="(555) 555-0100" required />
-          <button type="submit">Send code</button>
-        </form>`,
-    ),
+function renderPhoneForm(value = '', error?: string) {
+  return page(
+    'Sign in',
+    html`<h1>Coachatron</h1>
+      <p class="muted">Enter your phone number to sign in or sign up.</p>
+      <form method="post" action="/signin/otp">
+        <label for="phone">Phone</label>
+        <input id="phone" name="phone" type="tel" autocomplete="tel" placeholder="(555) 555-0100" value="${value}" required />
+        <button type="submit">Send code</button>
+      </form>
+      ${error ? html`<p class="error">${error}</p>` : raw('')}`,
   );
+}
+
+coachRouter.get('/signin', (_req, res) => {
+  res.status(200).send(renderPhoneForm());
 });
 
 coachRouter.post('/signin/otp', async (req, res) => {
   const raw_phone = field(req.body, 'phone');
   const phone = normalizePhone(raw_phone);
   if (!phone) {
-    res.status(422).send(
-      page(
-        'Sign in',
-        html`<h1>Coachatron</h1>
-          <form method="post" action="/signin/otp">
-            <label for="phone">Phone</label>
-            <input id="phone" name="phone" type="tel" autocomplete="tel" value="${raw_phone}" required />
-            <button type="submit">Send code</button>
-          </form>
-          <p class="error">Enter a valid phone number.</p>`,
-      ),
-    );
+    res.status(422).send(renderPhoneForm(raw_phone, 'Enter a valid phone number.'));
     return;
   }
   const db = getDb();
   const code = await createOtp(db, phone);
-  await sendSms({ to: phone, body: `Coachatron: your sign-in code is ${code}. Expires in 10 minutes.` });
+  const outcome = await sendText(db, {
+    to: phone,
+    body: `Coachatron: your sign-in code is ${code}. Expires in 10 minutes.`,
+    coachId: null,
+    template: 'otp',
+    perRecipientDailyMax: OTP_DAILY_MAX_PER_PHONE,
+  });
+  if (outcome !== 'sent') {
+    res
+      .status(outcome === 'refused' ? 422 : 429)
+      .send(
+        renderPhoneForm(
+          raw_phone,
+          outcome === 'refused'
+            ? 'Use a US or Canadian mobile number.'
+            : 'Too many codes for this number today. Try again tomorrow.',
+        ),
+      );
+    return;
+  }
   res.redirect(303, `/signin/verify?phone=${encodeURIComponent(phone)}`);
 });
 
@@ -757,9 +768,11 @@ coachRouter.post('/app/sessions/:id/cancel', requireAuth, async (req, res) => {
   );
 
   for (const athlete of cancelled.rows) {
-    await sendSms({
+    await sendText(db, {
       to: athlete.contact_phone,
       body: `${athlete.athlete_name}'s ${session.name} on ${formatLocal(session.starts_at_utc, session.tz)} has been cancelled.`,
+      coachId,
+      template: 'session-cancelled',
     });
   }
 

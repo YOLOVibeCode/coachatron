@@ -57,6 +57,11 @@ function requireApiKey(req: express.Request, res: express.Response): boolean {
 
 export async function startFakeRelay(): Promise<FakeRelay> {
   const app = express();
+  // Never let fetch pool a socket to this fake; see test/helpers/server.ts.
+  app.use((_req, res, next) => {
+    res.set('connection', 'close');
+    next();
+  });
   app.use(express.json());
 
   const sms: FakeSms[] = [];
@@ -150,6 +155,10 @@ export async function startFakeRelay(): Promise<FakeRelay> {
       const s = sellers.get(id(product, sellerKey));
       if (s) s.chargesEnabled = true;
     },
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
   });
 }

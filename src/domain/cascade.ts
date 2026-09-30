@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { DbClient } from '../db/client.js';
-import { sendSms } from '../relay/sms.js';
+import { sendText } from './outbound.js';
 import { expireLivePendingForCoach } from './assistantPending.js';
 import { clipSms, formatConfirmWhen } from '../lib/time.js';
 
@@ -18,9 +18,9 @@ export async function upsertOptOut(db: DbClient, phone: string): Promise<void> {
 /** All cascade-initiated (non-critical) sends go through this, never the
  * bare relay client, so an opted-out number is silently skipped rather than
  * texted again. SPEC.md §10: "STOP handling ... required, not optional." */
-async function sendUnlessOptedOut(db: DbClient, to: string, body: string): Promise<void> {
+async function sendUnlessOptedOut(db: DbClient, coachId: number, template: string, to: string, body: string): Promise<void> {
   if (await isOptedOut(db, to)) return;
-  await sendSms({ to, body });
+  await sendText(db, { to, body, coachId, template });
 }
 
 interface SessionOverflowInfo {
@@ -116,6 +116,8 @@ export async function checkOverflow(db: DbClient, sessionId: number): Promise<vo
   await expireLivePendingForCoach(db, info.coachId);
   await sendUnlessOptedOut(
     db,
+    info.coachId,
+    'overflow-ask',
     info.coachPhone,
     clipSms(`Coachatron: ${info.label} is full, ${waiting} waiting. Reply YES and I'll ask your roster.`),
   );
@@ -182,7 +184,13 @@ export async function startCascade(db: DbClient, sessionId: number): Promise<voi
         'update overflow_ask set exhausted_notified_at = now() where session_id = $1 and exhausted_notified_at is null',
         [sessionId],
       );
-      await sendUnlessOptedOut(db, info.coachPhone, 'Coachatron: nobody on your roster accepted the overflow session.');
+      await sendUnlessOptedOut(
+        db,
+        info.coachId,
+        'overflow-exhausted',
+        info.coachPhone,
+        'Coachatron: nobody on your roster accepted the overflow session.',
+      );
     }
     return;
   }
@@ -196,7 +204,7 @@ export async function startCascade(db: DbClient, sessionId: number): Promise<voi
     [sessionId, member.id, expiresAt.toISOString(), token],
   );
 
-  await sendUnlessOptedOut(db, member.phone, offerText(info, await countBooked(db, sessionId)));
+  await sendUnlessOptedOut(db, info.coachId, 'offer', member.phone, offerText(info, await countBooked(db, sessionId)));
 }
 
 function formatPay(cents: number): string {

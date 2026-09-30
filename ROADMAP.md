@@ -1105,3 +1105,34 @@ Notes:
   packages, and plans are reused.
 - No thirteenth screen: setup is screen 2's empty state and three POSTs.
 
+---
+
+## M10: Texting ceilings and the voice-setup eval
+Status: [x] done
+Goal: Close the two gaps left after M8 and M9: nothing stopped a texting
+loop, and voice setup had never met the real model.
+Acceptance:
+- [x] One send path (`sendText`, `src/domain/outbound.ts`); a test fails if
+      anything in `src/` calls the relay's SMS endpoint directly
+- [x] Every text is one segment: GSM-7 up to 160, UCS-2 up to 70, with
+      typographic characters flattened first
+- [x] Refuses non-`+1` destinations; stops at 300/coach/day, 2,000/coach/
+      month, 400 × active coaches/product/day (floor 500), and 5 sign-in
+      codes per number per day; every attempt is in `message_log`
+- [x] `npm run eval:setup` runs production extraction against the live
+      model over `eval/setup-utterances.json`; refuses to run without
+      `LITELLM_API_KEY`; not part of `npm test`
+- [x] All five quality-bar commands still exit 0
+
+Notes:
+- Fixed the intermittent full-suite failures (about one run in five, in
+  different files each time). A captured failure was `fetch failed` on the
+  first request to a fresh test server: fetch pools keep-alive sockets per
+  host and port, and when a new test server got an ephemeral port an earlier
+  one had used, fetch reused the dead socket (or, before that server was
+  closed, reached the old one). Test servers (`withServer`, the fake relay,
+  the fake LiteLLM in `llm.test.ts`) now answer `Connection: close` and
+  close all sockets on shutdown. Eight full runs in a row passed after.
+- The eval set is synthetic. Its pass rate means little until the launch
+  coach's own descriptions are in it.
+

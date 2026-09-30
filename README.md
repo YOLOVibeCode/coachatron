@@ -132,13 +132,31 @@ Do not commit secrets. `npm test` uses the in-process fake in `test/fakes/relay.
 - **No refund-webhook automation.** Refunds are issued through the coach's
   own Square dashboard (`SPEC.md §9.4`); Coachatron doesn't automatically
   reverse a package credit if the coach later issues a partial refund.
-- **No SMS segment ceilings yet.** `SPEC.md §10`'s per-coach daily and
-  monthly outbound caps are not enforced in the send path. Reminders add
-  one text per booking.
 - **The overflow cascade reuses the original session**, rather than
   creating a literal second "parallel session" row — the accepted backup
   coach is recorded on the same session via `assigned_roster_member_id`.
   See `ROADMAP.md` M4 for why.
+
+## Texting ceilings
+
+Every outbound text goes through `sendText()` in `src/domain/outbound.ts`
+(a test fails if anything calls the relay directly). Before it sends, it:
+fits the text into one segment (flattening curly quotes, dashes, and the
+narrow space `Intl` puts before "PM", so a text never silently becomes
+UCS-2); refuses numbers outside `+1` (US and Canada, the destinations priced
+near $0.0083 a segment); and stops at 300 texts per coach per local day,
+2,000 per coach per month, 400 per active coach per day for the product
+(never below 500), and 5 sign-in codes per number per day. Every attempt,
+sent or stopped, is written to `message_log`.
+
+## Voice-setup eval (live model, opt-in)
+
+`npm test` only ever uses a fake model. To check extraction against the
+real one on litellm-vm, run `LITELLM_API_KEY=... npm run eval:setup`. It
+runs the production prompt, schema, and validation over
+`eval/setup-utterances.json` and prints PASS/MISS per case. The starter
+cases are synthetic; add the launch coach's real descriptions before
+trusting the number.
 
 ## Background job
 

@@ -2,7 +2,7 @@ import type { DbClient } from '../db/client.js';
 import { advanceCascade, isOptedOut } from '../domain/cascade.js';
 import { topUpAllSlots, zonedParts } from '../domain/scheduling.js';
 import { clipSms, formatConfirmWhen } from '../lib/time.js';
-import { sendSms } from '../relay/sms.js';
+import { sendText } from '../domain/outbound.js';
 
 /** No non-urgent SMS between 9pm and 8am local (SPEC.md §10). */
 const QUIET_END_HOUR = 8;
@@ -27,10 +27,11 @@ export async function sendDueReminders(db: DbClient, now: Date): Promise<number>
     tz: string;
     location_text: string | null;
     name: string;
+    coach_id: number;
     coach_tz: string;
   }>(
     `select b.id as booking_id, b.athlete_name, b.contact_phone, s.starts_at_utc, s.tz, s.location_text,
-            st.name, c.tz as coach_tz
+            st.name, c.id as coach_id, c.tz as coach_tz
      from booking b
      join session s on s.id = b.session_id
      join session_type st on st.id = s.session_type_id
@@ -53,11 +54,17 @@ export async function sendDueReminders(db: DbClient, now: Date): Promise<number>
     if (await isOptedOut(db, row.contact_phone)) continue;
     const when = formatConfirmWhen(new Date(row.starts_at_utc).toISOString(), row.tz);
     const place = row.location_text ? ` at ${row.location_text}` : '';
-    await sendSms({
-      to: row.contact_phone,
-      body: clipSms(`Coachatron: ${row.athlete_name}'s ${row.name} is ${when}${place}.`),
-    });
-    sent += 1;
+    const outcome = await sendText(
+      db,
+      {
+        to: row.contact_phone,
+        body: clipSms(`Coachatron: ${row.athlete_name}'s ${row.name} is ${when}${place}.`),
+        coachId: row.coach_id,
+        template: 'reminder',
+      },
+      now,
+    );
+    if (outcome === 'sent') sent += 1;
   }
   return sent;
 }
