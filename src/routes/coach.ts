@@ -23,6 +23,15 @@ import { getPackagesForCoach, getPlansForCoach, createPackage, createPlan } from
 import { summarizeMoney } from '../domain/money.js';
 import { handleCoachMessage, loadScheduleAssistant, resolvePendingForCoach } from '../domain/assistant.js';
 import { parseCookies, serializeCookie } from '../lib/cookies.js';
+import {
+  coachHasSchedule,
+  discardDraft,
+  getOpenDraft,
+  handleSetupMessage,
+  publishSetupPlan,
+  renderSetupPreview,
+  type SetupDraft,
+} from '../domain/setup.js';
 
 // ---- Roster functions (M4 overflow cascade) ----
 
@@ -385,9 +394,96 @@ coachRouter.post('/app/session-types/:id/slots/:slotId/remove', requireAuth, asy
 
 // ---- Screen 2: schedule ----
 
-coachRouter.get('/app/schedule', requireAuth, async (_req, res) => {
+// Voice setup lives on the schedule screen (screen 2), not a thirteenth
+// screen: a coach with nothing on the calendar sees "Tell me your week".
+
+const SETUP_NOTICES: Record<string, string> = {
+  read: "I couldn't read that. Try again, or set it up by hand.",
+  cap: "That's all the reading I can do today. Set it up by hand for now.",
+  stale: 'That setup already went live or was cleared.',
+};
+
+const SETUP_EXAMPLE =
+  'Keeper group Tuesdays and Thursdays at 6 at Field 3, an hour, 8 kids, $35. Backup coach gets $80. Privates Saturday at 9, 10 and 11, 45 minutes, $70. 10-pack for $300.';
+
+function renderSetupScreen(coach: CoachRow, draft: SetupDraft | null, notice: string | null, hasSchedule: boolean) {
+  const questions = draft?.questions ?? [];
+  const ready = draft !== null && questions.length === 0;
+  const label = !draft ? 'Tell me your week' : questions.length > 0 ? questions[0] : 'Change anything? Just say it.';
+  const submit = !draft ? 'Set it up' : questions.length > 0 ? 'Answer' : 'Update';
+  return page(
+    'Set up',
+    html`${coachNav('schedule')}
+      <h1>${draft ? "Here's your week" : 'Tell me your week'}</h1>
+      ${notice ? html`<p class="error">${notice}</p>` : raw('')}
+      ${draft
+        ? renderSetupPreview(draft.plan, coach)
+        : html`<p class="muted">Tap the mic on your keyboard and talk. Say what you coach, how long, how many athletes, the price, and your days and times.</p>`}
+      ${questions.length > 0
+        ? html`<ul class="setup-questions">${questions.map((q) => html`<li>${q}</li>`)}</ul>`
+        : raw('')}
+      ${ready
+        ? html`<form method="post" action="/app/setup/publish">
+            <input type="hidden" name="id" value="${draft.id}" />
+            <button type="submit">Publish</button>
+          </form>`
+        : raw('')}
+      <form method="post" action="/app/setup">
+        <label for="setup-text">${label}</label>
+        <textarea id="setup-text" name="text" rows="6" required placeholder="${SETUP_EXAMPLE}"></textarea>
+        <button type="submit"${ready ? raw(' class="ghost"') : raw('')}>${submit}</button>
+      </form>
+      ${draft
+        ? html`<form method="post" action="/app/setup/discard">
+            <input type="hidden" name="id" value="${draft.id}" />
+            <button type="submit" class="ghost">Start over</button>
+          </form>`
+        : raw('')}
+      <p class="muted">
+        ${hasSchedule
+          ? html`<a href="/app/schedule">Back to the schedule</a>`
+          : html`Rather use forms? <a href="/app/session-types">Set it up by hand</a>.`}
+      </p>`,
+  );
+}
+
+async function paymentsConnected(coach: CoachRow): Promise<boolean | null> {
+  try {
+    return (await getSellerStatus(getConnectRecipientKey(coach)))?.chargesEnabled === true;
+  } catch {
+    return null;
+  }
+}
+
+function renderLiveCard(coach: CoachRow, connected: boolean | null) {
+  const link = `${process.env.APP_BASE_URL ?? APP_BASE_URL}/c/${coach.handle}`;
+  const share = `sms:?&body=${encodeURIComponent(`Book with me: ${link}`)}`;
+  return html`<div class="card">
+    <p><strong>You're live.</strong> Parents book at ${link.replace(/^https?:\/\//, '')}</p>
+    ${connected === false
+      ? html`<p class="muted">They can't pay you until payments are connected.</p>
+          <a class="action" href="/app/money">Connect payments</a>
+          <a class="action ghost" href="${share}">Share your link</a>`
+      : html`<a class="action" href="${share}">Share your link</a>`}
+  </div>`;
+}
+
+coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
   const db = getDb();
   const coachId = res.locals.coachId as number;
+  const coach = await findCoachById(db, coachId);
+  if (!coach) {
+    res.redirect(303, '/signin');
+    return;
+  }
+  const hasSchedule = await coachHasSchedule(db, coachId);
+  if (!hasSchedule || req.query.setup === '1') {
+    const code = typeof req.query.e === 'string' ? req.query.e : '';
+    const notice = Object.hasOwn(SETUP_NOTICES, code) ? SETUP_NOTICES[code] : null;
+    res.status(200).send(renderSetupScreen(coach, await getOpenDraft(db, coachId, new Date()), notice, hasSchedule));
+    return;
+  }
+  const live = req.query.published === '1' ? renderLiveCard(coach, await paymentsConnected(coach)) : raw('');
   const sessions = await db.query<{
     id: number;
     starts_at_utc: string;
@@ -415,6 +511,8 @@ coachRouter.get('/app/schedule', requireAuth, async (_req, res) => {
       html`<div class="screen-main">
           ${coachNav('schedule')}
           <h1>Coming up</h1>
+          ${live}
+          <p class="muted"><a href="/app/schedule?setup=1">Add more by talking</a></p>
           ${assistant.reply
             ? html`<div class="card ask-reply">
                 <p>${assistant.reply.body}</p>
@@ -447,6 +545,41 @@ coachRouter.get('/app/schedule', requireAuth, async (_req, res) => {
         </div>`,
     ),
   );
+});
+
+coachRouter.post('/app/setup', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coach = await findCoachById(db, res.locals.coachId as number);
+  if (!coach) {
+    res.redirect(303, '/signin');
+    return;
+  }
+  const text = field(req.body, 'text');
+  if (!text) {
+    res.redirect(303, '/app/schedule?setup=1');
+    return;
+  }
+  const result = await handleSetupMessage(db, coach, text, 'web');
+  const error = result.kind === 'cap' ? '&e=cap' : result.kind === 'error' ? '&e=read' : '';
+  res.redirect(303, `/app/schedule?setup=1${error}`);
+});
+
+coachRouter.post('/app/setup/publish', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coach = await findCoachById(db, res.locals.coachId as number);
+  if (!coach) {
+    res.redirect(303, '/signin');
+    return;
+  }
+  const counts = await publishSetupPlan(db, coach, Number(field(req.body, 'id')));
+  res.redirect(303, counts ? '/app/schedule?published=1' : '/app/schedule?setup=1&e=stale');
+});
+
+coachRouter.post('/app/setup/discard', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  await discardDraft(db, coachId, Number(field(req.body, 'id')));
+  res.redirect(303, '/app/schedule?setup=1');
 });
 
 coachRouter.post('/app/schedule/ask', requireAuth, async (req, res) => {
