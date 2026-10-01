@@ -212,7 +212,8 @@ These are the whole design. Without them this feature is a liability.
   "I didn't catch that" plus a deep link. Never guess a destructive action.
 - **R4 — Coach-only.** NL control is authorized by the coach's verified phone
   number. Athlete and roster numbers reach only the keyword layer. An unknown
-  number gets the public booking link and nothing else.
+  number never reaches the model: a stranger gets one sign-up link a day, and a
+  known parent gets the booking link.
 - **R5 — Bounded blast radius.** One intent affects one session or one broadcast.
   No "cancel everything next week" in Slice 1 — multi-entity operations go to the
   web UI.
