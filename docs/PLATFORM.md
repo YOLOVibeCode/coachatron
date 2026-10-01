@@ -189,6 +189,14 @@ anything. It classifies and extracts.
 | `roster.offer` | write | **yes** |
 | `unknown` | — | replies with a link |
 
+**Second closed schema: setup.** `SETUP_JSON_SCHEMA` (`src/llm/setupSchema.ts`)
+extracts a coach's described week: session types, weekly times, packages,
+plans, and an optional time zone. The model only fills it. Product code
+validates every value, never guesses a price or a headcount (it asks), renders
+the preview, and writes on Publish (`src/domain/setup.ts`). It runs on the
+schedule screen, and by SMS for a coach with nothing on the calendar yet. It
+shares the per-coach model caps.
+
 ### 4.3 Safety rules
 
 These are the whole design. Without them this feature is a liability.
@@ -204,10 +212,16 @@ These are the whole design. Without them this feature is a liability.
   "I didn't catch that" plus a deep link. Never guess a destructive action.
 - **R4 — Coach-only.** NL control is authorized by the coach's verified phone
   number. Athlete and roster numbers reach only the keyword layer. An unknown
-  number gets the public booking link and nothing else.
+  number never reaches the model: a stranger gets one sign-up link a day, and a
+  known parent gets the booking link.
 - **R5 — Bounded blast radius.** One intent affects one session or one broadcast.
   No "cancel everything next week" in Slice 1 — multi-entity operations go to the
   web UI.
+  **Exception (2026-09-30): additive setup.** Voice setup (session types, weekly
+  times, packages, plans) may create many rows from one message. It cancels
+  nothing, moves no money, texts no athletes, and is written only when the
+  coach taps Publish on a preview the product rendered from the extracted
+  plan (R2). Bulk cancel or delete stays on the web.
 - **R6 — Pending confirmations expire** in 10 minutes and are single-use, so a
   stale `Y` cannot fire a forgotten action.
 - **R7 — Everything is logged** — raw message, parsed intent, confirmation, and
@@ -265,6 +279,12 @@ prices like an international destination. Those are capped in the send path
 | Per coach, model | 30 calls/day, 400/month | cents |
 | Product model key | $20/month | raise on purpose, not by usage |
 | Product, per day | 400 segments × active coaches, floor 500 | a shared-sender bug dies the same day |
+
+*Implemented 2026-09-30* in `src/domain/outbound.ts`, the only send path.
+Destination price is enforced by country code: only `+1` (US and Canada) is
+texted, since the relay does not report a per-destination price. "Active
+coach" means a coach with a scheduled session ahead. Sign-in codes are also
+capped at 5 per number per day.
 
 The full assistant fits inside those ceilings. Scheduling by text, setting a
 session up, asking before a change, confirmations, reminders, and the overflow

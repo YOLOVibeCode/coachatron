@@ -11,7 +11,7 @@ async function postOnce(req: CompleteRequest): Promise<unknown> {
     throw new Error('LITELLM_API_KEY missing');
   }
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), LITELLM_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), req.timeoutMs ?? LITELLM_TIMEOUT_MS);
   try {
     const res = await fetch(`${base}/chat/completions`, {
       method: 'POST',
@@ -25,7 +25,7 @@ async function postOnce(req: CompleteRequest): Promise<unknown> {
         messages: req.messages,
         response_format: {
           type: 'json_schema',
-          json_schema: { name: 'intent', schema: req.schema, strict: true },
+          json_schema: { name: req.schemaName ?? 'intent', schema: req.schema, strict: true },
         },
       }),
       signal: controller.signal,

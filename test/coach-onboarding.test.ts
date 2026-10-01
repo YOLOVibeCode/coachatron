@@ -106,3 +106,61 @@ test('GET /c/does-not-exist returns 404', async () => {
     assert.equal(res.status, 404);
   });
 });
+
+async function signUp(base: string, relay: { sms: Array<{ to: string; body: string }> }, digits: string, profile: Record<string, string>) {
+  await fetch(`${base}/signin/otp`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ phone: digits }),
+    redirect: 'manual',
+  });
+  const phone = `+1${digits}`;
+  const code = /code is (\d{6})/.exec(relay.sms.filter((m) => m.to === phone).at(-1)!.body)![1];
+  return fetch(`${base}/signin/verify`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ phone, code, ...profile }),
+    redirect: 'manual',
+  });
+}
+
+test('landing page has a week box and a sign-in link', async () => {
+  await freshDb();
+  await withServer(async (base) => {
+    const res = await fetch(`${base}/`);
+    assert.equal(res.status, 200);
+    const body = await res.text();
+    assert.match(body, /action="\/start"/);
+    assert.match(body, /href="\/signin">Sign in</);
+  });
+});
+
+test('a new coach signs up with just a name; the browser timezone is kept, a bad one falls back', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    await withServer(async (base) => {
+      const form = await (await fetch(`${base}/signin/verify?phone=%2B15550001111`)).text();
+      assert.match(form, /autocomplete="one-time-code"/);
+      assert.match(form, /name="tz" type="hidden"/);
+      assert.doesNotMatch(form, /IANA/);
+
+      const denver = await signUp(base, relay, '5550001111', { name: 'Dana Keeper', tz: 'America/Denver' });
+      assert.equal(denver.status, 303);
+      const bogus = await signUp(base, relay, '5550002222', { name: 'Robin Coach', tz: 'Mars/Olympus' });
+      assert.equal(bogus.status, 303);
+
+      const rows = await db.query<{ phone: string; tz: string; email: string }>('select phone, tz, email from coach order by id');
+      assert.deepEqual(
+        rows.rows.map((r) => [r.phone, r.tz, r.email]),
+        [
+          ['+15550001111', 'America/Denver', ''],
+          ['+15550002222', 'America/Chicago', ''],
+        ],
+      );
+
+      const noName = await signUp(base, relay, '5550003333', {});
+      assert.equal(noName.status, 422);
+      assert.match(await noName.text(), /Enter your name/);
+    });
+  });
+});

@@ -211,7 +211,7 @@ test('HELP always gets exactly one reply; an unrecognized keyword points at the 
       const otherRes = await smsTo(base, '+15559990000', 'banana');
       assert.equal(otherRes.status, 200);
       assert.equal(relay.sms.length, 2);
-      assert.match(relay.sms[1].body, /link/i);
+      assert.match(relay.sms[1].body, /\/start\//);
     });
   });
 });

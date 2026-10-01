@@ -25,7 +25,9 @@ Later, the coach runs all of it by texting the number in plain English.
 
 ## Prerequisites
 
-- Node.js ≥ 20.11 (see `engines` in `package.json`). That's the whole list.
+- Node.js 24 (the current LTS). `.nvmrc` names it, so `nvm use` (or a shell
+  that switches on `.nvmrc`) picks it up; `npm ci` refuses an older Node
+  (`engine-strict` in `.npmrc`). That's the whole list.
 - No Postgres, no Docker, no database to install — tests run against
   [PGlite](https://pglite.dev) (Postgres compiled to WASM, in-memory).
 - No accounts to create and no secrets required to run locally. Payments
@@ -91,9 +93,9 @@ The twelve screens of Coachatron (Slice 1):
 | # | Screen | Route(s) | Who |
 |---|--------|----------|-----|
 | 1 | Sign in | `/signin`, `/signin/otp`, `/signin/verify` | Coach |
-| 2 | Schedule | `/app/schedule` | Coach |
+| 2 | Schedule (and voice setup) | `/app/schedule`, `/app/setup`, `/app/setup/publish`, `/app/setup/discard` | Coach |
 | 3 | Session detail | `/app/sessions/:id`, `/app/sessions/:id/bookings/:bookingId/attendance`, `/app/sessions/:id/cancel` | Coach |
-| 4 | Session types | `/app/session-types`, `/app/session-types/:id/generate-week` | Coach |
+| 4 | Session types | `/app/session-types`, `/app/session-types/:id/generate-week` (weekly times), `/app/session-types/:id/slots/:slotId/remove` | Coach |
 | 5 | Pricing | `/app/pricing`, `/app/pricing/package`, `/app/pricing/plan` | Coach |
 | 6 | Roster | `/app/roster`, `/app/roster/:id/priority` | Coach |
 | 7 | Money (and connecting payments) | `/app/money`, `/app/money/payments` | Coach |
@@ -136,6 +138,35 @@ Do not commit secrets. `npm test` uses the in-process fake in `test/fakes/relay.
   creating a literal second "parallel session" row — the accepted backup
   coach is recorded on the same session via `assigned_roster_member_id`.
   See `ROADMAP.md` M4 for why.
+
+## Texting ceilings
+
+Every outbound text goes through `sendText()` in `src/domain/outbound.ts`
+(a test fails if anything calls the relay directly). Before it sends, it:
+fits the text into one segment (flattening curly quotes, dashes, and the
+narrow space `Intl` puts before "PM", so a text never silently becomes
+UCS-2); refuses numbers outside `+1` (US and Canada, the destinations priced
+near $0.0083 a segment); and stops at 300 texts per coach per local day,
+2,000 per coach per month, 400 per active coach per day for the product
+(never below 500), and 5 sign-in codes per number per day. Every attempt,
+sent or stopped, is written to `message_log`.
+
+## Voice-setup eval (live model, opt-in)
+
+`npm test` only ever uses a fake model. To check extraction against the
+real one on litellm-vm, run `LITELLM_API_KEY=... npm run eval:setup`. It
+runs the production prompt, schema, and validation over
+`eval/setup-utterances.json` and prints PASS/MISS per case. The starter
+cases are synthetic; add the launch coach's real descriptions before
+trusting the number.
+
+## Background job
+
+The running server ticks once a minute (`src/jobs/tick.ts`). Each tick keeps
+every weekly time 8 weeks ahead on the calendar, passes an expired overflow
+offer to the next backup coach, and sends 24-hour reminders outside quiet
+hours (9pm–8am in the coach's timezone). Tests call `runTick()` directly
+with a fixed clock; `createApp()` never starts the timer.
 
 None of these affect the three journeys in the product brief (booking +
 payment, the overflow cascade, the read-only Money screen), which are all

@@ -31,7 +31,7 @@ running database, Square, Twilio, SendGrid, or a model provider.
 
 ## Stack (decided once, in M1, not reopened)
 
-- **Language:** TypeScript 5, Node.js ≥ 20.11, ESM (`"type": "module"`).
+- **Language:** TypeScript 5, Node.js ≥ 20.11, ESM (`"type": "module"`). *(Now TypeScript 6 and Node 24; see M11.)*
 - **Web:** Express 4. Server-rendered HTML via hand-written template
   functions (tagged-template `html` helper with escaping) — **no templating
   engine dependency, no SPA framework.**
@@ -1037,3 +1037,192 @@ but a real gap between `SPEC.md`'s wording and Slice 1 as shipped. Recorded
 as `SPEC.md §15` item 7 rather than either quietly building it (scope
 creep at the very last step, with no milestone-level test design behind
 it) or quietly ignoring the discrepancy.
+
+---
+
+## M8: Take and run
+Status: [x] done
+Goal: A coach who sets up once never has to come back to keep the calendar
+full, and the background work SPEC.md already promises actually runs.
+Acceptance:
+- [x] Weekly times are saved (`weekly_slot`) and fill 8 weeks ahead; the
+      same local time holds across a DST change; regenerating never
+      duplicates a session (`test/weekly-slots.test.ts`)
+- [x] Removing a weekly time cancels its empty future sessions and keeps
+      booked ones for the coach to cancel one by one
+- [x] A one-minute tick (`src/jobs/tick.ts`) tops up weekly times, advances
+      expired overflow offers, and sends one 24-hour reminder per booking
+      outside quiet hours, skipping opted-out numbers (`test/tick.test.ts`)
+- [x] Sign-up asks only for a name: the timezone comes from the browser
+      and falls back to America/Chicago, and email is optional
+- [x] Landing page has a Start link; schedule cards link to session detail
+      and show booked/capacity; every coach screen has the same plain nav
+- [x] Overflow texts name the session; the offer text and page show the
+      headcount and the backup coach's pay (`session_type.backup_pay_cents`)
+- [x] All five quality-bar commands still exit 0
+
+Notes:
+- `generateWeekSessions` (7 days, once) is replaced by `createWeeklySlots`
+  and `ensureSlotSessions`. The route path `generate-week` is kept so links
+  and tests stay stable; the screen is now "Weekly times".
+- The tick starts only in the `server.ts` boot block, never in
+  `createApp()`, so tests stay deterministic. Railway runs one replica; more
+  would need `pg_try_advisory_lock` around `runTick`.
+- No thirteenth screen: slot removal is a POST on screen 4.
+
+---
+
+## M9: Talk your week in
+Status: [x] done
+Goal: A new coach reaches a live, bookable week in three decisions: Start,
+"Set it up" (after saying their week), Publish.
+Acceptance:
+- [x] A coach with nothing on the calendar sees "Tell me your week" on the
+      schedule screen; the model fills `SETUP_JSON_SCHEMA` and nothing else
+- [x] `validateSetupPlan` drops bad days and times, reuses types the coach
+      already has, enforces limits, and turns a missing price or headcount
+      into a question rather than a guess (`test/setup.test.ts`)
+- [x] The preview is rendered by product code; a draft writes nothing to
+      the schedule; Publish is blocked while a question is open and runs once
+- [x] A follow-up message ("make Thursday 6:30") updates the same draft,
+      with the current setup and open questions sent to the model
+- [x] A model failure or a spent budget falls back to the by-hand forms
+- [x] By SMS, a coach with no schedule gets a draft and a one-segment
+      reply with the link; a scheduled coach's texts are unchanged
+- [x] `test/journeys.test.ts` journey 4 walks Start → say it → Publish →
+      the public page lists the sessions
+- [x] All five quality-bar commands still exit 0
+
+Notes:
+- `PLATFORM.md` §4.3 R5 gains an additive-setup exception, approved by the
+  owner; §4.2 documents the second schema. `SPEC.md` §7.1 step 3 now leads
+  with talking the week in; the forms remain as the fallback.
+- The model budget moved to `src/domain/modelBudget.ts` so setup and the
+  assistant share one per-coach cap. Setup calls use an 8s timeout (a web
+  form with a larger answer); the SMS assistant keeps 3s.
+- Publish is idempotent instead of transactional (the pg Pool does not pin a
+  client): the draft is claimed first, and existing types, weekly times,
+  packages, and plans are reused.
+- No thirteenth screen: setup is screen 2's empty state and three POSTs.
+
+---
+
+## M10: Texting ceilings and the voice-setup eval
+Status: [x] done
+Goal: Close the two gaps left after M8 and M9: nothing stopped a texting
+loop, and voice setup had never met the real model.
+Acceptance:
+- [x] One send path (`sendText`, `src/domain/outbound.ts`); a test fails if
+      anything in `src/` calls the relay's SMS endpoint directly
+- [x] Every text is one segment: GSM-7 up to 160, UCS-2 up to 70, with
+      typographic characters flattened first
+- [x] Refuses non-`+1` destinations; stops at 300/coach/day, 2,000/coach/
+      month, 400 × active coaches/product/day (floor 500), and 5 sign-in
+      codes per number per day; every attempt is in `message_log`
+- [x] `npm run eval:setup` runs production extraction against the live
+      model over `eval/setup-utterances.json`; refuses to run without
+      `LITELLM_API_KEY`; not part of `npm test`
+- [x] All five quality-bar commands still exit 0
+
+Notes:
+- Fixed the intermittent full-suite failures: a request that hung for 300s,
+  a `fetch failed`, or a stray 401, in a different file each time. Root
+  cause: test servers called a bare `listen(0)`, which binds every
+  interface, while tests connect to `127.0.0.1`. macOS will give such a
+  listener a port number another program already holds on `127.0.0.1` (this
+  machine has 34, including editors and VPN tools), and the request then
+  reaches that program. Proven directly: a wildcard listener was allowed on a
+  port Cursor held on 127.0.0.1, and a fetch to it hung; an explicit
+  127.0.0.1 bind of that port is refused with EADDRINUSE. Every test server
+  now binds through `test/helpers/listen.ts` (`listenLoopback`), which binds
+  127.0.0.1 and waits for the port. Test servers also answer
+  `Connection: close` so fetch never pools sockets across tests.
+- The eval set is synthetic. Its pass rate means little until the launch
+  coach's own descriptions are in it.
+
+---
+
+## M11: Current toolchain, one Node version everywhere
+Status: [x] done
+Goal: Run on the current Node LTS and current dependencies, with the Node
+version named once and every environment reading it.
+Acceptance:
+- [x] `.nvmrc` is `24`; `package.json` `engines.node` is `>=24`;
+      `test/toolchain.test.ts` fails if they name different lines, if the
+      line is odd (non-LTS), or if CI stops reading `.nvmrc`
+- [x] Production's Node is known, not assumed: Node 22.23.2 in all three
+      Railway environments (read from the running containers), pinned by a
+      `RAILPACK_NODE_VERSION=22` variable that Railpack reads before
+      `engines`. It stays on 22 until that variable changes; M12 makes
+      `.railway/railway.ts` set it from `.nvmrc`
+- [x] CI's required `CI` check runs on `.nvmrc`; a non-blocking
+      `Next Node` job runs `lts/*` and `latest`, so the next LTS is tested
+      before anyone moves the pin
+- [x] `npm ci` on an older Node fails fast (`engine-strict`)
+- [x] Express 5, PGlite 0.5, TypeScript 6.0, ESLint 10, `@types/node` 24,
+      and current minors, with no source changes beyond the boot log;
+      compiler target ES2024
+- [x] All five quality-bar commands exit 0 on Node 24
+
+Notes:
+- TypeScript 7 is out but `typescript-eslint` supports below 6.1, so 6.0.3
+  is the newest usable. Revisit when `typescript-eslint` widens its range.
+- npm 12 (with Node 24) blocks install scripts unless allowed;
+  `package.json` `allowScripts` permits esbuild's and fsevents', which npm
+  10 ran anyway. Older npm ignores the field.
+- Express 5 sends a rejected async handler to the error handler. Under
+  Express 4 such a request never got a response.
+- The server logs its Node version at boot, so `railway logs` shows what a
+  deploy actually runs.
+- To move to the next LTS: change `.nvmrc` and `engines` together (the
+  toolchain test enforces it), after the `Next Node (lts/*)` job is green.
+
+---
+
+## M12: Railway Infrastructure as Code
+Status: [x] done
+Goal: Retire `railway.json` (Config as Code, which Railway stops reading on
+2026-12-01) without changing anything that runs, and let `.nvmrc` decide
+production's Node.
+Acceptance:
+- [x] `.railway/railway.ts` describes the `web` service in development
+      (`develop`), uat (`staging`) and production (`main`): source, build,
+      start, healthcheck, replicas, custom domains, and every variable as
+      `preserve()` (values never in git)
+- [x] It is a `web` partial: Postgres, its volume, and slack-cards are not
+      declared and apply cannot touch them
+- [x] `railway config plan` in all three environments: "already up to
+      date" (with the Node line preserved), so the file matches what runs;
+      applied to all three, which recorded ownership and changed nothing
+- [x] `railway config migrate --apply --service web` run in all three:
+      no Config File setting was set, so nothing to clear
+- [x] `railway.json` deleted; `test/toolchain.test.ts` fails if it returns,
+      if the file stops reading `.nvmrc`, or if it declares Postgres or
+      slack-cards
+- [x] All five quality-bar commands still exit 0
+
+Notes:
+- The first `migrate` output was not safe to apply: it named the service
+  `coachatron` (the live one is `web`), and with only build/start/healthcheck
+  declared, `plan` showed it would delete all 14 web variables and detach the
+  GitHub source. The file was rebuilt from `railway config pull` in each
+  environment instead.
+- `RAILPACK_NODE_VERSION` comes from `.nvmrc`, so moving Node is a one-file
+  change. Applying that is the only pending change in each environment:
+  `plan` shows exactly one update, `web.RAILPACK_NODE_VERSION` (22 to 24).
+  It changes the runtime of a live service, so it is applied per
+  environment on purpose (development, then uat, then production), not as
+  part of this migration. `COACHATRON_IAC_PRESERVE_NODE=1` applies the rest
+  of the file without it.
+- Applied 2026-10-01 with the owner's go-ahead, in order. development:
+  `config apply`, rebuilt `8cb1fb3`. uat: `config apply`, rebuilt `9f42394`.
+  production: `config apply` refused (a Railway bug that rejects the two
+  existing custom domains on any change), so the same single change was made
+  with `railway variable set`, rebuilt `97012f4`. All three now run Node
+  24.21.0 (read with `railway ssh`); `/` and `/signin` return 200 and a
+  database-backed 404 route answers on every domain; `config plan` is
+  "already up to date" in all three. No code changed in any deploy.
+- The `railway` SDK checks the CLI version by running `$_`, the last command
+  the shell ran. Wrapping `railway config plan` in `timeout` (or anything
+  else) makes it fail with a misleading "requires Railway CLI 5.42.1".
+

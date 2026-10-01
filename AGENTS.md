@@ -11,7 +11,7 @@ files win over a generic stack preference.
 - One service. Postgres in production. Tests may use PGlite so `npm test` needs no daemon.
 - Payments go through signed Noctusoft marketplace buy links (`GET /buy/connect/coachatron/:seller`). Do not import a Square SDK or card form.
 - SMS and email go through the Noctusoft relay. Do not import Twilio or SendGrid.
-- The model is one interface. The production client calls LiteLLM on litellm-vm at `https://ai.noctusoft.com/v1`. No provider SDK. Tests use a fake. The text assistant (SMS + the schedule-screen field) is the only caller.
+- The model is one interface. The production client calls LiteLLM on litellm-vm at `https://ai.noctusoft.com/v1`. No provider SDK. Tests use a fake. The text assistant and voice setup (SMS + the schedule screen) are the only callers.
 
 ## Commands
 
@@ -23,6 +23,7 @@ Fill these in as the project gains them, and keep them true:
 | Test | `npm test` |
 | Typecheck | `npm run typecheck` |
 | Dev | `npm run dev` |
+| Eval voice setup (calls the live model; run on purpose only) | `LITELLM_API_KEY=... npm run eval:setup` |
 
 ## Never
 

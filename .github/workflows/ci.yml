@@ -23,9 +23,12 @@ jobs:
         with:
           persist-credentials: false
 
+      # The required check. .nvmrc is the one place the project's Node
+      # version lives; Railway reads package.json engines (kept in step by
+      # test/toolchain.test.ts) and nvm reads .nvmrc locally.
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: npm
 
       # Fresh clone, no secrets. Tests use PGlite and in-process fakes
@@ -44,3 +47,35 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  # Early warning, never blocking: the newest LTS and the newest Current
+  # release. When the next Node line becomes LTS, the lts/* job tests it
+  # before anyone moves .nvmrc and engines.
+  next-node:
+    name: Next Node (${{ matrix.node }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['lts/*', 'latest']
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          check-latest: true
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
