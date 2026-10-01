@@ -135,14 +135,14 @@ the solo coach. They return only when a paying customer is blocked without them.
 
 ### 7.1 Coach onboarding (target: under 5 minutes)
 
-1. Lands on `coachatron.com`, taps **Start**.
-2. Enters name, phone, email. SMS one-time code verifies the phone. No password.
-3. Says their week (the phone keyboard's mic, or typing) into one box on the
-   schedule screen, or texts it to the Coachatron number: *what it's called, how
-   long, how many athletes, how much, which days and times*. The product shows
-   what it understood, asks for anything missing (never guesses a price), and
-   writes nothing until the coach taps **Publish**. *(Added 2026-09-30. The one-
-   form session type and the weekly grid below remain as the by-hand fallback.)*
+1. Lands on `coachatron.com` and types or texts their week: *what it's called, how
+   long, how many athletes, how much, which days and times*.
+2. Enters name and phone. SMS one-time code verifies the phone (or they tap the
+   link we texted). No password. The model runs only after the phone is proven.
+3. The product shows what it understood, asks for anything missing (never guesses
+   a price), and writes nothing until the coach taps **Publish**. *(Added 2026-09-30.
+   The landing box and the texted week feed this same setup. The one-form session
+   type and the weekly grid below remain as the by-hand fallback.)*
    Fallback: creates a session type in one form. Every other field is defaulted.
 4. Picks recurring times on a weekly grid (tap the slots). Sessions are generated
    8 weeks ahead, rolling. *(Implemented: each weekly time is a `weekly_slot`,

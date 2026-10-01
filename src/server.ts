@@ -1,5 +1,6 @@
 import express from 'express';
 import { PORT } from './config.js';
+import { landingRouter } from './routes/landing.js';
 import { coachRouter } from './routes/coach.js';
 import { publicRouter } from './routes/public.js';
 import { webhooksRouter } from './routes/webhooks.js';
@@ -7,7 +8,6 @@ import { storeWebhookRouter } from './routes/store-webhook.js';
 import { getDb } from './db/client.js';
 import { runMigrations } from './db/migrate.js';
 import { runTick } from './jobs/tick.js';
-import { html, page } from './lib/html.js';
 
 const TICK_MS = 60_000;
 
@@ -17,18 +17,8 @@ export function createApp() {
   app.use(express.urlencoded({ extended: true }));
   app.use(express.json());
 
-  // Also the Railway healthcheck, so it never touches the database.
-  app.get('/', (_req, res) => {
-    res.status(200).send(
-      page(
-        'Coachatron',
-        html`<h1>Coachatron</h1>
-          <p class="muted">Tell us your week. Get a link parents can book and pay on.</p>
-          <a class="action" href="/signin">Start</a>`,
-      ),
-    );
-  });
-
+  // GET / is also the Railway healthcheck, so it never touches the database.
+  app.use(landingRouter);
   app.use(coachRouter);
   app.use(publicRouter);
   app.use(webhooksRouter);

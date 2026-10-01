@@ -297,3 +297,263 @@ export function page(title: string, body: SafeHtml): string {
 </body>
 </html>`;
 }
+
+/** Marketing page at `/`. Same Postcard tokens as the app, but no phone-shell
+ * wrapper — the healthcheck stays a static 200 with no database. */
+export const LANDING_CSS = `
+  :root {
+    --page: #f6e7d8;
+    --ink: #2c211c;
+    --muted: #6d5348;
+    --teal: #0e6b64;
+    --teal-ink: #f6fffd;
+    --clay: #c46a45;
+    --clay-line: #a85634;
+    --screen: #fffaf4;
+    --screen-ink: #2c211c;
+    --screen-muted: #7a655b;
+    --card: #fff;
+    --line: #eddccb;
+    --good: #0e6b64;
+    --touch-min: 44px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--page);
+    color: var(--ink);
+    font-family: "Iowan Old Style", Palatino, Georgia, serif;
+    line-height: 1.4;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 28px 20px 64px; }
+  .kicker {
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 12px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--teal);
+  }
+  h1 {
+    font-weight: 500;
+    font-size: clamp(2.4rem, 8vw, 4.6rem);
+    line-height: 0.95;
+    letter-spacing: -0.03em;
+    margin: 12px 0 14px;
+    max-width: 14ch;
+  }
+  .lede {
+    max-width: 36rem;
+    font-size: 1.2rem;
+    margin: 0 0 22px;
+  }
+  .hero {
+    display: grid;
+    gap: 32px;
+    align-items: start;
+  }
+  .box label {
+    display: block;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 0.85rem;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+  textarea {
+    width: 100%;
+    min-height: 8.5rem;
+    padding: 12px 14px;
+    border-radius: 14px;
+    border: 1px solid var(--line);
+    background: var(--card);
+    color: var(--ink);
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 16px;
+    line-height: 1.4;
+    resize: vertical;
+  }
+  button, .action {
+    display: inline-block;
+    margin-top: 12px;
+    width: 100%;
+    min-height: var(--touch-min);
+    text-align: center;
+    background: var(--teal);
+    color: var(--teal-ink);
+    border: 0;
+    border-radius: 999px;
+    padding: 12px 16px;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 1rem;
+    font-weight: 700;
+    cursor: pointer;
+    text-decoration: none;
+    line-height: 1.2;
+  }
+  .hint, .sms, .fine, .skip p, .price p, footer a {
+    font-family: ui-sans-serif, system-ui, sans-serif;
+  }
+  .hint { margin: 8px 0 0; color: var(--muted); font-size: 0.9rem; }
+  .sms { margin: 14px 0 0; font-size: 1rem; }
+  .sms a { color: var(--teal); font-weight: 600; }
+  .steps, .skip, .price { margin-top: 36px; max-width: 36rem; }
+  .steps h2, .skip h2, .price h2 {
+    font-weight: 500;
+    font-size: 1.6rem;
+    letter-spacing: -0.03em;
+    margin: 0 0 12px;
+  }
+  .steps ol { margin: 0; padding: 0; list-style: none; counter-reset: step; }
+  .steps li {
+    counter-increment: step;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    padding: 14px 16px 14px 52px;
+    margin-bottom: 10px;
+    position: relative;
+  }
+  .steps li::before {
+    content: counter(step);
+    position: absolute;
+    left: 14px;
+    top: 14px;
+    width: 26px;
+    height: 26px;
+    border-radius: 999px;
+    background: var(--teal);
+    color: var(--teal-ink);
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .steps strong { display: block; font-size: 1.05rem; }
+  .steps span {
+    display: block;
+    margin-top: 4px;
+    color: var(--muted);
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 0.95rem;
+  }
+  .skip ul { margin: 0; padding: 0; list-style: none; }
+  .skip li {
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .skip li:last-child { border-bottom: 0; }
+  .price p, .skip p { color: var(--muted); margin: 0; }
+  .stage { display: none; }
+  .phone {
+    width: 320px;
+    height: 660px;
+    background: var(--clay);
+    border: 1px solid var(--clay-line);
+    border-radius: 40px;
+    padding: 10px;
+  }
+  .screen {
+    height: 100%;
+    background: var(--screen);
+    color: var(--screen-ink);
+    border-radius: 32px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+  }
+  .status {
+    display: flex;
+    justify-content: space-between;
+    padding: 14px 18px 0;
+    font-size: 12px;
+    font-weight: 650;
+  }
+  .body {
+    padding: 6px 16px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    flex: 1;
+    min-height: 0;
+  }
+  .eyebrow {
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--screen-muted);
+    margin: 6px 0 0;
+  }
+  .screen h2 {
+    font-family: "Iowan Old Style", Palatino, Georgia, serif;
+    font-weight: 500;
+    font-size: 30px;
+    line-height: 1;
+    letter-spacing: -0.03em;
+    margin: 0;
+  }
+  .sub { margin: 0; color: var(--screen-muted); font-size: 13px; }
+  .card {
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    padding: 12px;
+    background: var(--card);
+  }
+  .card strong { display: block; font-size: 15px; }
+  .meta {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 6px;
+    color: var(--screen-muted);
+    font-size: 13px;
+  }
+  .spots { color: var(--good); font-weight: 700; }
+  .btn {
+    margin-top: auto;
+    border: 0;
+    background: var(--teal);
+    color: var(--teal-ink);
+    border-radius: 999px;
+    padding: 14px 12px;
+    font: inherit;
+    font-size: 16px;
+    font-weight: 700;
+    text-align: center;
+  }
+  footer.colophon {
+    margin-top: 48px;
+    padding-top: 16px;
+    border-top: 1px solid #e4d0bc;
+    font-size: 0.95rem;
+    color: var(--muted);
+  }
+  footer.colophon p { margin: 0 0 8px; }
+  footer.colophon a { color: var(--teal); }
+  @media (min-width: 900px) {
+    .wrap { padding: 40px 28px 80px; }
+    .hero { grid-template-columns: 1fr 320px; gap: 48px; }
+    .stage { display: flex; justify-content: center; }
+  }
+`;
+
+export function landingPage(title: string, description: string, body: SafeHtml): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(title)}</title>
+<meta name="description" content="${escapeHtml(description)}">
+<meta property="og:title" content="${escapeHtml(title)}">
+<meta property="og:description" content="${escapeHtml(description)}">
+<meta property="og:type" content="website">
+<style>${LANDING_CSS}</style>
+</head>
+<body>
+${body.value}
+</body>
+</html>`;
+}
