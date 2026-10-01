@@ -1150,9 +1150,11 @@ Acceptance:
 - [x] `.nvmrc` is `24`; `package.json` `engines.node` is `>=24`;
       `test/toolchain.test.ts` fails if they name different lines, if the
       line is odd (non-LTS), or if CI stops reading `.nvmrc`
-- [x] Railway (Railpack) reads `engines` before `.nvmrc` and deploys the
-      floor's major, so production moves from Node 22.23.2 (read from the
-      running containers) to the latest 24.x on the next deploy
+- [x] Production's Node is known, not assumed: Node 22.23.2 in all three
+      Railway environments (read from the running containers), pinned by a
+      `RAILPACK_NODE_VERSION=22` variable that Railpack reads before
+      `engines`. It stays on 22 until that variable changes; M12 makes
+      `.railway/railway.ts` set it from `.nvmrc`
 - [x] CI's required `CI` check runs on `.nvmrc`; a non-blocking
       `Next Node` job runs `lts/*` and `latest`, so the next LTS is tested
       before anyone moves the pin
