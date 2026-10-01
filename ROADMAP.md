@@ -1105,3 +1105,38 @@ Notes:
   packages, and plans are reused.
 - No thirteenth screen: setup is screen 2's empty state and three POSTs.
 
+---
+
+## M10: Texting ceilings and the voice-setup eval
+Status: [x] done
+Goal: Close the two gaps left after M8 and M9: nothing stopped a texting
+loop, and voice setup had never met the real model.
+Acceptance:
+- [x] One send path (`sendText`, `src/domain/outbound.ts`); a test fails if
+      anything in `src/` calls the relay's SMS endpoint directly
+- [x] Every text is one segment: GSM-7 up to 160, UCS-2 up to 70, with
+      typographic characters flattened first
+- [x] Refuses non-`+1` destinations; stops at 300/coach/day, 2,000/coach/
+      month, 400 × active coaches/product/day (floor 500), and 5 sign-in
+      codes per number per day; every attempt is in `message_log`
+- [x] `npm run eval:setup` runs production extraction against the live
+      model over `eval/setup-utterances.json`; refuses to run without
+      `LITELLM_API_KEY`; not part of `npm test`
+- [x] All five quality-bar commands still exit 0
+
+Notes:
+- Fixed the intermittent full-suite failures: a request that hung for 300s,
+  a `fetch failed`, or a stray 401, in a different file each time. Root
+  cause: test servers called a bare `listen(0)`, which binds every
+  interface, while tests connect to `127.0.0.1`. macOS will give such a
+  listener a port number another program already holds on `127.0.0.1` (this
+  machine has 34, including editors and VPN tools), and the request then
+  reaches that program. Proven directly: a wildcard listener was allowed on a
+  port Cursor held on 127.0.0.1, and a fetch to it hung; an explicit
+  127.0.0.1 bind of that port is refused with EADDRINUSE. Every test server
+  now binds through `test/helpers/listen.ts` (`listenLoopback`), which binds
+  127.0.0.1 and waits for the port. Test servers also answer
+  `Connection: close` so fetch never pools sockets across tests.
+- The eval set is synthetic. Its pass rate means little until the launch
+  coach's own descriptions are in it.
+

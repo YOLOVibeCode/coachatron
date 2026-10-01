@@ -1,5 +1,6 @@
 import express from 'express';
-import type { Server } from 'node:http';
+import { createServer, type Server } from 'node:http';
+import { listenLoopback } from '../helpers/listen.js';
 
 /** In-process fake for the Noctusoft relay (Connect sellers + SMS + email).
  * Tests point RELAY_BASE_URL at this instead of a live relay, per SPEC.md:
@@ -57,6 +58,11 @@ function requireApiKey(req: express.Request, res: express.Response): boolean {
 
 export async function startFakeRelay(): Promise<FakeRelay> {
   const app = express();
+  // Never let fetch pool a socket to this fake; see test/helpers/server.ts.
+  app.use((_req, res, next) => {
+    res.set('connection', 'close');
+    next();
+  });
   app.use(express.json());
 
   const sms: FakeSms[] = [];
@@ -135,9 +141,8 @@ export async function startFakeRelay(): Promise<FakeRelay> {
     res.json({ id: 'email_1' });
   });
 
-  const server: Server = app.listen(0);
-  const address = server.address();
-  const port = typeof address === 'object' && address ? address.port : 0;
+  const server: Server = createServer(app);
+  const port = await listenLoopback(server);
   const base = `http://127.0.0.1:${port}`;
 
   return Object.assign(relay, {
@@ -150,6 +155,10 @@ export async function startFakeRelay(): Promise<FakeRelay> {
       const s = sellers.get(id(product, sellerKey));
       if (s) s.chargesEnabled = true;
     },
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
   });
 }

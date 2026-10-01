@@ -279,6 +279,12 @@ prices like an international destination. Those are capped in the send path
 | Product model key | $20/month | raise on purpose, not by usage |
 | Product, per day | 400 segments × active coaches, floor 500 | a shared-sender bug dies the same day |
 
+*Implemented 2026-09-30* in `src/domain/outbound.ts`, the only send path.
+Destination price is enforced by country code: only `+1` (US and Canada) is
+texted, since the relay does not report a per-destination price. "Active
+coach" means a coach with a scheduled session ahead. Sign-in codes are also
+capped at 5 per number per day.
+
 The full assistant fits inside those ceilings. Scheduling by text, setting a
 session up, asking before a change, confirmations, reminders, and the overflow
 cascade for a busy coach land around 600–1,200 segments and well under 400

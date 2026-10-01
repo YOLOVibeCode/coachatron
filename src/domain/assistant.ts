@@ -15,7 +15,7 @@ import {
   type IntentName,
 } from '../llm/schema.js';
 import { clipSms, formatConfirmWhen, formatLocal } from '../lib/time.js';
-import { sendSms } from '../relay/sms.js';
+import { sendText } from './outbound.js';
 import {
   consumePending,
   createPending,
@@ -543,9 +543,11 @@ async function executeCancel(db: DbClient, coach: CoachRow, sessionId: number): 
       credits += 1;
     }
     if (!(await isOptedOut(db, athlete.contact_phone))) {
-      await sendSms({
+      await sendText(db, {
         to: athlete.contact_phone,
         body: `${athlete.athlete_name}'s ${row.name} on ${formatLocal(row.starts_at_utc, row.tz)} has been cancelled.`,
+        coachId: coach.id,
+        template: 'session-cancelled',
       });
     }
   }
@@ -628,8 +630,8 @@ async function executeBroadcast(db: DbClient, coach: CoachRow, classified: Class
   let sent = 0;
   for (const athlete of athletes.rows) {
     if (await isOptedOut(db, athlete.contact_phone)) continue;
-    await sendSms({ to: athlete.contact_phone, body });
-    sent += 1;
+    const outcome = await sendText(db, { to: athlete.contact_phone, body, coachId: coach.id, template: 'broadcast' });
+    if (outcome === 'sent') sent += 1;
   }
   return clipSms(`Sent to ${sent} athletes.`);
 }

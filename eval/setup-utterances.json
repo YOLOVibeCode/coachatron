@@ -1,0 +1,130 @@
+{
+  "note": "Synthetic starter set, written to sound like phone dictation. Replace or extend with the launch coach's real descriptions before trusting the pass rate. weekday: 0 Sun .. 6 Sat; time_local is 24h.",
+  "cases": [
+    {
+      "id": "keeper-basic",
+      "text": "Keeper group Tuesdays and Thursdays at 6 at field 3, an hour, 8 kids, $35",
+      "expect": {
+        "types": [{ "name_includes": "keeper", "duration_min": 60, "capacity": 8, "price_cents": 3500 }],
+        "weekly": [
+          { "type_name_includes": "keeper", "weekday": 2, "time_local": "18:00" },
+          { "type_name_includes": "keeper", "weekday": 4, "time_local": "18:00" }
+        ]
+      }
+    },
+    {
+      "id": "two-types-and-pack",
+      "text": "I run a goalkeeper group Monday and Wednesday at 5:30 for an hour, up to 10 kids, 30 bucks. Privates Saturday morning at 9 10 and 11, 45 minutes, $70. And a 10 pack for 300.",
+      "expect": {
+        "types": [
+          { "name_includes": "group", "duration_min": 60, "capacity": 10, "price_cents": 3000 },
+          { "name_includes": "private", "duration_min": 45, "price_cents": 7000 }
+        ],
+        "weekly": [
+          { "type_name_includes": "group", "weekday": 1, "time_local": "17:30" },
+          { "type_name_includes": "group", "weekday": 3, "time_local": "17:30" },
+          { "type_name_includes": "private", "weekday": 6, "time_local": "09:00" },
+          { "type_name_includes": "private", "weekday": 6, "time_local": "10:00" },
+          { "type_name_includes": "private", "weekday": 6, "time_local": "11:00" }
+        ],
+        "packages": [{ "credits": 10, "price_cents": 30000 }]
+      }
+    },
+    {
+      "id": "backup-pay",
+      "text": "Keeper clinic Friday at 7, 90 minutes, 12 keepers, $40 each. If I need a backup coach they get 80 bucks.",
+      "expect": {
+        "types": [{ "name_includes": "clinic", "duration_min": 90, "capacity": 12, "price_cents": 4000, "backup_pay_cents": 8000 }],
+        "weekly": [{ "type_name_includes": "clinic", "weekday": 5, "time_local": "19:00" }]
+      }
+    },
+    {
+      "id": "missing-price-asks",
+      "text": "Group training Tuesday and Thursday at six, an hour, eight kids",
+      "expect": {
+        "types": [{ "name_includes": "group", "capacity": 8, "price_cents": null }],
+        "weekly": [
+          { "type_name_includes": "group", "weekday": 2, "time_local": "18:00" },
+          { "type_name_includes": "group", "weekday": 4, "time_local": "18:00" }
+        ],
+        "questions_include": ["What do you charge"]
+      }
+    },
+    {
+      "id": "morning-and-noon",
+      "text": "Sunday morning keeper session at 8am, 1 hour, 6 players, $25. Also Sunday at noon same thing.",
+      "expect": {
+        "weekly": [
+          { "type_name_includes": "keeper", "weekday": 0, "time_local": "08:00" },
+          { "type_name_includes": "keeper", "weekday": 0, "time_local": "12:00" }
+        ]
+      }
+    },
+    {
+      "id": "half-hours-and-words",
+      "text": "Pitching lessons Wednesday six thirty, half an hour, one kid, sixty dollars",
+      "expect": {
+        "types": [{ "name_includes": "pitching", "duration_min": 30, "capacity": 1, "price_cents": 6000 }],
+        "weekly": [{ "type_name_includes": "pitching", "weekday": 3, "time_local": "18:30" }]
+      }
+    },
+    {
+      "id": "dictation-typo",
+      "text": "Keypad group Monday at 4 at Riverside park an hour and a half 10 kids $45",
+      "expect": {
+        "types": [{ "duration_min": 90, "capacity": 10, "price_cents": 4500 }],
+        "weekly": [{ "weekday": 1, "time_local": "16:00" }]
+      }
+    },
+    {
+      "id": "monthly-plan",
+      "text": "Swim lessons Tuesday at 4, 30 minutes, 4 kids, $25. Monthly plan is $90 for 4 lessons.",
+      "expect": {
+        "types": [{ "name_includes": "swim", "duration_min": 30, "capacity": 4, "price_cents": 2500 }],
+        "weekly": [{ "type_name_includes": "swim", "weekday": 2, "time_local": "16:00" }],
+        "plans": [{ "price_cents": 9000, "credits_per_month": 4 }]
+      }
+    },
+    {
+      "id": "every-weekday",
+      "text": "After school keeper training every weekday at 3:45, an hour, 8 kids, $20",
+      "expect": {
+        "weekly": [
+          { "weekday": 1, "time_local": "15:45" },
+          { "weekday": 2, "time_local": "15:45" },
+          { "weekday": 3, "time_local": "15:45" },
+          { "weekday": 4, "time_local": "15:45" },
+          { "weekday": 5, "time_local": "15:45" }
+        ]
+      }
+    },
+    {
+      "id": "timezone-city",
+      "text": "I'm in Denver. Keeper group Thursday at 6, an hour, 8 kids, $35",
+      "expect": {
+        "coach_timezone": "America/Denver",
+        "weekly": [{ "weekday": 4, "time_local": "18:00" }]
+      }
+    },
+    {
+      "id": "no-phone-numbers",
+      "text": "Keeper group Tuesday at 6, an hour, 8 kids, $35. My backup is Chris at 555-201-3344.",
+      "expect": {
+        "types": [{ "name_includes": "keeper", "price_cents": 3500 }],
+        "forbid_in_output": ["555-201-3344", "5552013344"]
+      }
+    },
+    {
+      "id": "refine-thursday",
+      "draft_text": "Keeper group Tuesdays and Thursdays at 6, an hour, 8 kids, $35",
+      "text": "actually make Thursday 6:30",
+      "expect": {
+        "weekly": [
+          { "weekday": 2, "time_local": "18:00" },
+          { "weekday": 4, "time_local": "18:30" }
+        ],
+        "forbid_weekly": [{ "weekday": 4, "time_local": "18:00" }]
+      }
+    }
+  ]
+}
