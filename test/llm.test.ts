@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
-import type { Server } from 'node:http';
+import { createServer } from 'node:http';
 import { productionComplete, resetComplete, setComplete } from '../src/llm/complete.js';
 import { fakeComplete } from './fakes/llm.js';
+import { listenLoopback } from './helpers/listen.js';
 
 test('injected fake complete returns a fixed intent and records the prompt', async () => {
   const fn = fakeComplete({ intent: 'schedule.query', confidence: 1 });
@@ -38,8 +39,8 @@ test('production complete posts to LITELLM_BASE /chat/completions and retries on
       choices: [{ message: { content: JSON.stringify({ intent: 'unknown', confidence: 0 }) } }],
     });
   });
-  const server: Server = app.listen(0);
-  const port = (server.address() as { port: number }).port;
+  const server = createServer(app);
+  const port = await listenLoopback(server);
   const prevBase = process.env.LITELLM_BASE;
   const prevKey = process.env.LITELLM_API_KEY;
   process.env.LITELLM_BASE = `http://127.0.0.1:${port}`;

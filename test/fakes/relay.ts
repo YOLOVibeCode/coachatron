@@ -1,5 +1,6 @@
 import express from 'express';
-import type { Server } from 'node:http';
+import { createServer, type Server } from 'node:http';
+import { listenLoopback } from '../helpers/listen.js';
 
 /** In-process fake for the Noctusoft relay (Connect sellers + SMS + email).
  * Tests point RELAY_BASE_URL at this instead of a live relay, per SPEC.md:
@@ -140,9 +141,8 @@ export async function startFakeRelay(): Promise<FakeRelay> {
     res.json({ id: 'email_1' });
   });
 
-  const server: Server = app.listen(0);
-  const address = server.address();
-  const port = typeof address === 'object' && address ? address.port : 0;
+  const server: Server = createServer(app);
+  const port = await listenLoopback(server);
   const base = `http://127.0.0.1:${port}`;
 
   return Object.assign(relay, {

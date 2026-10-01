@@ -1125,14 +1125,18 @@ Acceptance:
 - [x] All five quality-bar commands still exit 0
 
 Notes:
-- Fixed the intermittent full-suite failures (about one run in five, in
-  different files each time). A captured failure was `fetch failed` on the
-  first request to a fresh test server: fetch pools keep-alive sockets per
-  host and port, and when a new test server got an ephemeral port an earlier
-  one had used, fetch reused the dead socket (or, before that server was
-  closed, reached the old one). Test servers (`withServer`, the fake relay,
-  the fake LiteLLM in `llm.test.ts`) now answer `Connection: close` and
-  close all sockets on shutdown. Eight full runs in a row passed after.
+- Fixed the intermittent full-suite failures: a request that hung for 300s,
+  a `fetch failed`, or a stray 401, in a different file each time. Root
+  cause: test servers called a bare `listen(0)`, which binds every
+  interface, while tests connect to `127.0.0.1`. macOS will give such a
+  listener a port number another program already holds on `127.0.0.1` (this
+  machine has 34, including editors and VPN tools), and the request then
+  reaches that program. Proven directly: a wildcard listener was allowed on a
+  port Cursor held on 127.0.0.1, and a fetch to it hung; an explicit
+  127.0.0.1 bind of that port is refused with EADDRINUSE. Every test server
+  now binds through `test/helpers/listen.ts` (`listenLoopback`), which binds
+  127.0.0.1 and waits for the port. Test servers also answer
+  `Connection: close` so fetch never pools sockets across tests.
 - The eval set is synthetic. Its pass rate means little until the launch
   coach's own descriptions are in it.
 
