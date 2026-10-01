@@ -93,7 +93,7 @@ The twelve screens of Coachatron (Slice 1):
 | 1 | Sign in | `/signin`, `/signin/otp`, `/signin/verify` | Coach |
 | 2 | Schedule | `/app/schedule` | Coach |
 | 3 | Session detail | `/app/sessions/:id`, `/app/sessions/:id/bookings/:bookingId/attendance`, `/app/sessions/:id/cancel` | Coach |
-| 4 | Session types | `/app/session-types`, `/app/session-types/:id/generate-week` | Coach |
+| 4 | Session types | `/app/session-types`, `/app/session-types/:id/generate-week` (weekly times), `/app/session-types/:id/slots/:slotId/remove` | Coach |
 | 5 | Pricing | `/app/pricing`, `/app/pricing/package`, `/app/pricing/plan` | Coach |
 | 6 | Roster | `/app/roster`, `/app/roster/:id/priority` | Coach |
 | 7 | Money (and connecting payments) | `/app/money`, `/app/money/payments` | Coach |
@@ -132,10 +132,21 @@ Do not commit secrets. `npm test` uses the in-process fake in `test/fakes/relay.
 - **No refund-webhook automation.** Refunds are issued through the coach's
   own Square dashboard (`SPEC.md §9.4`); Coachatron doesn't automatically
   reverse a package credit if the coach later issues a partial refund.
+- **No SMS segment ceilings yet.** `SPEC.md §10`'s per-coach daily and
+  monthly outbound caps are not enforced in the send path. Reminders add
+  one text per booking.
 - **The overflow cascade reuses the original session**, rather than
   creating a literal second "parallel session" row — the accepted backup
   coach is recorded on the same session via `assigned_roster_member_id`.
   See `ROADMAP.md` M4 for why.
+
+## Background job
+
+The running server ticks once a minute (`src/jobs/tick.ts`). Each tick keeps
+every weekly time 8 weeks ahead on the calendar, passes an expired overflow
+offer to the next backup coach, and sends 24-hour reminders outside quiet
+hours (9pm–8am in the coach's timezone). Tests call `runTick()` directly
+with a fixed clock; `createApp()` never starts the timer.
 
 None of these affect the three journeys in the product brief (booking +
 payment, the overflow cascade, the read-only Money screen), which are all

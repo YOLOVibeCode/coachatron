@@ -1037,3 +1037,36 @@ but a real gap between `SPEC.md`'s wording and Slice 1 as shipped. Recorded
 as `SPEC.md §15` item 7 rather than either quietly building it (scope
 creep at the very last step, with no milestone-level test design behind
 it) or quietly ignoring the discrepancy.
+
+---
+
+## M8: Take and run
+Status: [x] done
+Goal: A coach who sets up once never has to come back to keep the calendar
+full, and the background work SPEC.md already promises actually runs.
+Acceptance:
+- [x] Weekly times are saved (`weekly_slot`) and fill 8 weeks ahead; the
+      same local time holds across a DST change; regenerating never
+      duplicates a session (`test/weekly-slots.test.ts`)
+- [x] Removing a weekly time cancels its empty future sessions and keeps
+      booked ones for the coach to cancel one by one
+- [x] A one-minute tick (`src/jobs/tick.ts`) tops up weekly times, advances
+      expired overflow offers, and sends one 24-hour reminder per booking
+      outside quiet hours, skipping opted-out numbers (`test/tick.test.ts`)
+- [x] Sign-up asks only for a name: the timezone comes from the browser
+      and falls back to America/Chicago, and email is optional
+- [x] Landing page has a Start link; schedule cards link to session detail
+      and show booked/capacity; every coach screen has the same plain nav
+- [x] Overflow texts name the session; the offer text and page show the
+      headcount and the backup coach's pay (`session_type.backup_pay_cents`)
+- [x] All five quality-bar commands still exit 0
+
+Notes:
+- `generateWeekSessions` (7 days, once) is replaced by `createWeeklySlots`
+  and `ensureSlotSessions`. The route path `generate-week` is kept so links
+  and tests stay stable; the screen is now "Weekly times".
+- The tick starts only in the `server.ts` boot block, never in
+  `createApp()`, so tests stay deterministic. Railway runs one replica; more
+  would need `pg_try_advisory_lock` around `runTick`.
+- No thirteenth screen: slot removal is a POST on screen 4.
+

@@ -140,7 +140,8 @@ the solo coach. They return only when a paying customer is blocked without them.
 3. Creates first session type in one form: *what it's called, how long, how many
    athletes, how much*. Every other field is defaulted.
 4. Picks recurring times on a weekly grid (tap the slots). Sessions are generated
-   8 weeks ahead, rolling.
+   8 weeks ahead, rolling. *(Implemented: each weekly time is a `weekly_slot`,
+   topped up by the one-minute tick job.)*
 5. Connects payments (Square OAuth, one redirect). **Skippable** — the coach can
    share a booking link immediately and connect before the first payout.
 6. Gets their link: `coachatron.com/c/<handle>`. Done.
