@@ -45,6 +45,10 @@ export interface ChatMessage {
 export interface CompleteRequest {
   messages: ChatMessage[];
   schema: Record<string, unknown>;
+  /** Schema name sent to the relay. Defaults to "intent". */
+  schemaName?: string;
+  /** Per-attempt timeout. Defaults to LITELLM_TIMEOUT_MS (the SMS path). */
+  timeoutMs?: number;
 }
 
 export type CompleteFn = (req: CompleteRequest) => Promise<unknown>;

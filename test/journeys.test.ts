@@ -192,3 +192,70 @@ test('journey 3: full session + a waiter triggers the overflow ask, coach Y, ros
     });
   });
 });
+
+test('journey 4: a new coach talks their week in and publishes it, three decisions from Start', async () => {
+  const { setComplete, resetComplete } = await import('../src/llm/complete.js');
+  const { fakeComplete } = await import('./fakes/llm.js');
+  setComplete(
+    fakeComplete({
+      coach_timezone: null,
+      session_types: [{ key: 'k', name: 'Keeper Group', duration_min: 60, capacity: 8, price_cents: 3500, backup_pay_cents: null }],
+      weekly: [
+        { type_key: 'k', weekday: 2, time_local: '18:00', location: 'Field 3' },
+        { type_key: 'k', weekday: 4, time_local: '18:00', location: 'Field 3' },
+      ],
+      packages: [],
+      plans: [],
+    }),
+  );
+  try {
+    await withRelay(async (relay) => {
+      const db = await freshDb();
+      await withServer(async (base) => {
+        // Decision 1: Start.
+        const landing = await (await fetch(`${base}/`)).text();
+        assert.match(landing, /href="\/signin">Start/);
+        await fetch(`${base}/signin/otp`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ phone: '5550004444' }),
+          redirect: 'manual',
+        });
+        const code = /code is (\d{6})/.exec(relay.sms.find((m) => m.to === '+15550004444')!.body)![1];
+        const verify = await fetch(`${base}/signin/verify`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ phone: '+15550004444', code, name: 'Dana Keeper', tz: 'America/Chicago' }),
+          redirect: 'manual',
+        });
+        const cookie = extractSessionCookie(verify as unknown as Response);
+        assert.match(await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text(), /Tell me your week/);
+
+        // Decision 2: say the week, then "Set it up".
+        await fetch(`${base}/app/setup`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', cookie },
+          body: JSON.stringify({ text: 'Keeper group Tuesdays and Thursdays at 6 at Field 3, an hour, 8 kids, $35' }),
+          redirect: 'manual',
+        });
+
+        // Decision 3: Publish.
+        const draft = await db.query<{ id: number }>('select id from setup_draft');
+        const published = await fetch(`${base}/app/setup/publish`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', cookie },
+          body: JSON.stringify({ id: String(draft.rows[0].id) }),
+          redirect: 'manual',
+        });
+        assert.equal(published.headers.get('location'), '/app/schedule?published=1');
+
+        const handle = (await db.query<{ handle: string }>('select handle from coach')).rows[0].handle;
+        const publicPage = await (await fetch(`${base}/c/${handle}`)).text();
+        assert.match(publicPage, /Keeper Group/);
+        assert.match(publicPage, /8 spots left/);
+      });
+    });
+  } finally {
+    resetComplete();
+  }
+});

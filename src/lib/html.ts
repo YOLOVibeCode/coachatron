@@ -113,7 +113,7 @@ export const POSTCARD_TOKENS_CSS = `
   h2 { font-size: 1.1rem; margin: 18px 0 8px; font-weight: 600; }
   .muted, p.muted { color: var(--screen-muted); font-family: ui-sans-serif, system-ui, sans-serif; font-size: 0.95rem; }
   label { display: block; font-family: ui-sans-serif, system-ui, sans-serif; font-size: 0.85rem; color: var(--screen-muted); margin: 14px 0 4px; }
-  input, select {
+  input, select, textarea {
     width: 100%;
     max-width: 100%;
     min-height: var(--touch-min);
@@ -220,6 +220,11 @@ export const POSTCARD_TOKENS_CSS = `
   .btn-row button { margin-top: 8px; flex: 1; }
   button.ghost { background: transparent; color: var(--teal); border: 1px solid var(--teal); }
   a.card { display: block; color: inherit; text-decoration: none; }
+  textarea { min-height: 9rem; resize: vertical; line-height: 1.4; }
+  .setup-type { padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .setup-type:last-of-type { border-bottom: 0; }
+  .setup-questions { margin: 8px 0 0; padding-left: 1.2rem; font-family: ui-sans-serif, system-ui, sans-serif; }
+  a.action.ghost, .action.ghost { background: transparent; color: var(--teal); border: 1px solid var(--teal); }
   .coach-nav {
     display: flex;
     flex-wrap: wrap;

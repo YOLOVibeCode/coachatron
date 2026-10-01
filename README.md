@@ -91,7 +91,7 @@ The twelve screens of Coachatron (Slice 1):
 | # | Screen | Route(s) | Who |
 |---|--------|----------|-----|
 | 1 | Sign in | `/signin`, `/signin/otp`, `/signin/verify` | Coach |
-| 2 | Schedule | `/app/schedule` | Coach |
+| 2 | Schedule (and voice setup) | `/app/schedule`, `/app/setup`, `/app/setup/publish`, `/app/setup/discard` | Coach |
 | 3 | Session detail | `/app/sessions/:id`, `/app/sessions/:id/bookings/:bookingId/attendance`, `/app/sessions/:id/cancel` | Coach |
 | 4 | Session types | `/app/session-types`, `/app/session-types/:id/generate-week` (weekly times), `/app/session-types/:id/slots/:slotId/remove` | Coach |
 | 5 | Pricing | `/app/pricing`, `/app/pricing/package`, `/app/pricing/plan` | Coach |

@@ -1070,3 +1070,38 @@ Notes:
   would need `pg_try_advisory_lock` around `runTick`.
 - No thirteenth screen: slot removal is a POST on screen 4.
 
+---
+
+## M9: Talk your week in
+Status: [x] done
+Goal: A new coach reaches a live, bookable week in three decisions: Start,
+"Set it up" (after saying their week), Publish.
+Acceptance:
+- [x] A coach with nothing on the calendar sees "Tell me your week" on the
+      schedule screen; the model fills `SETUP_JSON_SCHEMA` and nothing else
+- [x] `validateSetupPlan` drops bad days and times, reuses types the coach
+      already has, enforces limits, and turns a missing price or headcount
+      into a question rather than a guess (`test/setup.test.ts`)
+- [x] The preview is rendered by product code; a draft writes nothing to
+      the schedule; Publish is blocked while a question is open and runs once
+- [x] A follow-up message ("make Thursday 6:30") updates the same draft,
+      with the current setup and open questions sent to the model
+- [x] A model failure or a spent budget falls back to the by-hand forms
+- [x] By SMS, a coach with no schedule gets a draft and a one-segment
+      reply with the link; a scheduled coach's texts are unchanged
+- [x] `test/journeys.test.ts` journey 4 walks Start → say it → Publish →
+      the public page lists the sessions
+- [x] All five quality-bar commands still exit 0
+
+Notes:
+- `PLATFORM.md` §4.3 R5 gains an additive-setup exception, approved by the
+  owner; §4.2 documents the second schema. `SPEC.md` §7.1 step 3 now leads
+  with talking the week in; the forms remain as the fallback.
+- The model budget moved to `src/domain/modelBudget.ts` so setup and the
+  assistant share one per-coach cap. Setup calls use an 8s timeout (a web
+  form with a larger answer); the SMS assistant keeps 3s.
+- Publish is idempotent instead of transactional (the pg Pool does not pin a
+  client): the draft is claimed first, and existing types, weekly times,
+  packages, and plans are reused.
+- No thirteenth screen: setup is screen 2's empty state and three POSTs.
+
