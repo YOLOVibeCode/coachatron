@@ -119,6 +119,30 @@ test('OptOutType=STOP is honored', async () => {
   });
 });
 
+test('OptOutType=START clears opt-out', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    await grantSmsConsent(db, '+15551234567');
+    await withServer(async (base) => {
+      await postSignedSms(base, { From: '+15551234567', Body: 'hi', OptOutType: 'STOP' });
+      assert.equal(await isOptedOut(db, '+15551234567'), true);
+      await postSignedSms(base, { From: '+15551234567', Body: 'hi', OptOutType: 'START' });
+      assert.equal(await isOptedOut(db, '+15551234567'), false);
+    });
+  });
+});
+
+test('OptOutType=HELP returns TwiML', async () => {
+  await withRelay(async () => {
+    await freshDb();
+    await withServer(async (base) => {
+      const res = await postSignedSms(base, { From: '+15551234567', Body: 'hello', OptOutType: 'HELP' });
+      assert.equal(res.status, 200);
+      assert.match(await res.text(), /<Message>/);
+    });
+  });
+});
+
 test('relay 21610 on send records opt-out', async () => {
   await withRelay(async () => {
     const db = await freshDb();
