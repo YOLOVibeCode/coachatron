@@ -25,7 +25,9 @@ Later, the coach runs all of it by texting the number in plain English.
 
 ## Prerequisites
 
-- Node.js ≥ 20.11 (see `engines` in `package.json`). That's the whole list.
+- Node.js 24 (the current LTS). `.nvmrc` names it, so `nvm use` (or a shell
+  that switches on `.nvmrc`) picks it up; `npm ci` refuses an older Node
+  (`engine-strict` in `.npmrc`). That's the whole list.
 - No Postgres, no Docker, no database to install — tests run against
   [PGlite](https://pglite.dev) (Postgres compiled to WASM, in-memory).
 - No accounts to create and no secrets required to run locally. Payments

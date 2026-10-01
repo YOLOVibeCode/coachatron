@@ -74,6 +74,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   setInterval(() => void tick(), TICK_MS);
 
   createApp().listen(PORT, () => {
-    console.log(`Coachatron listening on ${PORT}`);
+    console.log(`Coachatron listening on ${PORT} (Node ${process.version})`);
   });
 }
