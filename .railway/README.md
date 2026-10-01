@@ -21,3 +21,10 @@ railway config apply
   reads that variable before `package.json` engines, so it decides the Node a
   deploy runs. To apply everything except a Node change, set
   `COACHATRON_IAC_PRESERVE_NODE=1`.
+- **Known Railway bug (production).** `railway config apply` with any change
+  fails in production with "Custom-domain registration is not supported" for
+  `coachatron.com` and `www.coachatron.com`, though both exist and `plan`
+  shows only the intended change. Until Railway fixes it, make the planned
+  change directly (for a variable: `railway variable set KEY=VALUE --service
+  web --environment production`), then run `railway config plan` to confirm
+  it says "already up to date".

@@ -1214,6 +1214,14 @@ Notes:
   environment on purpose (development, then uat, then production), not as
   part of this migration. `COACHATRON_IAC_PRESERVE_NODE=1` applies the rest
   of the file without it.
+- Applied 2026-10-01 with the owner's go-ahead, in order. development:
+  `config apply`, rebuilt `8cb1fb3`. uat: `config apply`, rebuilt `9f42394`.
+  production: `config apply` refused (a Railway bug that rejects the two
+  existing custom domains on any change), so the same single change was made
+  with `railway variable set`, rebuilt `97012f4`. All three now run Node
+  24.21.0 (read with `railway ssh`); `/` and `/signin` return 200 and a
+  database-backed 404 route answers on every domain; `config plan` is
+  "already up to date" in all three. No code changed in any deploy.
 - The `railway` SDK checks the CLI version by running `$_`, the last command
   the shell ran. Wrapping `railway config plan` in `timeout` (or anything
   else) makes it fail with a misleading "requires Railway CLI 5.42.1".
