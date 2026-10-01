@@ -2,8 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-/** One Node version, read three ways: nvm and CI read .nvmrc, Railway
- * (Railpack) reads package.json engines first. If they drift, a deploy runs
+/** One Node version, read everywhere: nvm and CI read .nvmrc; Railway
+ * (Railpack) reads RAILPACK_NODE_VERSION first, which .railway/railway.ts
+ * sets from .nvmrc, then package.json engines. If they drift, a deploy runs
  * a Node nobody tested. */
 
 const root = new URL('..', import.meta.url);
@@ -31,3 +32,13 @@ test('the Node running these tests meets engines', () => {
     `running Node ${process.version}, but package.json needs ${engines}. Run "nvm use" in this folder.`,
   );
 });
+
+test('Railway takes its Node version from .nvmrc and no longer has railway.json', () => {
+  const iac = read('.railway/railway.ts');
+  assert.match(iac, /RAILPACK_NODE_VERSION: nodeVersion\(\)/);
+  assert.match(iac, /readFileSync\(new URL\("\.\.\/\.nvmrc", import\.meta\.url\)/);
+  assert.match(iac, /export const partial = "web";/, 'the file owns only the web service');
+  assert.doesNotMatch(iac, /\b(postgres|slack-cards)\(/, 'Postgres and slack-cards are managed elsewhere');
+  assert.throws(() => read('railway.json'), /ENOENT/, 'railway.json (Config as Code) is retired');
+});
+

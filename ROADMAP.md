@@ -1177,3 +1177,44 @@ Notes:
 - To move to the next LTS: change `.nvmrc` and `engines` together (the
   toolchain test enforces it), after the `Next Node (lts/*)` job is green.
 
+---
+
+## M12: Railway Infrastructure as Code
+Status: [x] done
+Goal: Retire `railway.json` (Config as Code, which Railway stops reading on
+2026-12-01) without changing anything that runs, and let `.nvmrc` decide
+production's Node.
+Acceptance:
+- [x] `.railway/railway.ts` describes the `web` service in development
+      (`develop`), uat (`staging`) and production (`main`): source, build,
+      start, healthcheck, replicas, custom domains, and every variable as
+      `preserve()` (values never in git)
+- [x] It is a `web` partial: Postgres, its volume, and slack-cards are not
+      declared and apply cannot touch them
+- [x] `railway config plan` in all three environments: "already up to
+      date" (with the Node line preserved), so the file matches what runs;
+      applied to all three, which recorded ownership and changed nothing
+- [x] `railway config migrate --apply --service web` run in all three:
+      no Config File setting was set, so nothing to clear
+- [x] `railway.json` deleted; `test/toolchain.test.ts` fails if it returns,
+      if the file stops reading `.nvmrc`, or if it declares Postgres or
+      slack-cards
+- [x] All five quality-bar commands still exit 0
+
+Notes:
+- The first `migrate` output was not safe to apply: it named the service
+  `coachatron` (the live one is `web`), and with only build/start/healthcheck
+  declared, `plan` showed it would delete all 14 web variables and detach the
+  GitHub source. The file was rebuilt from `railway config pull` in each
+  environment instead.
+- `RAILPACK_NODE_VERSION` comes from `.nvmrc`, so moving Node is a one-file
+  change. Applying that is the only pending change in each environment:
+  `plan` shows exactly one update, `web.RAILPACK_NODE_VERSION` (22 to 24).
+  It changes the runtime of a live service, so it is applied per
+  environment on purpose (development, then uat, then production), not as
+  part of this migration. `COACHATRON_IAC_PRESERVE_NODE=1` applies the rest
+  of the file without it.
+- The `railway` SDK checks the CLI version by running `$_`, the last command
+  the shell ran. Wrapping `railway config plan` in `timeout` (or anything
+  else) makes it fail with a misleading "requires Railway CLI 5.42.1".
+
