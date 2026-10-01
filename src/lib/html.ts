@@ -283,6 +283,21 @@ export function coachNav(active?: CoachNavKey): SafeHtml {
   </nav>`;
 }
 
+export function smsConsentCheckbox(): SafeHtml {
+  return html`<label class="sms-consent">
+    <input type="checkbox" name="sms_consent" value="1" />
+    Text me booking confirmations, reminders, and session updates from Coachatron. Message frequency varies. Message and data rates may apply. Reply STOP to opt out, HELP for help. Consent is not a condition of purchase. See our <a href="/terms#sms">SMS Terms</a> and <a href="/privacy">Privacy Policy</a>.
+  </label>`;
+}
+
+export function siteFooter(): SafeHtml {
+  return html`<footer class="site-footer">
+    <a href="/privacy">Privacy</a>
+    <span aria-hidden="true"> · </span>
+    <a href="/terms">Terms</a>
+  </footer>`;
+}
+
 export function page(title: string, body: SafeHtml): string {
   return `<!doctype html>
 <html lang="en">
@@ -290,10 +305,15 @@ export function page(title: string, body: SafeHtml): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(title)} — Coachatron</title>
-<style>${POSTCARD_TOKENS_CSS}</style>
+<style>${POSTCARD_TOKENS_CSS}
+  .site-footer { margin-top: 24px; font-size: 0.9rem; }
+  .site-footer a { color: var(--teal); }
+  .sms-consent { display: block; margin: 12px 0; font-size: 0.95rem; color: var(--screen-muted); }
+  .sms-consent input { margin-right: 8px; }
+</style>
 </head>
 <body>
-<div class="phone"><div class="screen">${body.value}</div></div>
+<div class="phone"><div class="screen">${body.value}${siteFooter().value}</div></div>
 </body>
 </html>`;
 }

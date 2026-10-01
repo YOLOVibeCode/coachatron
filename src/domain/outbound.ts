@@ -2,11 +2,15 @@ import type { DbClient } from '../db/client.js';
 import { sendSms } from '../relay/sms.js';
 import { zonedParts, zonedTimeToUtc } from './scheduling.js';
 import {
+  SMS_BRAND,
   SMS_COACH_DAILY_CAP,
   SMS_COACH_MONTHLY_CAP,
   SMS_PRODUCT_DAILY_FLOOR,
   SMS_PRODUCT_DAILY_PER_COACH,
 } from '../config.js';
+import { hasActiveConsent } from './sms-consent.js';
+import { isOptedOut } from './cascade.js';
+import { revokeConsent } from './sms-consent.js';
 
 /** The only way Coachatron sends a text. SPEC.md §10: "The stop is there
  * for a loop." Every send is one segment, domestic, logged, and counted
@@ -93,6 +97,14 @@ export interface OutboundText {
   perRecipientDailyMax?: number;
 }
 
+const CONSENT_EXEMPT_TEMPLATES = new Set(['consent-request']);
+
+function withBrand(body: string): string {
+  const prefix = `${SMS_BRAND}:`;
+  if (body.startsWith(prefix)) return body;
+  return `${prefix} ${body}`;
+}
+
 async function countSent(db: DbClient, where: string, params: unknown[]): Promise<number> {
   const result = await db.query<{ n: string }>(
     `select count(*)::text as n from message_log where status = 'sent' and ${where}`,
@@ -145,10 +157,20 @@ async function log(db: DbClient, msg: OutboundText, body: string, status: string
 }
 
 export async function sendText(db: DbClient, msg: OutboundText, now: Date = new Date()): Promise<SendOutcome> {
-  const body = toOneSegment(msg.body);
+  const body = toOneSegment(withBrand(msg.body));
   if (!isDomesticDestination(msg.to)) {
     await log(db, msg, body, 'refused-destination', null, now);
     return 'refused';
+  }
+  if (!CONSENT_EXEMPT_TEMPLATES.has(msg.template)) {
+    if (await isOptedOut(db, msg.to)) {
+      await log(db, msg, body, 'refused-opt-out', null, now);
+      return 'refused';
+    }
+    if (!(await hasActiveConsent(db, msg.to))) {
+      await log(db, msg, body, 'refused-no-consent', null, now);
+      return 'refused';
+    }
   }
   const hit = await ceilingHit(db, msg, now);
   if (hit) {
@@ -156,12 +178,17 @@ export async function sendText(db: DbClient, msg: OutboundText, now: Date = new 
     console.warn(`sms: ${hit} ceiling reached, not sending ${msg.template} (coach ${msg.coachId ?? '-'})`);
     return 'capped';
   }
-  try {
-    const sent = await sendSms({ to: msg.to, body });
-    await log(db, msg, body, 'sent', sent.id ?? null, now);
+  const sent = await sendSms({ to: msg.to, body });
+  if (sent.ok) {
+    await log(db, msg, body, 'sent', sent.id, now);
     return 'sent';
-  } catch (err) {
-    await log(db, msg, body, 'failed', null, now);
-    throw err;
   }
+  if (sent.code === 21610) {
+    await revokeConsent(db, msg.to);
+    await log(db, msg, body, 'failed-opt-out', null, now);
+    console.warn(`sms: recipient opted out (21610), not sending ${msg.template} to ${msg.to}`);
+    return 'refused';
+  }
+  await log(db, msg, body, 'failed', null, now);
+  throw new Error(`relay sms send failed: ${sent.code} ${sent.message}`);
 }

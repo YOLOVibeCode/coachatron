@@ -31,3 +31,13 @@ export const SMS_COACH_MONTHLY_CAP = 2000;
 export const SMS_PRODUCT_DAILY_PER_COACH = 400;
 export const SMS_PRODUCT_DAILY_FLOOR = 500;
 export const OTP_DAILY_MAX_PER_PHONE = 5;
+
+export const SMS_BRAND = 'Coachatron';
+export const SMS_PURPOSE = 'booking confirmations, reminders, and session updates';
+export const SMS_CONSENT_TEXT_VERSION = 'v1';
+export const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL ?? 'support@coachatron.com';
+export const RELAY_INBOUND_SECRET = process.env.RELAY_INBOUND_SECRET ?? '';
+export const SMS_WEBHOOK_PUBLIC_URL =
+  process.env.SMS_WEBHOOK_PUBLIC_URL ?? `${APP_BASE_URL.replace(/\/$/, '')}/webhooks/sms`;
+export const SMS_STATUS_WEBHOOK_PUBLIC_URL =
+  process.env.SMS_STATUS_WEBHOOK_PUBLIC_URL ?? `${APP_BASE_URL.replace(/\/$/, '')}/webhooks/sms-status`;

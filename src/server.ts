@@ -2,7 +2,7 @@ import express from 'express';
 import { PORT } from './config.js';
 import { coachRouter } from './routes/coach.js';
 import { publicRouter } from './routes/public.js';
-import { webhooksRouter } from './routes/webhooks.js';
+import { smsInboundRouter, smsStatusRouter } from './routes/webhooks.js';
 import { storeWebhookRouter } from './routes/store-webhook.js';
 import { getDb } from './db/client.js';
 import { runMigrations } from './db/migrate.js';
@@ -14,6 +14,8 @@ const TICK_MS = 60_000;
 export function createApp() {
   const app = express();
   app.use('/webhooks/store', express.raw({ type: '*/*' }), storeWebhookRouter);
+  app.use('/webhooks/sms', express.raw({ type: '*/*' }), smsInboundRouter);
+  app.use('/webhooks/sms-status', express.raw({ type: '*/*' }), smsStatusRouter);
   app.use(express.urlencoded({ extended: true }));
   app.use(express.json());
 
@@ -31,7 +33,6 @@ export function createApp() {
 
   app.use(coachRouter);
   app.use(publicRouter);
-  app.use(webhooksRouter);
 
   return app;
 }

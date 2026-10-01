@@ -1,5 +1,5 @@
 import type { DbClient } from '../db/client.js';
-import { advanceCascade, isOptedOut } from '../domain/cascade.js';
+import { advanceCascade } from '../domain/cascade.js';
 import { topUpAllSlots, zonedParts } from '../domain/scheduling.js';
 import { clipSms, formatConfirmWhen } from '../lib/time.js';
 import { sendText } from '../domain/outbound.js';
@@ -51,7 +51,6 @@ export async function sendDueReminders(db: DbClient, now: Date): Promise<number>
       [row.booking_id],
     );
     if (claimed.rows.length === 0) continue;
-    if (await isOptedOut(db, row.contact_phone)) continue;
     const when = formatConfirmWhen(new Date(row.starts_at_utc).toISOString(), row.tz);
     const place = row.location_text ? ` at ${row.location_text}` : '';
     const outcome = await sendText(

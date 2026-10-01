@@ -19,7 +19,7 @@ test('coach onboarding: OTP sign-in, session type, weekly schedule, public page'
       const otpRes = await fetch(`${base}/signin/otp`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ phone: '5551234567' }),
+        body: JSON.stringify({ phone: '5551234567', sms_consent: '1' }),
         redirect: 'manual',
       });
       assert.equal(otpRes.status, 303);
@@ -111,7 +111,7 @@ async function signUp(base: string, relay: { sms: Array<{ to: string; body: stri
   await fetch(`${base}/signin/otp`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ phone: digits }),
+    body: JSON.stringify({ phone: digits, sms_consent: '1' }),
     redirect: 'manual',
   });
   const phone = `+1${digits}`;

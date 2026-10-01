@@ -12,13 +12,10 @@ import { addCalendarDays, zonedParts, zonedTimeToUtc } from '../src/domain/sched
 import { checkOverflow } from '../src/domain/cascade.js';
 import { APP_BASE_URL } from '../src/config.js';
 import type { ClassifiedIntent } from '../src/llm/schema.js';
+import { postSignedSms } from './helpers/sms-webhook.js';
 
 async function smsTo(base: string, from: string, body: string): Promise<Response> {
-  return fetch(`${base}/webhooks/sms`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ from, body }),
-  });
+  return postSignedSms(base, { From: from, Body: body });
 }
 
 function cookieFor(token: string): string {
@@ -78,6 +75,8 @@ test('pattern cancel confirms, Y texts athletes and returns credits', async () =
        values ($1, 'Credit Kid', $2, 'PackageCredit', $3, 'booked')`,
       [seed.sessionId, '+15550000011', credit.rows[0].id],
     );
+    const { grantSmsConsent } = await import('../src/domain/sms-consent.js');
+    await grantSmsConsent(db, '+15550000011');
     await seedBookedSession(db, seed.sessionId, 'Drop In', '+15550000012');
 
     setComplete(fakeComplete(new Error('model must not run')));
@@ -85,7 +84,7 @@ test('pattern cancel confirms, Y texts athletes and returns credits', async () =
       await withServer(async (base) => {
         const ask = await smsTo(base, seed.coach.phone, "cancel tomorrow's 6pm, field's flooded");
         assert.equal(ask.status, 200);
-        assert.equal(await ask.text(), 'confirm');
+        assert.match(await ask.text(), /<Response/);
         const confirm = relay.sms.filter((m) => m.to === seed.coach.phone).at(-1);
         assert.ok(confirm);
         assert.match(confirm!.body, /Cancel /);
@@ -93,7 +92,8 @@ test('pattern cancel confirms, Y texts athletes and returns credits', async () =
         assert.match(confirm!.body, /2 athletes/);
 
         const yes = await smsTo(base, seed.coach.phone, 'Y');
-        assert.equal(await yes.text(), 'done');
+        assert.equal(yes.status, 200);
+        assert.match(await yes.text(), /<Response/);
       });
     } finally {
       resetComplete();
@@ -226,11 +226,13 @@ test('STOP and HELP are case-insensitive single tokens; original text reaches th
     setComplete(llm);
     try {
       await withServer(async (base) => {
-        const stop = await smsTo(base, seed.coach.phone, 'stop');
-        assert.equal(await stop.text(), 'opted out');
+        const stop = await smsTo(base, '+15559876543', 'stop');
+        assert.equal(stop.status, 200);
+        assert.match(await stop.text(), /<Response><\/Response>/);
 
         const help = await smsTo(base, '+15559990000', 'HeLp');
-        assert.equal(await help.text(), 'help sent');
+        assert.equal(help.status, 200);
+        assert.match(await help.text(), /<Message>/);
 
         const english = await smsTo(base, seed.coach.phone, 'What did I collect this week actually');
         assert.equal(english.status, 200);
@@ -241,7 +243,7 @@ test('STOP and HELP are case-insensitive single tokens; original text reaches th
     } finally {
       resetComplete();
     }
-    assert.ok(relay.sms.some((m) => /opted out/i.test(m.body)));
+    assert.equal(relay.sms.some((m) => /opted out/i.test(m.body)), false);
   });
 });
 
@@ -260,10 +262,12 @@ test('roster live offer Y never reaches the model; other text gets one link a da
       await withServer(async (base) => {
         await smsTo(base, seed.coach.phone, 'Y');
         const banana = await smsTo(base, member.phone, 'cancel tomorrow');
-        assert.equal(await banana.text(), 'offer link');
+        assert.equal(banana.status, 200);
+        assert.match(await banana.text(), /<Response/);
         await smsTo(base, member.phone, 'cancel tomorrow again');
         const yes = await smsTo(base, member.phone, 'Y');
-        assert.equal(await yes.text(), 'offer accepted');
+        assert.equal(yes.status, 200);
+        assert.match(await yes.text(), /<Response/);
       });
     } finally {
       resetComplete();
@@ -314,7 +318,8 @@ test('overflow ask retires a waiting cancel; overflow Y still starts the cascade
 
       await withServer(async (base) => {
         const yes = await smsTo(base, seed.coach.phone, 'Y');
-        assert.equal(await yes.text(), 'cascade started');
+        assert.equal(yes.status, 200);
+        assert.match(await yes.text(), /<Response/);
       });
     } finally {
       resetComplete();
@@ -329,12 +334,16 @@ test('overflow ask retires a waiting cancel; overflow Y still starts the cascade
 
 test('unknown numbers get one booking-link reply per day', async () => {
   await withRelay(async (relay) => {
-    await freshDb();
+    const db = await freshDb();
+    const { grantSmsConsent } = await import('../src/domain/sms-consent.js');
+    await grantSmsConsent(db, '+15559990000');
     await withServer(async (base) => {
       const first = await smsTo(base, '+15559990000', 'banana');
-      assert.equal(await first.text(), 'unrecognized');
+      assert.equal(first.status, 200);
+      assert.match(await first.text(), /<Response/);
       const second = await smsTo(base, '+15559990000', 'banana');
-      assert.equal(await second.text(), 'unrecognized');
+      assert.equal(second.status, 200);
+      assert.match(await second.text(), /<Response/);
     });
     const toThem = relay.sms.filter((m) => m.to === '+15559990000');
     assert.equal(toThem.length, 1);

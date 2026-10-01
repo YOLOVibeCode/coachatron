@@ -17,7 +17,7 @@ import {
 import { APP_BASE_URL, APP_FEE_BPS, OTP_DAILY_MAX_PER_PHONE, SELLER_AGREEMENT_VERSION } from '../config.js';
 import { acceptSellerAgreement, getSellerStatus, startSellerOnboarding } from '../relay/seller.js';
 import { createWeeklySlots, deactivateSlot, listWeeklySlots, type WeeklySlot } from '../domain/scheduling.js';
-import { coachNav, html, page, raw } from '../lib/html.js';
+import { coachNav, html, page, raw, smsConsentCheckbox } from '../lib/html.js';
 import { DEFAULT_TZ, formatLocal, isValidTimeZone } from '../lib/time.js';
 import { getPackagesForCoach, getPlansForCoach, createPackage, createPlan } from '../domain/pricing.js';
 import { summarizeMoney } from '../domain/money.js';
@@ -32,6 +32,8 @@ import {
   renderSetupPreview,
   type SetupDraft,
 } from '../domain/setup.js';
+import { recordConsent } from '../domain/sms-consent.js';
+import { sendRosterConsentRequest } from '../domain/cascade.js';
 
 // ---- Roster functions (M4 overflow cascade) ----
 
@@ -100,10 +102,22 @@ function renderPhoneForm(value = '', error?: string) {
       <form method="post" action="/signin/otp">
         <label for="phone">Phone</label>
         <input id="phone" name="phone" type="tel" autocomplete="tel" placeholder="(555) 555-0100" value="${value}" required />
+        ${smsConsentCheckbox()}
         <button type="submit">Send code</button>
       </form>
       ${error ? html`<p class="error">${error}</p>` : raw('')}`,
   );
+}
+
+function smsConsentChecked(body: unknown): boolean {
+  const value = (body as Record<string, unknown> | undefined)?.sms_consent;
+  return value === '1' || value === 'on' || value === true;
+}
+
+function consentMeta(req: Request): { ip: string | null; userAgent: string | null } {
+  const ip = typeof req.ip === 'string' ? req.ip : null;
+  const userAgent = typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : null;
+  return { ip, userAgent };
 }
 
 coachRouter.get('/signin', (_req, res) => {
@@ -117,7 +131,14 @@ coachRouter.post('/signin/otp', async (req, res) => {
     res.status(422).send(renderPhoneForm(raw_phone, 'Enter a valid phone number.'));
     return;
   }
+  if (!smsConsentChecked(req.body)) {
+    res
+      .status(422)
+      .send(renderPhoneForm(raw_phone, 'Check the box to receive your sign-in code and session texts by SMS.'));
+    return;
+  }
   const db = getDb();
+  await recordConsent(db, phone, '/signin/otp', consentMeta(req));
   const code = await createOtp(db, phone);
   const outcome = await sendText(db, {
     to: phone,
@@ -947,6 +968,10 @@ coachRouter.post('/app/roster', requireAuth, async (_req, res) => {
   }
 
   await addRosterMember(db, coachId, name, phone);
+  const coach = await findCoachById(db, coachId);
+  if (coach) {
+    await sendRosterConsentRequest(db, coachId, coach.name, phone);
+  }
   res.redirect(303, '/app/roster');
 });
 
