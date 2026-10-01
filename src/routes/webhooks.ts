@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { getDb, type DbClient } from '../db/client.js';
-import { sendSms } from '../relay/sms.js';
+import { sendText } from '../domain/outbound.js';
 import { findCoachByPhone, normalizePhone } from '../domain/auth.js';
 import {
   acceptOffer,
@@ -12,6 +12,7 @@ import {
 } from '../domain/cascade.js';
 import { handleCoachMessage, keywordToken } from '../domain/assistant.js';
 import { getLivePending, logAssistant, takeDailyReplySlot } from '../domain/assistantPending.js';
+import { createStartLink, phoneHasBooking } from '../domain/startLink.js';
 import { APP_BASE_URL } from '../config.js';
 import { clipSms } from '../lib/time.js';
 
@@ -41,7 +42,7 @@ async function findSentOfferForPhone(
 async function replyOnce(db: DbClient, phone: string, body: string, now: Date): Promise<boolean> {
   const ok = await takeDailyReplySlot(db, phone, now);
   if (!ok) return false;
-  await sendSms({ to: phone, body: clipSms(body) });
+  await sendText(db, { to: phone, body: clipSms(body), coachId: null, template: 'auto-reply' }, now);
   return true;
 }
 
@@ -64,9 +65,11 @@ webhooksRouter.post('/webhooks/sms', async (req, res) => {
 
   if (kw === 'STOP') {
     await upsertOptOut(db, from);
-    await sendSms({
+    await sendText(db, {
       to: from,
       body: 'Coachatron: you are opted out. Text HELP for help, or use your booking link.',
+      coachId: null,
+      template: 'stop',
     });
     await logAssistant(db, {
       phone: from,
@@ -81,7 +84,12 @@ webhooksRouter.post('/webhooks/sms', async (req, res) => {
   }
 
   if (kw === 'HELP') {
-    await sendSms({ to: from, body: 'Coachatron: for help, visit your booking or coach link. Text STOP to opt out.' });
+    await sendText(db, {
+      to: from,
+      body: 'Coachatron: for help, visit your booking or coach link. Text STOP to opt out.',
+      coachId: null,
+      template: 'help',
+    });
     await logAssistant(db, {
       phone: from,
       channel: 'sms',
@@ -132,11 +140,30 @@ webhooksRouter.post('/webhooks/sms', async (req, res) => {
     }
 
     const reply = await handleCoachMessage(db, coach, body, 'sms', now);
-    await sendSms({ to: from, body: reply.text });
+    await sendText(db, { to: from, body: reply.text, coachId: coach.id, template: 'assistant' }, now);
     res.status(200).send(reply.kind);
     return;
   }
 
-  await replyOnce(db, from, `Coachatron: use your booking link at ${APP_BASE_URL}`, now);
+  if (await phoneHasBooking(db, from)) {
+    await replyOnce(db, from, `Coachatron: use your booking link at ${APP_BASE_URL}`, now);
+    res.status(200).send('unrecognized');
+    return;
+  }
+
+  const ok = await takeDailyReplySlot(db, from, now);
+  if (ok) {
+    const token = await createStartLink(db, from, body, now);
+    await sendText(
+      db,
+      {
+        to: from,
+        body: `Got it. Tap to see your week and go live: ${APP_BASE_URL}/start/${token}`,
+        coachId: null,
+        template: 'auto-reply',
+      },
+      now,
+    );
+  }
   res.status(200).send('unrecognized');
 });

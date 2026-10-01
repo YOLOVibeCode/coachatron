@@ -1,7 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import type { DbClient } from '../db/client.js';
-import { sendSms } from '../relay/sms.js';
+import { sendText } from './outbound.js';
 import { expireLivePendingForCoach } from './assistantPending.js';
+import { clipSms, formatConfirmWhen } from '../lib/time.js';
 
 export const OVERFLOW_OFFER_TTL_MINUTES = 20;
 
@@ -17,9 +18,9 @@ export async function upsertOptOut(db: DbClient, phone: string): Promise<void> {
 /** All cascade-initiated (non-critical) sends go through this, never the
  * bare relay client, so an opted-out number is silently skipped rather than
  * texted again. SPEC.md §10: "STOP handling ... required, not optional." */
-async function sendUnlessOptedOut(db: DbClient, to: string, body: string): Promise<void> {
+async function sendUnlessOptedOut(db: DbClient, coachId: number, template: string, to: string, body: string): Promise<void> {
   if (await isOptedOut(db, to)) return;
-  await sendSms({ to, body });
+  await sendText(db, { to, body, coachId, template });
 }
 
 interface SessionOverflowInfo {
@@ -27,6 +28,9 @@ interface SessionOverflowInfo {
   coachPhone: string;
   capacity: number;
   overflowThreshold: number;
+  /** "Tue Oct 7, 6:00pm Keeper Group", for the texts. */
+  label: string;
+  backupPayCents: number | null;
 }
 
 async function loadSessionOverflowInfo(db: DbClient, sessionId: number): Promise<SessionOverflowInfo | null> {
@@ -36,8 +40,13 @@ async function loadSessionOverflowInfo(db: DbClient, sessionId: number): Promise
     capacity: number;
     capacity_override: number | null;
     overflow_threshold: number;
+    starts_at_utc: string | Date;
+    tz: string;
+    name: string;
+    backup_pay_cents: number | null;
   }>(
-    `select c.id as coach_id, c.phone as coach_phone, st.capacity, s.capacity_override, st.overflow_threshold
+    `select c.id as coach_id, c.phone as coach_phone, st.capacity, s.capacity_override, st.overflow_threshold,
+            s.starts_at_utc, s.tz, st.name, st.backup_pay_cents
      from session s
      join session_type st on st.id = s.session_type_id
      join coach c on c.id = st.coach_id
@@ -52,6 +61,8 @@ async function loadSessionOverflowInfo(db: DbClient, sessionId: number): Promise
     coachPhone: row.coach_phone,
     capacity,
     overflowThreshold: row.overflow_threshold >= 0 ? row.overflow_threshold : capacity,
+    label: `${formatConfirmWhen(new Date(row.starts_at_utc).toISOString(), row.tz)} ${row.name}`,
+    backupPayCents: row.backup_pay_cents,
   };
 }
 
@@ -105,8 +116,10 @@ export async function checkOverflow(db: DbClient, sessionId: number): Promise<vo
   await expireLivePendingForCoach(db, info.coachId);
   await sendUnlessOptedOut(
     db,
+    info.coachId,
+    'overflow-ask',
     info.coachPhone,
-    `Coachatron: this session is full with ${waiting} waiting. Open a second group? Reply YES and I'll ask your roster.`,
+    clipSms(`Coachatron: ${info.label} is full, ${waiting} waiting. Reply YES and I'll ask your roster.`),
   );
 }
 
@@ -171,7 +184,13 @@ export async function startCascade(db: DbClient, sessionId: number): Promise<voi
         'update overflow_ask set exhausted_notified_at = now() where session_id = $1 and exhausted_notified_at is null',
         [sessionId],
       );
-      await sendUnlessOptedOut(db, info.coachPhone, 'Coachatron: nobody on your roster accepted the overflow session.');
+      await sendUnlessOptedOut(
+        db,
+        info.coachId,
+        'overflow-exhausted',
+        info.coachPhone,
+        'Coachatron: nobody on your roster accepted the overflow session.',
+      );
     }
     return;
   }
@@ -185,11 +204,26 @@ export async function startCascade(db: DbClient, sessionId: number): Promise<voi
     [sessionId, member.id, expiresAt.toISOString(), token],
   );
 
-  await sendUnlessOptedOut(
-    db,
-    member.phone,
-    'Coachatron: a session needs a backup coach. Reply Y to claim it (expires in 20 min).',
-  );
+  await sendUnlessOptedOut(db, info.coachId, 'offer', member.phone, offerText(info, await countBooked(db, sessionId)));
+}
+
+function formatPay(cents: number): string {
+  return cents % 100 === 0 ? `$${cents / 100}` : `$${(cents / 100).toFixed(2)}`;
+}
+
+/** SPEC.md §7.3 step 3: time, session, headcount, and what it pays. */
+function offerText(info: SessionOverflowInfo, booked: number): string {
+  const pay = info.backupPayCents ? `, pays ${formatPay(info.backupPayCents)}` : '';
+  return clipSms(`Coachatron: ${info.label}, ${booked} athletes${pay}. Reply Y to claim (20 min).`);
+}
+
+/** What the offer page (screen 12) shows, the same facts as the text. */
+export async function describeOffer(db: DbClient, sessionId: number): Promise<string | null> {
+  const info = await loadSessionOverflowInfo(db, sessionId);
+  if (!info) return null;
+  const booked = await countBooked(db, sessionId);
+  const pay = info.backupPayCents ? ` Pays ${formatPay(info.backupPayCents)}.` : '';
+  return `${info.label}, ${booked} athletes.${pay}`;
 }
 
 /** Declining advances the cascade immediately, without waiting for the

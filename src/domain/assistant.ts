@@ -3,11 +3,9 @@ import type { CoachRow } from './auth.js';
 import { startCascade, isOptedOut } from './cascade.js';
 import { summarizeMoney } from './money.js';
 import { addCalendarDays, zonedParts, zonedTimeToUtc } from './scheduling.js';
-import {
-  APP_BASE_URL,
-  ASSISTANT_MODEL_DAILY_CAP,
-  ASSISTANT_MODEL_MONTHLY_CAP,
-} from '../config.js';
+import { APP_BASE_URL } from '../config.js';
+import { reserveModelCall } from './modelBudget.js';
+import { coachHasSchedule, handleSetupMessage, setupSmsReply } from './setup.js';
 import { complete } from '../llm/complete.js';
 import {
   INTENT_JSON_SCHEMA,
@@ -17,7 +15,7 @@ import {
   type IntentName,
 } from '../llm/schema.js';
 import { clipSms, formatConfirmWhen, formatLocal } from '../lib/time.js';
-import { sendSms } from '../relay/sms.js';
+import { sendText } from './outbound.js';
 import {
   consumePending,
   createPending,
@@ -283,25 +281,6 @@ export function classifiedFromModel(raw: unknown): ClassifiedIntent {
   };
 }
 
-async function modelCallCount(db: DbClient, coachId: number, sinceIso: string): Promise<number> {
-  const result = await db.query<{ n: string }>(
-    'select count(*)::text as n from assistant_model_call where coach_id = $1 and called_at >= $2',
-    [coachId, sinceIso],
-  );
-  return Number(result.rows[0]?.n ?? '0');
-}
-
-async function underModelCap(db: DbClient, coach: CoachRow, now: Date): Promise<boolean> {
-  const local = zonedParts(now, coach.tz);
-  const dayStart = zonedTimeToUtc(local.year, local.month, local.day, 0, 0, coach.tz);
-  const monthStart = zonedTimeToUtc(local.year, local.month, 1, 0, 0, coach.tz);
-  const [dayCount, monthCount] = await Promise.all([
-    modelCallCount(db, coach.id, dayStart.toISOString()),
-    modelCallCount(db, coach.id, monthStart.toISOString()),
-  ]);
-  return dayCount < ASSISTANT_MODEL_DAILY_CAP && monthCount < ASSISTANT_MODEL_MONTHLY_CAP;
-}
-
 function sessionCatalog(sessions: SessionBrief[]): string {
   return sessions
     .map((s) => {
@@ -320,7 +299,7 @@ async function llmClassify(
   now: Date,
   channel: AssistantChannel,
 ): Promise<ClassifiedIntent> {
-  if (!(await underModelCap(db, coach, now))) {
+  if (!(await reserveModelCall(db, coach, now))) {
     await logAssistant(db, {
       coachId: coach.id,
       phone: coach.phone,
@@ -332,8 +311,6 @@ async function llmClassify(
     });
     return unknownIntent('model');
   }
-
-  await db.query('insert into assistant_model_call (coach_id, called_at) values ($1, $2)', [coach.id, now.toISOString()]);
 
   const typeLines = types.map((t) => `- id=${t.id} name="${t.name}"`).join('\n');
   const system = [
@@ -566,9 +543,11 @@ async function executeCancel(db: DbClient, coach: CoachRow, sessionId: number): 
       credits += 1;
     }
     if (!(await isOptedOut(db, athlete.contact_phone))) {
-      await sendSms({
+      await sendText(db, {
         to: athlete.contact_phone,
         body: `${athlete.athlete_name}'s ${row.name} on ${formatLocal(row.starts_at_utc, row.tz)} has been cancelled.`,
+        coachId: coach.id,
+        template: 'session-cancelled',
       });
     }
   }
@@ -651,8 +630,8 @@ async function executeBroadcast(db: DbClient, coach: CoachRow, classified: Class
   let sent = 0;
   for (const athlete of athletes.rows) {
     if (await isOptedOut(db, athlete.contact_phone)) continue;
-    await sendSms({ to: athlete.contact_phone, body });
-    sent += 1;
+    const outcome = await sendText(db, { to: athlete.contact_phone, body, coachId: coach.id, template: 'broadcast' });
+    if (outcome === 'sent') sent += 1;
   }
   return clipSms(`Sent to ${sent} athletes.`);
 }
@@ -800,6 +779,14 @@ export async function handleCoachMessage(
       return { text: pending.confirmText, pendingId: pending.id, kind: 'reask' };
     }
     await consumePending(db, pending.id, now);
+  }
+
+  // A coach with nothing on the calendar is setting up, not asking about a
+  // week: their text goes to voice setup, which only saves a draft.
+  if (channel === 'sms' && kw === null && !(await coachHasSchedule(db, coach.id, now))) {
+    const text = clipSms(setupSmsReply(await handleSetupMessage(db, coach, trimmed, 'sms', now)));
+    await setLastReply(db, coach.id, text, null, now);
+    return { text, pendingId: null, kind: 'answer' };
   }
 
   const sessions = await listUpcomingSessions(db, coach.id, now);
