@@ -31,7 +31,7 @@ running database, Square, Twilio, SendGrid, or a model provider.
 
 ## Stack (decided once, in M1, not reopened)
 
-- **Language:** TypeScript 5, Node.js ≥ 20.11, ESM (`"type": "module"`).
+- **Language:** TypeScript 5, Node.js ≥ 20.11, ESM (`"type": "module"`). *(Now TypeScript 6 and Node 24; see M11.)*
 - **Web:** Express 4. Server-rendered HTML via hand-written template
   functions (tagged-template `html` helper with escaping) — **no templating
   engine dependency, no SPA framework.**
@@ -1139,4 +1139,39 @@ Notes:
   `Connection: close` so fetch never pools sockets across tests.
 - The eval set is synthetic. Its pass rate means little until the launch
   coach's own descriptions are in it.
+
+---
+
+## M11: Current toolchain, one Node version everywhere
+Status: [x] done
+Goal: Run on the current Node LTS and current dependencies, with the Node
+version named once and every environment reading it.
+Acceptance:
+- [x] `.nvmrc` is `24`; `package.json` `engines.node` is `>=24`;
+      `test/toolchain.test.ts` fails if they name different lines, if the
+      line is odd (non-LTS), or if CI stops reading `.nvmrc`
+- [x] Railway (Railpack) reads `engines` before `.nvmrc` and deploys the
+      floor's major, so production moves from Node 22.23.2 (read from the
+      running containers) to the latest 24.x on the next deploy
+- [x] CI's required `CI` check runs on `.nvmrc`; a non-blocking
+      `Next Node` job runs `lts/*` and `latest`, so the next LTS is tested
+      before anyone moves the pin
+- [x] `npm ci` on an older Node fails fast (`engine-strict`)
+- [x] Express 5, PGlite 0.5, TypeScript 6.0, ESLint 10, `@types/node` 24,
+      and current minors, with no source changes beyond the boot log;
+      compiler target ES2024
+- [x] All five quality-bar commands exit 0 on Node 24
+
+Notes:
+- TypeScript 7 is out but `typescript-eslint` supports below 6.1, so 6.0.3
+  is the newest usable. Revisit when `typescript-eslint` widens its range.
+- npm 12 (with Node 24) blocks install scripts unless allowed;
+  `package.json` `allowScripts` permits esbuild's and fsevents', which npm
+  10 ran anyway. Older npm ignores the field.
+- Express 5 sends a rejected async handler to the error handler. Under
+  Express 4 such a request never got a response.
+- The server logs its Node version at boot, so `railway logs` shows what a
+  deploy actually runs.
+- To move to the next LTS: change `.nvmrc` and `engines` together (the
+  toolchain test enforces it), after the `Next Node (lts/*)` job is green.
 
