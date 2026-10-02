@@ -1258,3 +1258,27 @@ Notes:
 - No thirteenth screen: sign-in is screen 1; the overflow card and the
   add-a-mobile card are POST actions on screen 2.
 
+---
+
+## M14: Texting in, app side
+Status: [x] done (the number and the relay route are still to come)
+Goal: When the Coachatron number exists, a text to it reaches the app in the
+format the relay actually sends, and only from the relay.
+Acceptance:
+- [x] `/webhooks/sms` reads the raw body and accepts Twilio's form fields
+      (`From`, `Body`) as the relay forwards them, and the JSON shape tests use
+- [x] With `RELAY_INBOUND_SECRET` set, an unsigned request, a wrong secret,
+      or a signature for another URL gets 401 (`test/inbound-sms.test.ts`)
+- [x] A stranger's texted week in the real format gets a `/start/` link,
+      and the model never runs for an unknown number
+- [x] The server warns at boot when it runs on https with no inbound secret
+- [x] All five quality-bar commands still exit 0
+
+Still to do, outside this repo:
+1. Buy one US number in Twilio and add it to the messaging service with the
+   registered A2P 10DLC campaign.
+2. Relay manifest: `sms: { numbers: [...] }` and `inbound.sms` to uat; mint
+   the inbound secret; point the Twilio number at the relay.
+3. Railway uat: `RELAY_INBOUND_SECRET`, `INBOUND_SMS_URL`,
+   `COACHATRON_SMS_NUMBER`. Production follows at launch.
+

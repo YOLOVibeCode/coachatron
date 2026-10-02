@@ -149,6 +149,14 @@ authenticated coachatron.com address. A coach who joined by email adds a mobile
 on the schedule screen to get texts; until then the overflow question arrives by
 email and is answered on the schedule screen.
 
+## Texting in
+
+A coach can text their week to the Coachatron number once it exists. The relay
+forwards Twilio's form fields to `/webhooks/sms`, signed with
+`x-relay-signature`; the app checks it when `RELAY_INBOUND_SECRET` is set. One
+number serves every environment for sending; incoming texts go to uat while
+testing and to production at launch (`docs/PLATFORM.md` section 3).
+
 ## Texting ceilings
 
 Every outbound text goes through `sendText()` in `src/domain/outbound.ts`
