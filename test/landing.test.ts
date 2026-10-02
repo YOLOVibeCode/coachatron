@@ -122,7 +122,7 @@ test('typed journey: landing box, phone, draft, Publish, live link', async () =>
         assert.ok(startCookie);
 
         const signin = await (await fetch(`${base}/signin`, { headers: { cookie: startCookie! } })).text();
-        assert.match(signin, /Saved\. Now your phone/);
+        assert.match(signin, /Saved\. Now your email or mobile/);
 
         const verify = await signInWithStart(base, relay, '5552220001', startCookie!, {
           name: 'Alex Coach',

@@ -137,8 +137,11 @@ the solo coach. They return only when a paying customer is blocked without them.
 
 1. Lands on `coachatron.com` and types or texts their week: *what it's called, how
    long, how many athletes, how much, which days and times*.
-2. Enters name and phone. SMS one-time code verifies the phone (or they tap the
-   link we texted). No password. The model runs only after the phone is proven.
+2. Enters an email or a mobile number in one box, then the one-time code we send
+   (by email, or by text to a US or Canadian mobile), and their name. No password.
+   Email works from anywhere; a mobile can be added later for texts. A coach who
+   texted their week taps the link we text back instead. The model runs only after
+   the code or link proves who they are. *(Updated 2026-10-02.)*
 3. The product shows what it understood, asks for anything missing (never guesses
    a price), and writes nothing until the coach taps **Publish**. *(Added 2026-09-30.
    The landing box and the texted week feed this same setup. The one-form session
@@ -204,7 +207,7 @@ outstanding package credits (a liability), and next week's projected.
 Ship nothing else until a real coach has taken real money through this.
 
 **Coach-facing (7)**
-1. Sign in (phone + OTP)
+1. Sign in (email or mobile + one-time code)
 2. Schedule — this week's sessions, tap one to see who's in it
 3. Session detail — roster of athletes, mark attendance, cancel session
 4. Session types — list + create/edit (name, duration, capacity, price)
