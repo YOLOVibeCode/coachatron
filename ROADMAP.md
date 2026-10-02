@@ -1226,3 +1226,59 @@ Notes:
   the shell ran. Wrapping `railway config plan` in `timeout` (or anything
   else) makes it fail with a misleading "requires Railway CLI 5.42.1".
 
+---
+
+## M13: One-box web join
+Status: [x] done
+Goal: Any coach, anywhere, can join on the web. Text codes reach only +1
+numbers (the app's and the relay's policy), so until now a coach outside the
+US and Canada, including our tester, could not get in at all.
+Acceptance:
+- [x] `/signin` takes an email or a mobile in one box (`parseContact`); an
+      email gets a 6-digit code by email, a +1 mobile by text, a foreign
+      mobile is pointed to email (`test/email-signin.test.ts`)
+- [x] Email codes go through `sendEmailMessage` (`src/domain/outbound.ts`),
+      logged in `message_log` with `channel='email'`, capped at 5 per
+      address a day; the code is in the subject and the body has no link
+- [x] `coach.phone` is optional and `coach.email` unique (case-insensitive);
+      a phone join cannot claim another coach's email
+- [x] A coach without a phone gets the overflow question by email and
+      answers it on the schedule screen; any coach can answer it there
+- [x] A coach who joined by email adds a mobile on the schedule screen,
+      verified by a text code; a number on another account is refused
+- [x] Session cookies are `Secure` on https
+- [x] All five quality-bar commands still exit 0
+
+Notes:
+- `src/relay/email.ts` had never been called and sent a SendGrid-shaped body
+  from an unauthenticated `noreply@coachatron.com`; the relay's
+  `/email/send` would have answered 422. It now sends the relay's native
+  shape (`to`, `subject`, `text`, `html`, optional `from`, `fromName`).
+- Seeded test coaches now get distinct emails, since email is unique.
+- No thirteenth screen: sign-in is screen 1; the overflow card and the
+  add-a-mobile card are POST actions on screen 2.
+
+---
+
+## M14: Texting in, app side
+Status: [x] done (the number and the relay route are still to come)
+Goal: When the Coachatron number exists, a text to it reaches the app in the
+format the relay actually sends, and only from the relay.
+Acceptance:
+- [x] `/webhooks/sms` reads the raw body and accepts Twilio's form fields
+      (`From`, `Body`) as the relay forwards them, and the JSON shape tests use
+- [x] With `RELAY_INBOUND_SECRET` set, an unsigned request, a wrong secret,
+      or a signature for another URL gets 401 (`test/inbound-sms.test.ts`)
+- [x] A stranger's texted week in the real format gets a `/start/` link,
+      and the model never runs for an unknown number
+- [x] The server warns at boot when it runs on https with no inbound secret
+- [x] All five quality-bar commands still exit 0
+
+Still to do, outside this repo:
+1. Buy one US number in Twilio and add it to the messaging service with the
+   registered A2P 10DLC campaign.
+2. Relay manifest: `sms: { numbers: [...] }` and `inbound.sms` to uat; mint
+   the inbound secret; point the Twilio number at the relay.
+3. Railway uat: `RELAY_INBOUND_SECRET`, `INBOUND_SMS_URL`,
+   `COACHATRON_SMS_NUMBER`. Production follows at launch.
+
