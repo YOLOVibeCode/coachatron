@@ -139,6 +139,16 @@ Do not commit secrets. `npm test` uses the in-process fake in `test/fakes/relay.
   coach is recorded on the same session via `assigned_roster_member_id`.
   See `ROADMAP.md` M4 for why.
 
+## Joining
+
+A coach signs in with one box: an email or a mobile number. An email gets a
+6-digit code by email (it works anywhere); a US or Canadian mobile gets the code
+by text. Sign-in emails go through the relay's `/email/send` from its shared
+sender with the name "Coachatron" until `COACHATRON_EMAIL_FROM` names an
+authenticated coachatron.com address. A coach who joined by email adds a mobile
+on the schedule screen to get texts; until then the overflow question arrives by
+email and is answered on the schedule screen.
+
 ## Texting ceilings
 
 Every outbound text goes through `sendText()` in `src/domain/outbound.ts`

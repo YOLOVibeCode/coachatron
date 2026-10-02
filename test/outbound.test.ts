@@ -123,12 +123,12 @@ test('sign-in codes: five a day per number, domestic numbers only', async () => 
 
       const abroad = await ask('+44 7700 900123');
       assert.equal(abroad.status, 422);
-      assert.match(await abroad.text(), /US or Canadian/);
+      assert.match(await abroad.text(), /Use your email instead/);
     });
   });
 });
 
-test('nothing in src sends a text except through the guarded send path', () => {
+test('nothing in src sends a text or an email except through the guarded send paths', () => {
   const root = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'src');
   const offenders: string[] = [];
   const walk = (dir: string) => {
@@ -137,8 +137,8 @@ test('nothing in src sends a text except through the guarded send path', () => {
       if (statSync(full).isDirectory()) walk(full);
       else if (full.endsWith('.ts')) {
         const rel = path.relative(root, full);
-        if (rel === path.join('relay', 'sms.ts') || rel === path.join('domain', 'outbound.ts')) continue;
-        if (/\bsendSms\b|relay\/sms\.js/.test(readFileSync(full, 'utf8'))) offenders.push(rel);
+        if ([path.join('relay', 'sms.ts'), path.join('relay', 'email.ts'), path.join('domain', 'outbound.ts')].includes(rel)) continue;
+        if (/\bsendSms\b|\bsendEmail\b|relay\/sms\.js|relay\/email\.js/.test(readFileSync(full, 'utf8'))) offenders.push(rel);
       }
     }
   };
