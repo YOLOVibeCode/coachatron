@@ -1,6 +1,6 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { getDb, type DbClient } from '../db/client.js';
-import { isDomesticDestination, sendEmailMessage, sendText, signInCodeEmail } from '../domain/outbound.js';
+import { canText, sendEmailMessage, sendText, signInCodeEmail } from '../domain/outbound.js';
 import {
   normalizePhone,
   normalizeEmail,
@@ -134,7 +134,7 @@ coachRouter.post('/signin/otp', async (req, res) => {
     return;
   }
   const db = getDb();
-  if (contact.kind === 'phone' && !isDomesticDestination(contact.phone)) {
+  if (contact.kind === 'phone' && !canText(contact.phone)) {
     res.status(422).send(renderContactForm(rawContact, "We can't text that number yet. Use your email instead.", saved));
     return;
   }
@@ -703,7 +703,7 @@ coachRouter.post('/app/overflow/:sessionId', requireAuth, async (req, res) => {
 coachRouter.post('/app/phone', requireAuth, async (req, res) => {
   const db = getDb();
   const phone = normalizePhone(field(req.body, 'phone'));
-  if (!phone || !isDomesticDestination(phone)) {
+  if (!phone || !canText(phone)) {
     res.redirect(303, '/app/schedule?phone=bad');
     return;
   }
