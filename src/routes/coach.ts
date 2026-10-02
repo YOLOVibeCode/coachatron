@@ -22,7 +22,8 @@ import { DEFAULT_TZ, formatLocal, isValidTimeZone } from '../lib/time.js';
 import { getPackagesForCoach, getPlansForCoach, createPackage, createPlan } from '../domain/pricing.js';
 import { summarizeMoney } from '../domain/money.js';
 import { handleCoachMessage, loadScheduleAssistant, resolvePendingForCoach } from '../domain/assistant.js';
-import { parseCookies, serializeCookie } from '../lib/cookies.js';
+import { clearCookie, parseCookies, serializeCookie } from '../lib/cookies.js';
+import { readStartText, START_COOKIE } from '../lib/startCookie.js';
 import {
   coachHasSchedule,
   discardDraft,
@@ -94,11 +95,11 @@ async function requireAuth(req: Request, res: Response, next: NextFunction): Pro
 
 // ---- Screen 1: sign in ----
 
-function renderPhoneForm(value = '', error?: string) {
+function renderPhoneForm(value = '', error?: string, saved = false) {
   return page(
     'Sign in',
     html`<h1>Coachatron</h1>
-      <p class="muted">Enter your phone number to sign in or sign up.</p>
+      <p class="muted">${saved ? "Saved. Now your phone. We'll text a code, then show your week." : 'Enter your phone number to sign in or sign up.'}</p>
       <form method="post" action="/signin/otp">
         <label for="phone">Phone</label>
         <input id="phone" name="phone" type="tel" autocomplete="tel" placeholder="(555) 555-0100" value="${value}" required />
@@ -120,21 +121,22 @@ function consentMeta(req: Request): { ip: string | null; userAgent: string | nul
   return { ip, userAgent };
 }
 
-coachRouter.get('/signin', (_req, res) => {
-  res.status(200).send(renderPhoneForm());
+coachRouter.get('/signin', (req, res) => {
+  res.status(200).send(renderPhoneForm('', undefined, Boolean(readStartText(req.headers.cookie))));
 });
 
 coachRouter.post('/signin/otp', async (req, res) => {
+  const saved = Boolean(readStartText(req.headers.cookie));
   const raw_phone = field(req.body, 'phone');
   const phone = normalizePhone(raw_phone);
   if (!phone) {
-    res.status(422).send(renderPhoneForm(raw_phone, 'Enter a valid phone number.'));
+    res.status(422).send(renderPhoneForm(raw_phone, 'Enter a valid phone number.', saved));
     return;
   }
   if (!smsConsentChecked(req.body)) {
     res
       .status(422)
-      .send(renderPhoneForm(raw_phone, 'Check the box to receive your sign-in code and session texts by SMS.'));
+      .send(renderPhoneForm(raw_phone, 'Check the box to receive your sign-in code and session texts by SMS.', saved));
     return;
   }
   const db = getDb();
@@ -156,6 +158,7 @@ coachRouter.post('/signin/otp', async (req, res) => {
           outcome === 'refused'
             ? 'Use a US or Canadian mobile number.'
             : 'Too many codes for this number today. Try again tomorrow.',
+          saved,
         ),
       );
     return;
@@ -229,7 +232,19 @@ coachRouter.post('/signin/verify', async (req, res) => {
   }
 
   const token = await createCoachSession(db, coach.id);
-  res.setHeader('Set-Cookie', serializeCookie(SESSION_COOKIE, token, 30 * 24 * 60 * 60));
+  const cookies = [serializeCookie(SESSION_COOKIE, token, 30 * 24 * 60 * 60)];
+  const startText = readStartText(req.headers.cookie);
+  if (startText) {
+    const result = await handleSetupMessage(db, coach, startText, 'web');
+    if (result.kind === 'draft') {
+      cookies.push(clearCookie(START_COOKIE));
+    }
+    res.setHeader('Set-Cookie', cookies);
+    const error = result.kind === 'cap' ? '&e=cap' : result.kind === 'error' ? '&e=read' : '';
+    res.redirect(303, `/app/schedule?setup=1${error}`);
+    return;
+  }
+  res.setHeader('Set-Cookie', cookies);
   res.redirect(303, '/app/schedule');
 });
 
@@ -438,7 +453,13 @@ const SETUP_NOTICES: Record<string, string> = {
 const SETUP_EXAMPLE =
   'Keeper group Tuesdays and Thursdays at 6 at Field 3, an hour, 8 kids, $35. Backup coach gets $80. Privates Saturday at 9, 10 and 11, 45 minutes, $70. 10-pack for $300.';
 
-function renderSetupScreen(coach: CoachRow, draft: SetupDraft | null, notice: string | null, hasSchedule: boolean) {
+function renderSetupScreen(
+  coach: CoachRow,
+  draft: SetupDraft | null,
+  notice: string | null,
+  hasSchedule: boolean,
+  startText = '',
+) {
   const questions = draft?.questions ?? [];
   const ready = draft !== null && questions.length === 0;
   const label = !draft ? 'Tell me your week' : questions.length > 0 ? questions[0] : 'Change anything? Just say it.';
@@ -462,7 +483,7 @@ function renderSetupScreen(coach: CoachRow, draft: SetupDraft | null, notice: st
         : raw('')}
       <form method="post" action="/app/setup">
         <label for="setup-text">${label}</label>
-        <textarea id="setup-text" name="text" rows="6" required placeholder="${SETUP_EXAMPLE}"></textarea>
+        <textarea id="setup-text" name="text" rows="6" required placeholder="${SETUP_EXAMPLE}">${startText}</textarea>
         <button type="submit"${ready ? raw(' class="ghost"') : raw('')}>${submit}</button>
       </form>
       ${draft
@@ -512,7 +533,9 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
   if (!hasSchedule || req.query.setup === '1') {
     const code = typeof req.query.e === 'string' ? req.query.e : '';
     const notice = Object.hasOwn(SETUP_NOTICES, code) ? SETUP_NOTICES[code] : null;
-    res.status(200).send(renderSetupScreen(coach, await getOpenDraft(db, coachId, new Date()), notice, hasSchedule));
+    const draft = await getOpenDraft(db, coachId, new Date());
+    const startText = draft ? '' : readStartText(req.headers.cookie);
+    res.status(200).send(renderSetupScreen(coach, draft, notice, hasSchedule, startText));
     return;
   }
   const live = req.query.published === '1' ? renderLiveCard(coach, await paymentsConnected(coach)) : raw('');

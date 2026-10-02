@@ -41,3 +41,9 @@ export const SMS_WEBHOOK_PUBLIC_URL =
   process.env.SMS_WEBHOOK_PUBLIC_URL ?? `${APP_BASE_URL.replace(/\/$/, '')}/webhooks/sms`;
 export const SMS_STATUS_WEBHOOK_PUBLIC_URL =
   process.env.SMS_STATUS_WEBHOOK_PUBLIC_URL ?? `${APP_BASE_URL.replace(/\/$/, '')}/webhooks/sms-status`;
+/** E.164 of the product SMS number. Empty until provisioned; the landing
+ * page hides the "text it" line when unset. Read at request time so tests
+ * can set the env without reloading the module. */
+export function coachatronSmsNumber(): string {
+  return (process.env.COACHATRON_SMS_NUMBER ?? '').trim();
+}

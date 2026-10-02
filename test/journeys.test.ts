@@ -211,7 +211,8 @@ test('journey 4: a new coach talks their week in and publishes it, three decisio
       await withServer(async (base) => {
         // Decision 1: Start.
         const landing = await (await fetch(`${base}/`)).text();
-        assert.match(landing, /href="\/signin">Start/);
+        assert.match(landing, /Set it up/);
+        assert.match(landing, /href="\/signin">Sign in</);
         await fetch(`${base}/signin/otp`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },

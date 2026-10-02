@@ -347,7 +347,7 @@ test('unknown numbers get one booking-link reply per day', async () => {
     });
     const toThem = relay.sms.filter((m) => m.to === '+15559990000');
     assert.equal(toThem.length, 1);
-    assert.match(toThem[0].body, /link/i);
+    assert.match(toThem[0].body, /\/start\//);
     assert.match(toThem[0].body, new RegExp(APP_BASE_URL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   });
 });

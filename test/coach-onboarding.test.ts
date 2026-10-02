@@ -124,12 +124,14 @@ async function signUp(base: string, relay: { sms: Array<{ to: string; body: stri
   });
 }
 
-test('landing page has one Start link to sign in', async () => {
+test('landing page has a week box and a sign-in link', async () => {
   await freshDb();
   await withServer(async (base) => {
     const res = await fetch(`${base}/`);
     assert.equal(res.status, 200);
-    assert.match(await res.text(), /<a class="action" href="\/signin">Start<\/a>/);
+    const body = await res.text();
+    assert.match(body, /action="\/start"/);
+    assert.match(body, /href="\/signin">Sign in</);
   });
 });
 

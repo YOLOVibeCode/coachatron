@@ -11,6 +11,7 @@ import {
 } from '../domain/cascade.js';
 import { handleCoachMessage, keywordToken } from '../domain/assistant.js';
 import { getLivePending, logAssistant, takeDailyReplySlot } from '../domain/assistantPending.js';
+import { createStartLink, phoneHasBooking } from '../domain/startLink.js';
 import {
   APP_BASE_URL,
   NODE_ENV,
@@ -210,7 +211,26 @@ smsInboundRouter.post('/', async (req, res) => {
     return;
   }
 
-  await replyOnce(db, from, `Coachatron: use your booking link at ${APP_BASE_URL}`, now);
+  if (await phoneHasBooking(db, from)) {
+    await replyOnce(db, from, `Coachatron: use your booking link at ${APP_BASE_URL}`, now);
+    twimlEmpty(res);
+    return;
+  }
+
+  const ok = await takeDailyReplySlot(db, from, now);
+  if (ok) {
+    const token = await createStartLink(db, from, body, now);
+    await sendText(
+      db,
+      {
+        to: from,
+        body: `Got it. Tap to see your week and go live: ${APP_BASE_URL}/start/${token}`,
+        coachId: null,
+        template: 'auto-reply',
+      },
+      now,
+    );
+  }
   twimlEmpty(res);
 });
 
