@@ -24,7 +24,7 @@ test('coach onboarding: OTP sign-in, session type, weekly schedule, public page'
       });
       assert.equal(otpRes.status, 303);
       const location = otpRes.headers.get('location') ?? '';
-      const phone = decodeURIComponent(new URL(location, base).searchParams.get('phone') ?? '');
+      const phone = decodeURIComponent(new URL(location, base).searchParams.get('to') ?? '');
       assert.equal(phone, '+15551234567');
 
       const sentSms = relay.sms.find((m) => m.to === '+15551234567');

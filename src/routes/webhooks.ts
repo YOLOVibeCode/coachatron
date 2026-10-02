@@ -15,13 +15,9 @@ import { getLivePending, logAssistant, takeDailyReplySlot } from '../domain/assi
 import { createStartLink, phoneHasBooking } from '../domain/startLink.js';
 import { APP_BASE_URL } from '../config.js';
 import { clipSms } from '../lib/time.js';
+import { inboundSignatureOk, parseInboundSms } from '../lib/inboundSms.js';
 
 export const webhooksRouter = Router();
-
-function field(body: unknown, key: string): string {
-  const value = (body as Record<string, unknown> | undefined)?.[key];
-  return typeof value === 'string' ? value.trim() : '';
-}
 
 async function findSentOfferForPhone(
   db: DbClient,
@@ -52,8 +48,14 @@ async function replyOnce(db: DbClient, phone: string, body: string, now: Date): 
 webhooksRouter.post('/webhooks/sms', async (req, res) => {
   const db = getDb();
   const now = new Date();
-  const fromRaw = field(req.body, 'from');
-  const body = field(req.body, 'body');
+  const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body ?? {}));
+  if (!inboundSignatureOk(rawBody, req.header('x-relay-signature'))) {
+    res.status(401).send('Bad signature');
+    return;
+  }
+  const parsed = parseInboundSms(rawBody, req.header('content-type'));
+  const fromRaw = parsed.from;
+  const body = parsed.body;
   const from = normalizePhone(fromRaw) ?? fromRaw;
 
   if (!from || !body) {

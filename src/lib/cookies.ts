@@ -16,11 +16,20 @@ export function parseCookies(header: string | undefined): Record<string, string>
   return out;
 }
 
+/** Secure whenever the site is served over https (every Railway
+ * environment); plain http only for a local APP_BASE_URL. Browsers accept
+ * Secure cookies on http://localhost too. */
+function secureFlag(): string[] {
+  const base = process.env.APP_BASE_URL ?? 'https://coachatron.com';
+  return base.startsWith('https://') ? ['Secure'] : [];
+}
+
 export function serializeCookie(name: string, value: string, maxAgeSeconds: number): string {
   const parts = [
     `${name}=${encodeURIComponent(value)}`,
     'Path=/',
     'HttpOnly',
+    ...secureFlag(),
     'SameSite=Lax',
     `Max-Age=${maxAgeSeconds}`,
   ];
@@ -28,5 +37,5 @@ export function serializeCookie(name: string, value: string, maxAgeSeconds: numb
 }
 
 export function clearCookie(name: string): string {
-  return `${name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
+  return [`${name}=`, 'Path=/', 'HttpOnly', ...secureFlag(), 'SameSite=Lax', 'Max-Age=0'].join('; ');
 }
