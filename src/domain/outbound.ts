@@ -81,6 +81,19 @@ export function isDomesticDestination(phone: string): boolean {
   return /^\+1\d{10}$/.test(phone);
 }
 
+/** RELAY_APP_ENV=dev: the relay captures every text in the dev mail catcher
+ * (smtp4dev at mail.dev.noctusoft.com) instead of sending it, and skips its
+ * own caps there. Nothing reaches a phone, so any number can be tried. */
+export function textsAreCaptured(): boolean {
+  return ['dev', 'development', 'local'].includes((process.env.RELAY_APP_ENV ?? '').trim().toLowerCase());
+}
+
+/** Whether a text to this number can go out: +1 numbers, or any number
+ * while texts are captured in dev. */
+export function canText(phone: string): boolean {
+  return isDomesticDestination(phone) || (textsAreCaptured() && /^\+\d{8,15}$/.test(phone));
+}
+
 export type SendOutcome = 'sent' | 'capped' | 'refused';
 
 export interface OutboundText {
@@ -158,7 +171,7 @@ async function log(
 
 export async function sendText(db: DbClient, msg: OutboundText, now: Date = new Date()): Promise<SendOutcome> {
   const body = toOneSegment(msg.body);
-  if (!isDomesticDestination(msg.to)) {
+  if (!canText(msg.to)) {
     await log(db, msg, body, 'refused-destination', null, now);
     return 'refused';
   }

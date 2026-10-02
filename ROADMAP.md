@@ -1282,3 +1282,19 @@ Still to do, outside this repo:
 3. Railway uat: `RELAY_INBOUND_SECRET`, `INBOUND_SMS_URL`,
    `COACHATRON_SMS_NUMBER`. Production follows at launch.
 
+---
+
+## M15: Texts captured on development, like smtp4dev for email
+Status: [x] done
+Goal: Try every text flow on development without a phone and without
+texting anyone.
+Acceptance:
+- [x] Texts carry `X-App-Env` from `RELAY_APP_ENV`, like emails already did;
+      with `dev` the relay captures them in smtp4dev as
+      `sms-<digits>@sms.capture.noctusoft.com` (relay `sms-env.js`)
+- [x] With `RELAY_APP_ENV=dev`, any number can get a text code, since the
+      relay skips its +1 rule for captured texts; otherwise +1 only
+      (`test/dev-sms-capture.test.ts`)
+- [x] Development has `RELAY_APP_ENV=dev`; uat and production leave it unset
+- [x] All five quality-bar commands still exit 0
+
