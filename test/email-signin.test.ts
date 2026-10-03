@@ -131,7 +131,7 @@ test('a foreign mobile is pointed to email; codes are capped and single-use', as
   await withRelay(async (relay) => {
     await freshDb();
     await withServer(async (base) => {
-      const abroad = await post(base, '/signin/otp', { contact: '+63 917 123 4567' });
+      const abroad = await post(base, '/signin/otp', { contact: '+63 917 123 4567', sms_consent: '1' });
       assert.equal(abroad.status, 422);
       assert.match(await abroad.text(), /Use your email instead/);
       assert.equal(relay.sms.length, 0);
@@ -159,7 +159,7 @@ test('a phone join cannot claim an email another coach already has', async () =>
     const db = await freshDb();
     await createCoach(db, { phone: null, email: 'dana@example.com', name: 'Dana', tz: 'America/Chicago' });
     await withServer(async (base) => {
-      await post(base, '/signin/otp', { contact: '5550007777' });
+      await post(base, '/signin/otp', { contact: '5550007777', sms_consent: '1' });
       const code = /code is (\d{6})/.exec(relay.sms.at(-1)!.body)![1];
       const res = await post(base, '/signin/verify', { to: '+15550007777', code, name: 'Other', email: 'DANA@example.com' });
       assert.equal(res.status, 422);
@@ -252,10 +252,11 @@ test('a coach who joined by email adds a mobile with a text code', async () => {
       const cookie = `cx_session=${await createCoachSession(db, coach.id)}`;
       const schedule = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
       assert.match(schedule, /Your mobile \(US or Canada\)/);
+      assert.match(schedule, /name="sms_consent"/);
 
-      assert.equal((await post(base, '/app/phone', { phone: '+44 7700 900123' }, cookie)).headers.get('location'), '/app/schedule?phone=bad');
+      assert.equal((await post(base, '/app/phone', { phone: '+44 7700 900123', sms_consent: '1' }, cookie)).headers.get('location'), '/app/schedule?phone=bad');
 
-      const sent = await post(base, '/app/phone', { phone: '(555) 000-3333' }, cookie);
+      const sent = await post(base, '/app/phone', { phone: '(555) 000-3333', sms_consent: '1' }, cookie);
       assert.equal(sent.headers.get('location'), '/app/schedule?phone=sent&to=%2B15550003333');
       const code = /is (\d{6})/.exec(relay.sms.at(-1)!.body)![1];
       const wrong = await post(base, '/app/phone/verify', { phone: '+15550003333', code: '000000' }, cookie);
@@ -270,7 +271,7 @@ test('a coach who joined by email adds a mobile with a text code', async () => {
       // A number that belongs to another coach is refused.
       const second = await createCoach(db, { phone: null, email: 'sam@example.com', name: 'Sam', tz: 'America/Chicago' });
       const secondCookie = `cx_session=${await createCoachSession(db, second.id)}`;
-      await post(base, '/app/phone', { phone: '5550004444' }, secondCookie);
+      await post(base, '/app/phone', { phone: '5550004444', sms_consent: '1' }, secondCookie);
       const takenCode = /is (\d{6})/.exec(relay.sms.at(-1)!.body)![1];
       const taken = await post(base, '/app/phone/verify', { phone: '+15550004444', code: takenCode }, secondCookie);
       assert.equal(taken.headers.get('location'), '/app/schedule?phone=taken');

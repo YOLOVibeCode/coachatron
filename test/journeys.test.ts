@@ -6,6 +6,7 @@ import { withRelay } from './helpers/relay.js';
 import { seedCoachWithSession, seedRosterMember, seedBookedSession, seedWaitlistEntry } from './helpers/fixtures.js';
 import { checkOverflow } from '../src/domain/cascade.js';
 import { buyerFromLocation, postStorePaid } from './helpers/store-event.js';
+import { postSignedSms } from './helpers/sms-webhook.js';
 
 /**
  * End-to-end smoke test for the three journeys named in the idea's "I will
@@ -28,11 +29,7 @@ function extractSessionCookie(res: Response): string {
 }
 
 async function smsTo(base: string, from: string, body: string): Promise<Response> {
-  return fetch(`${base}/webhooks/sms`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ from, body }),
-  });
+  return postSignedSms(base, { From: from, Body: body });
 }
 
 test('journey 1: coach signs in, creates a session type, generates a week, gets /c/<handle>', async () => {
@@ -43,7 +40,7 @@ test('journey 1: coach signs in, creates a session type, generates a week, gets 
       const otpRes = await fetch(`${base}/signin/otp`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ phone: '5551110001' }),
+        body: JSON.stringify({ phone: '5551110001', sms_consent: '1' }),
         redirect: 'manual',
       });
       assert.equal(otpRes.status, 303);
@@ -108,7 +105,7 @@ test('journey 2: parent books and pays a drop-in via the fake relay', async () =
       const bookRes = await fetch(`${base}/c/${seed.coach.handle}/sessions/${seed.sessionId}/book`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ athlete_name: 'Parent Journey Athlete', contact_phone: '5552220001' }),
+        body: JSON.stringify({ athlete_name: 'Parent Journey Athlete', contact_phone: '5552220001', sms_consent: '1' }),
         redirect: 'manual',
       });
       assert.equal(bookRes.status, 303);
@@ -219,7 +216,7 @@ test('journey 4: a new coach talks their week in and publishes it, three decisio
         await fetch(`${base}/signin/otp`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ phone: '5550004444' }),
+          body: JSON.stringify({ phone: '5550004444', sms_consent: '1' }),
           redirect: 'manual',
         });
         const code = /code is (\d{6})/.exec(relay.sms.find((m) => m.to === '+15550004444')!.body)![1];

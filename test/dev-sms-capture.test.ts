@@ -35,9 +35,9 @@ test('without RELAY_APP_ENV, texts carry no X-App-Env and only +1 numbers get on
     await withRelay(async (relay) => {
       await freshDb();
       await withServer(async (base) => {
-        assert.equal((await post(base, '/signin/otp', { contact: '5550001111' })).status, 303);
+        assert.equal((await post(base, '/signin/otp', { contact: '5550001111', sms_consent: '1' })).status, 303);
         assert.equal(relay.sms[0].appEnv, null);
-        assert.equal((await post(base, '/signin/otp', { contact: '+63 917 123 4567' })).status, 422);
+        assert.equal((await post(base, '/signin/otp', { contact: '+63 917 123 4567', sms_consent: '1' })).status, 422);
       });
     });
   });
@@ -48,7 +48,7 @@ test('with RELAY_APP_ENV=dev, every text is marked for capture and any number ca
     await withRelay(async (relay) => {
       const db = await freshDb();
       await withServer(async (base) => {
-        const ask = await post(base, '/signin/otp', { contact: '+63 917 123 4567' });
+        const ask = await post(base, '/signin/otp', { contact: '+63 917 123 4567', sms_consent: '1' });
         assert.equal(ask.status, 303, 'a Philippine number is fine when nothing is really texted');
         const sent = relay.sms.find((m) => m.to === '+639171234567');
         assert.ok(sent);
@@ -67,9 +67,9 @@ test('with RELAY_APP_ENV=uat, texts are tagged by the relay but still only reach
     await withRelay(async (relay) => {
       await freshDb();
       await withServer(async (base) => {
-        assert.equal((await post(base, '/signin/otp', { contact: '5550002222' })).status, 303);
+        assert.equal((await post(base, '/signin/otp', { contact: '5550002222', sms_consent: '1' })).status, 303);
         assert.equal(relay.sms[0].appEnv, 'uat');
-        assert.equal((await post(base, '/signin/otp', { contact: '+63 917 123 4567' })).status, 422);
+        assert.equal((await post(base, '/signin/otp', { contact: '+63 917 123 4567', sms_consent: '1' })).status, 422);
       });
     });
   });

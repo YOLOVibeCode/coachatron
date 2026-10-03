@@ -1,15 +1,12 @@
 import crypto from 'node:crypto';
 import type { DbClient } from '../db/client.js';
+import { toE164 } from '../lib/phone.js';
 
 const OTP_TTL_MINUTES = 10;
 const SESSION_TTL_DAYS = 30;
 
 export function normalizePhone(raw: string): string | null {
-  const digits = raw.replace(/[^0-9]/g, '');
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
-  if (raw.startsWith('+') && digits.length >= 8 && digits.length <= 15) return `+${digits}`;
-  return null;
+  return toE164(raw);
 }
 
 /** Lowercased and trimmed, or null when it does not look like an address. */

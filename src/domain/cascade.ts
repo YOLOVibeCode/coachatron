@@ -4,6 +4,25 @@ import { sendEmailMessage, sendText } from './outbound.js';
 import { APP_BASE_URL } from '../config.js';
 import { expireLivePendingForCoach } from './assistantPending.js';
 import { clipSms, formatConfirmWhen } from '../lib/time.js';
+import { SMS_PURPOSE } from '../config.js';
+import { hasActiveConsent, queuePendingConsent } from './sms-consent.js';
+
+export async function sendRosterConsentRequest(
+  db: DbClient,
+  coachId: number,
+  coachName: string,
+  phone: string,
+): Promise<void> {
+  await queuePendingConsent(db, phone, coachId, coachName);
+  await sendText(db, {
+    to: phone,
+    coachId,
+    template: 'consent-request',
+    body: clipSms(
+      `Coachatron: ${coachName} added this number for ${SMS_PURPOSE}. Reply YES to receive these texts. Reply STOP to opt out.`,
+    ),
+  });
+}
 
 export const OVERFLOW_OFFER_TTL_MINUTES = 20;
 
@@ -16,11 +35,9 @@ export async function upsertOptOut(db: DbClient, phone: string): Promise<void> {
   await db.query('insert into opt_out (phone) values ($1) on conflict (phone) do nothing', [phone]);
 }
 
-/** All cascade-initiated (non-critical) sends go through this, never the
- * bare relay client, so an opted-out number is silently skipped rather than
- * texted again. SPEC.md §10: "STOP handling ... required, not optional." */
+/** All cascade-initiated (non-critical) sends go through sendText, which
+ * enforces opt-out and consent. */
 async function sendUnlessOptedOut(db: DbClient, coachId: number, template: string, to: string, body: string): Promise<void> {
-  if (await isOptedOut(db, to)) return;
   await sendText(db, { to, body, coachId, template });
 }
 
@@ -198,12 +215,19 @@ export async function startCascade(db: DbClient, sessionId: number): Promise<voi
          where o.roster_member_id = rm.id
            and o.session_id = $2
        )
-     order by rm.priority asc, rm.id asc
-     limit 1`,
+     order by rm.priority asc, rm.id asc`,
     [info.coachId, sessionId],
   );
 
-  if (candidates.rows.length === 0) {
+  let member: { id: number; phone: string } | null = null;
+  for (const row of candidates.rows) {
+    if (await hasActiveConsent(db, row.phone)) {
+      member = row;
+      break;
+    }
+  }
+
+  if (!member) {
     const alreadyNotified = await db.query<{ id: number }>(
       'select id from overflow_ask where session_id = $1 and exhausted_notified_at is not null',
       [sessionId],
@@ -224,7 +248,6 @@ export async function startCascade(db: DbClient, sessionId: number): Promise<voi
     return;
   }
 
-  const member = candidates.rows[0];
   const expiresAt = new Date(Date.now() + OVERFLOW_OFFER_TTL_MINUTES * 60 * 1000);
   const token = randomBytes(16).toString('hex');
 

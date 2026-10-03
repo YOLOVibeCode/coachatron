@@ -10,6 +10,7 @@ import { createCoach, createCoachSession, type CoachRow } from '../src/domain/au
 import { describeWeekly, renderSetupPreview, validateSetupPlan, type ExistingType } from '../src/domain/setup.js';
 import type { ChatMessage } from '../src/llm/schema.js';
 import type { DbClient } from '../src/db/client.js';
+import { postSignedSms } from './helpers/sms-webhook.js';
 
 const WEEK = {
   coach_timezone: null,
@@ -33,6 +34,8 @@ function withWeek(overrides: Record<string, unknown>) {
 
 async function newCoach(db: DbClient, phone = '+15550009999'): Promise<{ coach: CoachRow; cookie: string }> {
   const coach = await createCoach(db, { phone, name: 'Dana Keeper', email: '', tz: 'America/Chicago' });
+  const { grantSmsConsent } = await import('../src/domain/sms-consent.js');
+  await grantSmsConsent(db, phone);
   return { coach, cookie: `cx_session=${await createCoachSession(db, coach.id)}` };
 }
 
@@ -285,17 +288,12 @@ test('by SMS, a coach with no schedule gets a draft and one short reply; a sched
     setComplete(llm);
     try {
       await withServer(async (base) => {
-        const sms = (from: string, body: string) =>
-          fetch(`${base}/webhooks/sms`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ from, body }),
-          });
+        const sms = (from: string, body: string) => postSignedSms(base, { From: from, Body: body });
 
         await sms(coach.phone, 'Keeper group Tuesdays and Thursdays at 6 at Field 3, an hour, 8 kids, $35');
         const replies = relay.sms.filter((m) => m.to === coach.phone);
         assert.equal(replies.length, 1);
-        assert.match(replies[0].body, /^Got it: 2 session types, 4 times a week\. Check it and tap Publish: /);
+        assert.match(replies[0].body, /Got it: 2 session types, 4 times a week\. Check it and tap Publish:/);
         assert.ok(replies[0].body.length <= 160);
         assert.equal(await count(db, 'setup_draft where coach_id = $1', [coach.id]), 1);
         assert.equal(await count(db, 'session'), 0);

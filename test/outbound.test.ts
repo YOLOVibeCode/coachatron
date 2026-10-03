@@ -7,6 +7,7 @@ import { withServer } from './helpers/server.js';
 import { withRelay } from './helpers/relay.js';
 import { seedCoachWithSession } from './helpers/fixtures.js';
 import { isDomesticDestination, segmentCount, sendText, toOneSegment } from '../src/domain/outbound.js';
+import { grantSmsConsent } from '../src/domain/sms-consent.js';
 import type { DbClient } from '../src/db/client.js';
 
 async function statuses(db: DbClient): Promise<string[]> {
@@ -55,6 +56,7 @@ test('only US and Canadian numbers are texted', () => {
 test('a foreign number is refused and logged, never sent', async () => {
   await withRelay(async (relay) => {
     const db = await freshDb();
+    await grantSmsConsent(db, '+447700900123');
     assert.equal(await sendText(db, { to: '+447700900123', body: 'hi', coachId: null, template: 'otp' }), 'refused');
     assert.equal(relay.sms.length, 0);
     assert.deepEqual(await statuses(db), ['refused-destination']);
@@ -69,6 +71,7 @@ test('a coach stops at 300 texts a day and 2,000 a month', async () => {
 
     await fillLog(db, 299, coach.id, new Date('2026-10-20T14:00:00Z'));
     const msg = { to: '+15550001234', body: 'hi', coachId: coach.id, template: 'reminder' };
+    await grantSmsConsent(db, msg.to);
     assert.equal(await sendText(db, msg, now), 'sent');
     assert.equal(await sendText(db, msg, now), 'capped');
     assert.equal(relay.sms.length, 1);
@@ -92,6 +95,7 @@ test('the product stops at 400 a day per active coach, never below 500', async (
     const db = await freshDb();
     const now = new Date();
     const msg = { to: '+15550001234', body: 'hi', coachId: null, template: 'auto-reply' };
+    await grantSmsConsent(db, msg.to);
 
     await fillLog(db, 500, null, now);
     assert.equal(await sendText(db, msg, now), 'capped');
@@ -108,11 +112,11 @@ test('sign-in codes: five a day per number, domestic numbers only', async () => 
   await withRelay(async (relay) => {
     await freshDb();
     await withServer(async (base) => {
-      const ask = (phone: string) =>
+      const ask = (phone: string, consent = true) =>
         fetch(`${base}/signin/otp`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ phone }),
+          body: JSON.stringify({ phone, ...(consent ? { sms_consent: '1' } : {}) }),
           redirect: 'manual',
         });
       for (let i = 0; i < 5; i += 1) assert.equal((await ask('5550007777')).status, 303);
@@ -125,6 +129,17 @@ test('sign-in codes: five a day per number, domestic numbers only', async () => 
       assert.equal(abroad.status, 422);
       assert.match(await abroad.text(), /Use your email instead/);
     });
+  });
+});
+
+test('sendText refuses without consent and prefixes brand', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    assert.equal(await sendText(db, { to: '+15550009999', body: 'hello', coachId: null, template: 'reminder' }), 'refused');
+    assert.equal(relay.sms.length, 0);
+    await grantSmsConsent(db, '+15550009999');
+    assert.equal(await sendText(db, { to: '+15550009999', body: 'hello', coachId: null, template: 'reminder' }), 'sent');
+    assert.match(relay.sms[0].body, /^Coachatron: hello/);
   });
 });
 

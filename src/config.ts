@@ -38,6 +38,11 @@ export const OTP_DAILY_MAX_PER_CONTACT = 5;
 export function coachatronEmailFrom(): string {
   return (process.env.COACHATRON_EMAIL_FROM ?? '').trim();
 }
+
+export const SMS_BRAND = 'Coachatron';
+export const SMS_PURPOSE = 'booking confirmations, reminders, and session updates';
+export const SMS_CONSENT_TEXT_VERSION = 'v1';
+export const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL ?? 'support@coachatron.com';
 /** E.164 of the product SMS number. Empty until provisioned; the landing
  * page hides the "text it" line when unset. Read at request time so tests
  * can set the env without reloading the module. */
