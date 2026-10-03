@@ -20,6 +20,7 @@ import {
 } from '../config.js';
 import { clipSms } from '../lib/time.js';
 import { formField, parseRelayFormBody, verifyRelaySignature } from '../lib/relay-inbound.js';
+import { inboundSmsUrl } from '../lib/inboundSms.js';
 import { matchInboundKeyword } from '../domain/sms-keywords.js';
 import { clearRevocation, confirmConsentFromReply, hasPendingConsent, revokeConsent } from '../domain/sms-consent.js';
 
@@ -27,14 +28,7 @@ export const smsInboundRouter = Router();
 export const smsStatusRouter = Router();
 
 function inboundSecret(): string {
-  return process.env.RELAY_INBOUND_SECRET ?? '';
-}
-
-function smsWebhookPublicUrl(): string {
-  return (
-    process.env.SMS_WEBHOOK_PUBLIC_URL ??
-    `${(process.env.APP_BASE_URL ?? 'https://coachatron.com').replace(/\/$/, '')}/webhooks/sms`
-  );
+  return (process.env.RELAY_INBOUND_SECRET ?? '').trim();
 }
 
 function smsStatusWebhookPublicUrl(): string {
@@ -114,7 +108,7 @@ async function replyOnce(db: DbClient, phone: string, body: string, now: Date): 
 }
 
 smsInboundRouter.post('/', async (req, res) => {
-  const form = verifyOrRespond(req, res, smsWebhookPublicUrl());
+  const form = verifyOrRespond(req, res, inboundSmsUrl());
   if (!form) return;
 
   const db = getDb();

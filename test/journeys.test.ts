@@ -44,7 +44,7 @@ test('journey 1: coach signs in, creates a session type, generates a week, gets 
         redirect: 'manual',
       });
       assert.equal(otpRes.status, 303);
-      const phone = decodeURIComponent(new URL(otpRes.headers.get('location') ?? '', base).searchParams.get('phone') ?? '');
+      const phone = decodeURIComponent(new URL(otpRes.headers.get('location') ?? '', base).searchParams.get('to') ?? '');
 
       const sentSms = relay.sms.find((m) => m.to === phone);
       assert.ok(sentSms, 'coach should have received an OTP by SMS');

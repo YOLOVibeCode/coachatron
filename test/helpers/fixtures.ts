@@ -20,10 +20,12 @@ export async function seedCoachWithSession(
   const capacity = opts.capacity ?? 2;
   const priceCents = opts.priceCents ?? 3500;
 
+  const phone = `+1555${Math.floor(1000000 + Math.random() * 8999999)}`;
   const coach = await createCoach(db, {
-    phone: `+1555${Math.floor(1000000 + Math.random() * 8999999)}`,
+    phone,
     name: 'Jamie Coach',
-    email: 'jamie@example.com',
+    // Emails are unique per coach, so each seeded coach gets its own.
+    email: `jamie${phone.slice(-7)}@example.com`,
     tz: 'America/Chicago',
   });
   await grantSmsConsent(db, coach.phone);

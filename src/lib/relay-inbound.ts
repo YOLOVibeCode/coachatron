@@ -1,8 +1,7 @@
 import crypto from 'node:crypto';
+import { relaySignature } from './inboundSms.js';
 
-export function relayInboundSignature(secret: string, publicUrl: string, rawBody: Buffer): string {
-  return crypto.createHmac('sha256', secret).update(publicUrl).update(rawBody).digest('base64');
-}
+export const relayInboundSignature = relaySignature;
 
 export function verifyRelaySignature(
   secret: string,

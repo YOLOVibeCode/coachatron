@@ -141,10 +141,8 @@ test("typed journey: landing box, phone, draft, Publish, live link", async () =>
         const startCookie = cookieNamed(startRes, "cx_start");
         assert.ok(startCookie);
 
-        const signin = await (
-          await fetch(`${base}/signin`, { headers: { cookie: startCookie! } })
-        ).text();
-        assert.match(signin, /Saved\. Now your phone/);
+        const signin = await (await fetch(`${base}/signin`, { headers: { cookie: startCookie! } })).text();
+        assert.match(signin, /Saved\. Now your email or mobile/);
 
         const verify = await signInWithStart(
           base,

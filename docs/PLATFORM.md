@@ -119,13 +119,25 @@ product-side, i.e. Coachatron's screen #6 in SPEC.md §8.1.
 All sends go through the relay. Rules from SPEC.md §10 stand (transactional only,
 `STOP` honored, quiet hours 9pm–8am local, per-recipient rate limits).
 
-Inbound needs a **dedicated Coachatron Twilio number** registered in
-`inbound.js ROUTES.sms`, pointing at `https://coachatron.com/webhooks/sms`.
-`verify-products` will flag this as a GAP until the code change lands — that is
-expected and documented, not a bug.
+**One Coachatron number does both jobs** (decided 2026-10-02):
 
-A20XX, TankRoom, Scholarmancy, and the Earl POC already occupy numbers there;
-follow the same shape.
+- **Outbound:** the manifest's `sms` becomes `{ numbers: ["+1…"] }` (or the
+  messaging service it joins), so every environment's texts come from it.
+  Until then texts go from the shared Noctusoft sender.
+- **Inbound:** the relay routes a number to one URL. While testing, the
+  manifest's `inbound.sms` points it at `https://uat.coachatron.com/webhooks/sms`.
+  At launch, that one `url` moves to `https://coachatron.com/webhooks/sms`, and
+  production's `INBOUND_SMS_URL` and `RELAY_INBOUND_SECRET` follow. Adding the
+  route is data in `products/manifest.json`, not an `inbound.js` change.
+- **What arrives:** Twilio's own form fields (`From`, `To`, `Body`, …),
+  urlencoded, with `x-relay-signature` = base64 HMAC-SHA256(secret, url + raw
+  body). `src/routes/webhooks.ts` checks it whenever `RELAY_INBOUND_SECRET` is
+  set, and answers 503 in production when it is not (mint it with `node scripts/relay-keys.js inbound-secret --product
+  coachatron --rotate` in the relay repo). `INBOUND_SMS_URL` must equal the
+  manifest `url` exactly. The relay ignores a non-XML reply, so Coachatron
+  answers by sending a text, not TwiML.
+- Texts reach only `+1` numbers, by the app's and the relay's policy. A coach
+  elsewhere joins by email (SPEC.md §7.1).
 
 ---
 

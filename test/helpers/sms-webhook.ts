@@ -4,13 +4,13 @@ export const TEST_INBOUND_SECRET = 'test-inbound-secret';
 
 export function configureSmsWebhooks(base: string): void {
   process.env.RELAY_INBOUND_SECRET = TEST_INBOUND_SECRET;
-  process.env.SMS_WEBHOOK_PUBLIC_URL = `${base}/webhooks/sms`;
+  process.env.INBOUND_SMS_URL = `${base}/webhooks/sms`;
   process.env.SMS_STATUS_WEBHOOK_PUBLIC_URL = `${base}/webhooks/sms-status`;
 }
 
 export function clearSmsWebhookEnv(): void {
   delete process.env.RELAY_INBOUND_SECRET;
-  delete process.env.SMS_WEBHOOK_PUBLIC_URL;
+  delete process.env.INBOUND_SMS_URL;
   delete process.env.SMS_STATUS_WEBHOOK_PUBLIC_URL;
 }
 

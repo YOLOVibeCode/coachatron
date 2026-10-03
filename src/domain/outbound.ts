@@ -1,5 +1,6 @@
 import type { DbClient } from '../db/client.js';
 import { sendSms } from '../relay/sms.js';
+import { sendEmail } from '../relay/email.js';
 import { zonedParts, zonedTimeToUtc } from './scheduling.js';
 import {
   SMS_BRAND,
@@ -84,6 +85,19 @@ export function isDomesticDestination(phone: string): boolean {
   return /^\+1\d{10}$/.test(phone);
 }
 
+/** RELAY_APP_ENV=dev: the relay captures every text in the dev mail catcher
+ * (smtp4dev at mail.dev.noctusoft.com) instead of sending it, and skips its
+ * own caps there. Nothing reaches a phone, so any number can be tried. */
+export function textsAreCaptured(): boolean {
+  return ['dev', 'development', 'local'].includes((process.env.RELAY_APP_ENV ?? '').trim().toLowerCase());
+}
+
+/** Whether a text to this number can go out: +1 numbers, or any number
+ * while texts are captured in dev. */
+export function canText(phone: string): boolean {
+  return isDomesticDestination(phone) || (textsAreCaptured() && /^\+\d{8,15}$/.test(phone));
+}
+
 export type SendOutcome = 'sent' | 'capped' | 'refused';
 
 export interface OutboundText {
@@ -105,9 +119,12 @@ function withBrand(body: string): string {
   return `${prefix} ${body}`;
 }
 
-async function countSent(db: DbClient, where: string, params: unknown[]): Promise<number> {
+type Channel = 'sms' | 'email';
+
+/** Counts sent rows on one channel; SMS ceilings never count emails. */
+async function countSent(db: DbClient, where: string, params: unknown[], channel: Channel = 'sms'): Promise<number> {
   const result = await db.query<{ n: string }>(
-    `select count(*)::text as n from message_log where status = 'sent' and ${where}`,
+    `select count(*)::text as n from message_log where status = 'sent' and channel = '${channel}' and ${where}`,
     params,
   );
   return Number(result.rows[0]?.n ?? '0');
@@ -148,17 +165,25 @@ async function ceilingHit(db: DbClient, msg: OutboundText, now: Date): Promise<s
   return null;
 }
 
-async function log(db: DbClient, msg: OutboundText, body: string, status: string, providerId: string | null, now: Date) {
+async function log(
+  db: DbClient,
+  msg: Pick<OutboundText, 'to' | 'template' | 'coachId'>,
+  body: string,
+  status: string,
+  providerId: string | null,
+  now: Date,
+  channel: Channel = 'sms',
+) {
   await db.query(
-    `insert into message_log (to_phone, template, body, provider_id, sent_at, status, coach_id)
-     values ($1, $2, $3, $4, $5, $6, $7)`,
-    [msg.to, msg.template, body, providerId, now.toISOString(), status, msg.coachId],
+    `insert into message_log (to_phone, template, body, provider_id, sent_at, status, coach_id, channel)
+     values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [msg.to, msg.template, body, providerId, now.toISOString(), status, msg.coachId, channel],
   );
 }
 
 export async function sendText(db: DbClient, msg: OutboundText, now: Date = new Date()): Promise<SendOutcome> {
   const body = toOneSegment(withBrand(msg.body));
-  if (!isDomesticDestination(msg.to)) {
+  if (!canText(msg.to)) {
     await log(db, msg, body, 'refused-destination', null, now);
     return 'refused';
   }
@@ -192,3 +217,48 @@ export async function sendText(db: DbClient, msg: OutboundText, now: Date = new 
   await log(db, msg, body, 'failed', null, now);
   throw new Error(`relay sms send failed: ${sent.code} ${sent.message}`);
 }
+
+export interface OutboundEmail {
+  to: string;
+  subject: string;
+  text: string;
+  html?: string;
+  coachId: number | null;
+  template: string;
+  /** Optional ceiling on this template to this address in 24 hours. */
+  perRecipientDailyMax?: number;
+}
+
+/** The only way Coachatron sends an email: logged beside texts in
+ * message_log (channel 'email') and capped per address when asked. */
+export async function sendEmailMessage(db: DbClient, msg: OutboundEmail, now: Date = new Date()): Promise<SendOutcome> {
+  if (msg.perRecipientDailyMax !== undefined) {
+    const since = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+    const n = await countSent(db, 'to_phone = $1 and template = $2 and sent_at > $3', [msg.to, msg.template, since], 'email');
+    if (n >= msg.perRecipientDailyMax) {
+      await log(db, msg, msg.subject, 'capped-recipient-daily', null, now, 'email');
+      return 'capped';
+    }
+  }
+  try {
+    const sent = await sendEmail({ to: msg.to, subject: msg.subject, text: msg.text, html: msg.html });
+    await log(db, msg, msg.subject, 'sent', sent.id || null, now, 'email');
+    return 'sent';
+  } catch (err) {
+    await log(db, msg, msg.subject, 'failed', null, now, 'email');
+    throw err;
+  }
+}
+
+/** A sign-in code by email. The code is in the subject so it shows in the
+ * inbox preview, and the body has no link for click tracking to rewrite. */
+export function signInCodeEmail(code: string): { subject: string; text: string; html: string } {
+  return {
+    subject: `Your Coachatron code: ${code}`,
+    text: `Your Coachatron sign-in code is ${code}. It expires in 10 minutes. If you didn't ask for it, ignore this email.`,
+    html: `<p style="font-family:system-ui,sans-serif;font-size:16px">Your Coachatron sign-in code is</p>
+<p style="font-family:system-ui,sans-serif;font-size:32px;font-weight:700;letter-spacing:4px">${code}</p>
+<p style="font-family:system-ui,sans-serif;font-size:14px;color:#6d5348">It expires in 10 minutes. If you didn't ask for it, ignore this email.</p>`,
+  };
+}
+

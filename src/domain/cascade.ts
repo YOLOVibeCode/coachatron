@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type { DbClient } from '../db/client.js';
-import { sendText } from './outbound.js';
+import { sendEmailMessage, sendText } from './outbound.js';
+import { APP_BASE_URL } from '../config.js';
 import { expireLivePendingForCoach } from './assistantPending.js';
 import { clipSms, formatConfirmWhen } from '../lib/time.js';
 import { SMS_PURPOSE } from '../config.js';
@@ -40,9 +41,35 @@ async function sendUnlessOptedOut(db: DbClient, coachId: number, template: strin
   await sendText(db, { to, body, coachId, template });
 }
 
+/** Tells the coach about their session: a text to their mobile, or, for a
+ * coach who joined by email and has no mobile yet, an email that links to
+ * the schedule, where the same YES / Not now buttons wait. */
+async function notifyCoach(
+  db: DbClient,
+  info: Pick<SessionOverflowInfo, 'coachId' | 'coachPhone' | 'coachEmail'>,
+  template: string,
+  text: string,
+  emailSubject: string,
+): Promise<void> {
+  if (info.coachPhone) {
+    await sendUnlessOptedOut(db, info.coachId, template, info.coachPhone, text);
+    return;
+  }
+  if (!info.coachEmail) return;
+  const link = `${process.env.APP_BASE_URL ?? APP_BASE_URL}/app/schedule`;
+  await sendEmailMessage(db, {
+    to: info.coachEmail,
+    subject: emailSubject,
+    text: `${text.replace(/ Reply YES and I'll ask your roster\./, '')}\n\nOpen your schedule to decide: ${link}`,
+    coachId: info.coachId,
+    template,
+  });
+}
+
 interface SessionOverflowInfo {
   coachId: number;
-  coachPhone: string;
+  coachPhone: string | null;
+  coachEmail: string | null;
   capacity: number;
   overflowThreshold: number;
   /** "Tue Oct 7, 6:00pm Keeper Group", for the texts. */
@@ -53,7 +80,8 @@ interface SessionOverflowInfo {
 async function loadSessionOverflowInfo(db: DbClient, sessionId: number): Promise<SessionOverflowInfo | null> {
   const result = await db.query<{
     coach_id: number;
-    coach_phone: string;
+    coach_phone: string | null;
+    coach_email: string;
     capacity: number;
     capacity_override: number | null;
     overflow_threshold: number;
@@ -62,7 +90,7 @@ async function loadSessionOverflowInfo(db: DbClient, sessionId: number): Promise
     name: string;
     backup_pay_cents: number | null;
   }>(
-    `select c.id as coach_id, c.phone as coach_phone, st.capacity, s.capacity_override, st.overflow_threshold,
+    `select c.id as coach_id, c.phone as coach_phone, c.email as coach_email, st.capacity, s.capacity_override, st.overflow_threshold,
             s.starts_at_utc, s.tz, st.name, st.backup_pay_cents
      from session s
      join session_type st on st.id = s.session_type_id
@@ -76,6 +104,7 @@ async function loadSessionOverflowInfo(db: DbClient, sessionId: number): Promise
   return {
     coachId: row.coach_id,
     coachPhone: row.coach_phone,
+    coachEmail: row.coach_email || null,
     capacity,
     overflowThreshold: row.overflow_threshold >= 0 ? row.overflow_threshold : capacity,
     label: `${formatConfirmWhen(new Date(row.starts_at_utc).toISOString(), row.tz)} ${row.name}`,
@@ -131,12 +160,12 @@ export async function checkOverflow(db: DbClient, sessionId: number): Promise<vo
 
   await db.query('insert into overflow_ask (session_id) values ($1)', [sessionId]);
   await expireLivePendingForCoach(db, info.coachId);
-  await sendUnlessOptedOut(
+  await notifyCoach(
     db,
-    info.coachId,
+    info,
     'overflow-ask',
-    info.coachPhone,
     clipSms(`Coachatron: ${info.label} is full, ${waiting} waiting. Reply YES and I'll ask your roster.`),
+    `${info.label} is full, ${waiting} waiting`,
   );
 }
 
@@ -208,12 +237,12 @@ export async function startCascade(db: DbClient, sessionId: number): Promise<voi
         'update overflow_ask set exhausted_notified_at = now() where session_id = $1 and exhausted_notified_at is null',
         [sessionId],
       );
-      await sendUnlessOptedOut(
+      await notifyCoach(
         db,
-        info.coachId,
+        info,
         'overflow-exhausted',
-        info.coachPhone,
         'Coachatron: nobody on your roster accepted the overflow session.',
+        'Nobody on your roster took the extra session',
       );
     }
     return;
@@ -325,3 +354,37 @@ export async function findPendingAskSessionForCoach(db: DbClient, coachId: numbe
 export async function resolveAskWithoutCascade(db: DbClient, sessionId: number): Promise<void> {
   await resolveAsk(db, sessionId);
 }
+
+export interface PendingAsk {
+  sessionId: number;
+  label: string;
+  waiting: number;
+}
+
+/** The coach's open overflow question, for the schedule screen. The same
+ * question a coach answers by texting YES (SPEC.md §7.3). */
+export async function pendingAskForCoach(db: DbClient, coachId: number): Promise<PendingAsk | null> {
+  const sessionId = await findPendingAskSessionForCoach(db, coachId);
+  if (sessionId === null) return null;
+  const info = await loadSessionOverflowInfo(db, sessionId);
+  if (!info) return null;
+  return { sessionId, label: info.label, waiting: await countWaiting(db, sessionId) };
+}
+
+/** The web answer to an overflow ask. Only an unresolved ask on the coach's
+ * own session can be answered, so the roster is still never asked without
+ * the coach saying yes. Returns false when there was nothing to answer. */
+export async function answerAskFromWeb(db: DbClient, coachId: number, sessionId: number, yes: boolean): Promise<boolean> {
+  const open = await db.query<{ id: number }>(
+    `select oa.id from overflow_ask oa
+     join session s on s.id = oa.session_id
+     join session_type st on st.id = s.session_type_id
+     where oa.session_id = $1 and st.coach_id = $2 and oa.resolved_at is null`,
+    [sessionId, coachId],
+  );
+  if (open.rows.length === 0) return false;
+  if (yes) await startCascade(db, sessionId);
+  else await resolveAskWithoutCascade(db, sessionId);
+  return true;
+}
+

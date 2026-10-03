@@ -139,6 +139,35 @@ Do not commit secrets. `npm test` uses the in-process fake in `test/fakes/relay.
   coach is recorded on the same session via `assigned_roster_member_id`.
   See `ROADMAP.md` M4 for why.
 
+## Joining
+
+A coach signs in with one box: an email or a mobile number. An email gets a
+6-digit code by email (it works anywhere); a US or Canadian mobile gets the code
+by text. Sign-in emails go through the relay's `/email/send` from its shared
+sender with the name "Coachatron" until `COACHATRON_EMAIL_FROM` names an
+authenticated coachatron.com address. A coach who joined by email adds a mobile
+on the schedule screen to get texts; until then the overflow question arrives by
+email and is answered on the schedule screen.
+
+## Texting in
+
+A coach can text their week to the Coachatron number once it exists. The relay
+forwards Twilio's form fields to `/webhooks/sms`, signed with
+`x-relay-signature`; the app checks it when `RELAY_INBOUND_SECRET` is set. One
+number serves every environment for sending; incoming texts go to uat while
+testing and to production at launch (`docs/PLATFORM.md` section 3).
+
+## Testing texts without a phone (development)
+
+Development runs with `RELAY_APP_ENV=dev`. The relay then captures every text
+and email instead of sending it, in smtp4dev at
+[mail.dev.noctusoft.com](https://mail.dev.noctusoft.com/) (IP-allowlisted). A
+text to `+1 555 555 0100` shows up as an email to
+`sms-15555550100@sms.capture.noctusoft.com`. Nothing reaches a phone, so any
+number, including one outside the US and Canada, can sign in on development to
+try the text flows. uat and production leave `RELAY_APP_ENV` unset and really
+send.
+
 ## Texting ceilings
 
 Every outbound text goes through `sendText()` in `src/domain/outbound.ts`

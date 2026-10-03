@@ -1,20 +1,26 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { getDb, type DbClient } from '../db/client.js';
-import { sendText } from '../domain/outbound.js';
+import { canText, sendEmailMessage, sendText, signInCodeEmail } from '../domain/outbound.js';
 import {
   normalizePhone,
+  normalizeEmail,
+  parseContact,
+  contactValue,
+  findCoachByContact,
+  findCoachByEmail,
+  setCoachPhone,
+  type Contact,
   createOtp,
   checkOtp,
   consumeOtp,
   createCoachSession,
   getCoachBySessionToken,
-  findCoachByPhone,
   findCoachById,
   createCoach,
   getConnectRecipientKey,
   type CoachRow,
 } from '../domain/auth.js';
-import { APP_BASE_URL, APP_FEE_BPS, OTP_DAILY_MAX_PER_PHONE, SELLER_AGREEMENT_VERSION } from '../config.js';
+import { APP_BASE_URL, APP_FEE_BPS, OTP_DAILY_MAX_PER_CONTACT, SELLER_AGREEMENT_VERSION } from '../config.js';
 import { acceptSellerAgreement, getSellerStatus, startSellerOnboarding } from '../relay/seller.js';
 import { createWeeklySlots, deactivateSlot, listWeeklySlots, type WeeklySlot } from '../domain/scheduling.js';
 import { coachNav, html, page, raw, smsConsentCheckbox } from '../lib/html.js';
@@ -23,6 +29,7 @@ import { getPackagesForCoach, getPlansForCoach, createPackage, createPlan } from
 import { summarizeMoney } from '../domain/money.js';
 import { handleCoachMessage, loadScheduleAssistant, resolvePendingForCoach } from '../domain/assistant.js';
 import { clearCookie, parseCookies, serializeCookie } from '../lib/cookies.js';
+import { answerAskFromWeb, pendingAskForCoach, type PendingAsk } from '../domain/cascade.js';
 import { readStartText, START_COOKIE } from '../lib/startCookie.js';
 import {
   coachHasSchedule,
@@ -95,14 +102,16 @@ async function requireAuth(req: Request, res: Response, next: NextFunction): Pro
 
 // ---- Screen 1: sign in ----
 
-function renderPhoneForm(value = '', error?: string, saved = false) {
+// One box: an email gets a code by email (works anywhere); a US or Canadian
+// mobile gets a text code. Text codes reach only +1 numbers (SPEC.md §10).
+function renderContactForm(value = '', error?: string, saved = false) {
   return page(
     'Sign in',
     html`<h1>Coachatron</h1>
-      <p class="muted">${saved ? "Saved. Now your phone. We'll text a code, then show your week." : 'Enter your phone number to sign in or sign up.'}</p>
+      <p class="muted">${saved ? "Saved. Now your email or mobile. We'll send a code, then show your week." : 'Sign in or sign up with your email or mobile number.'}</p>
       <form method="post" action="/signin/otp">
-        <label for="phone">Phone</label>
-        <input id="phone" name="phone" type="tel" autocomplete="tel" placeholder="(555) 555-0100" value="${value}" required />
+        <label for="contact">Email or mobile number</label>
+        <input id="contact" name="contact" type="text" inputmode="email" autocomplete="username" autocapitalize="off" spellcheck="false" placeholder="you@example.com or (555) 555-0100" value="${value}" required />
         ${smsConsentCheckbox()}
         <button type="submit">Send code</button>
       </form>
@@ -121,54 +130,80 @@ function consentMeta(req: Request): { ip: string | null; userAgent: string | nul
   return { ip, userAgent };
 }
 
+/** The submitted contact: the new one-box field, or the older phone field. */
+function contactField(body: unknown): string {
+  return field(body, 'contact') || field(body, 'to') || field(body, 'phone');
+}
+
 coachRouter.get('/signin', (req, res) => {
-  res.status(200).send(renderPhoneForm('', undefined, Boolean(readStartText(req.headers.cookie))));
+  res.status(200).send(renderContactForm('', undefined, Boolean(readStartText(req.headers.cookie))));
 });
 
 coachRouter.post('/signin/otp', async (req, res) => {
   const saved = Boolean(readStartText(req.headers.cookie));
-  const raw_phone = field(req.body, 'phone');
-  const phone = normalizePhone(raw_phone);
-  if (!phone) {
-    res.status(422).send(renderPhoneForm(raw_phone, 'Enter a valid phone number.', saved));
-    return;
-  }
-  if (!smsConsentChecked(req.body)) {
-    res
-      .status(422)
-      .send(renderPhoneForm(raw_phone, 'Check the box to receive your sign-in code and session texts by SMS.', saved));
+  const rawContact = contactField(req.body);
+  const contact = parseContact(rawContact);
+  if (!contact) {
+    res.status(422).send(renderContactForm(rawContact, 'Enter an email address or a mobile number.', saved));
     return;
   }
   const db = getDb();
-  await recordConsent(db, phone, '/signin/otp', consentMeta(req));
-  const code = await createOtp(db, phone);
-  const outcome = await sendText(db, {
-    to: phone,
-    body: `Coachatron: your sign-in code is ${code}. Expires in 10 minutes.`,
-    coachId: null,
-    template: 'otp',
-    perRecipientDailyMax: OTP_DAILY_MAX_PER_PHONE,
-  });
+  if (contact.kind === 'phone' && !canText(contact.phone)) {
+    res.status(422).send(renderContactForm(rawContact, "We can't text that number yet. Use your email instead.", saved));
+    return;
+  }
+  if (contact.kind === 'phone') {
+    if (!smsConsentChecked(req.body)) {
+      res
+        .status(422)
+        .send(renderContactForm(rawContact, 'Check the box to receive your sign-in code and session texts by SMS.', saved));
+      return;
+    }
+    await recordConsent(db, contact.phone, '/signin/otp', consentMeta(req));
+  }
+  const code = await createOtp(db, contact);
+  const outcome =
+    contact.kind === 'email'
+      ? await sendEmailMessage(db, {
+          to: contact.email,
+          ...signInCodeEmail(code),
+          coachId: null,
+          template: 'otp',
+          perRecipientDailyMax: OTP_DAILY_MAX_PER_CONTACT,
+        })
+      : await sendText(db, {
+          to: contact.phone,
+          body: `Coachatron: your sign-in code is ${code}. Expires in 10 minutes.`,
+          coachId: null,
+          template: 'otp',
+          perRecipientDailyMax: OTP_DAILY_MAX_PER_CONTACT,
+        });
   if (outcome !== 'sent') {
+    const what = contact.kind === 'email' ? 'this email' : 'this number';
     res
       .status(outcome === 'refused' ? 422 : 429)
       .send(
-        renderPhoneForm(
-          raw_phone,
+        renderContactForm(
+          rawContact,
           outcome === 'refused'
-            ? 'Use a US or Canadian mobile number.'
-            : 'Too many codes for this number today. Try again tomorrow.',
+            ? "We can't text that number yet. Use your email instead."
+            : `Too many codes for ${what} today. Try again tomorrow.`,
           saved,
         ),
       );
     return;
   }
-  res.redirect(303, `/signin/verify?phone=${encodeURIComponent(phone)}`);
+  res.redirect(303, `/signin/verify?to=${encodeURIComponent(contactValue(contact))}`);
 });
 
 coachRouter.get('/signin/verify', (req, res) => {
-  const phone = typeof req.query.phone === 'string' ? req.query.phone : '';
-  res.status(200).send(renderVerifyForm(phone, {}));
+  const to = typeof req.query.to === 'string' ? req.query.to : typeof req.query.phone === 'string' ? req.query.phone : '';
+  const contact = parseContact(to);
+  if (!contact) {
+    res.redirect(303, '/signin');
+    return;
+  }
+  res.status(200).send(renderVerifyForm(contact, {}));
 });
 
 // The browser knows the coach's timezone; a typed IANA name was a
@@ -178,24 +213,27 @@ const TZ_SCRIPT = raw(
 );
 
 function renderVerifyForm(
-  phone: string,
+  contact: Contact,
   values: { code?: string; name?: string; email?: string; tz?: string },
   error?: string,
 ) {
+  const to = contactValue(contact);
   return page(
     'Verify',
     html`<h1>Enter your code</h1>
-      <p class="muted">We texted a 6-digit code to ${phone}.</p>
+      <p class="muted">We ${contact.kind === 'email' ? 'emailed' : 'texted'} a 6-digit code to ${to}.${contact.kind === 'email' ? ' Check spam if it is not there in a minute.' : ''}</p>
       <form method="post" action="/signin/verify">
-        <input type="hidden" name="phone" value="${phone}" />
+        <input type="hidden" name="to" value="${to}" />
         <label for="code">Code</label>
         <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" value="${values.code ?? ''}" required />
 
         <p class="muted">New here? Just your name. Everything else can wait.</p>
         <label for="name">Your name</label>
         <input id="name" name="name" autocomplete="name" value="${values.name ?? ''}" />
-        <label for="email">Email (optional)</label>
-        <input id="email" name="email" type="email" autocomplete="email" value="${values.email ?? ''}" />
+        ${contact.kind === 'phone'
+          ? html`<label for="email">Email (optional)</label>
+              <input id="email" name="email" type="email" autocomplete="email" value="${values.email ?? ''}" />`
+          : raw('')}
         <input id="tz" name="tz" type="hidden" value="${values.tz ?? ''}" />
 
         <button type="submit">Continue</button>
@@ -206,27 +244,44 @@ function renderVerifyForm(
 }
 
 coachRouter.post('/signin/verify', async (req, res) => {
-  const phone = field(req.body, 'phone');
+  const contact = parseContact(contactField(req.body));
   const code = field(req.body, 'code');
   const name = field(req.body, 'name');
   const email = field(req.body, 'email');
   const tz = field(req.body, 'tz');
-
-  const db = getDb();
-  const otpId = await checkOtp(db, phone, code);
-  if (!otpId) {
-    res.status(401).send(renderVerifyForm(phone, { code, name, email, tz }, 'Invalid or expired code.'));
+  if (!contact) {
+    res.redirect(303, '/signin');
     return;
   }
 
-  let coach: CoachRow | null = await findCoachByPhone(db, phone);
+  const db = getDb();
+  const otpId = await checkOtp(db, contact, code);
+  if (!otpId) {
+    res.status(401).send(renderVerifyForm(contact, { code, name, email, tz }, 'Invalid or expired code.'));
+    return;
+  }
+
+  let coach: CoachRow | null = await findCoachByContact(db, contact);
   if (!coach) {
     if (!name) {
-      res.status(422).send(renderVerifyForm(phone, { code, name, email, tz }, 'Enter your name.'));
+      res.status(422).send(renderVerifyForm(contact, { code, name, email, tz }, 'Enter your name.'));
+      return;
+    }
+    // An optional email given on a phone join must not belong to another coach.
+    const extraEmail = contact.kind === 'phone' ? normalizeEmail(email) : null;
+    if (extraEmail && (await findCoachByEmail(db, extraEmail))) {
+      res
+        .status(422)
+        .send(renderVerifyForm(contact, { code, name, email, tz }, 'That email already has an account. Sign in with it instead.'));
       return;
     }
     await consumeOtp(db, otpId);
-    coach = await createCoach(db, { phone, name, email, tz: isValidTimeZone(tz) ? tz : DEFAULT_TZ });
+    coach = await createCoach(db, {
+      phone: contact.kind === 'phone' ? contact.phone : null,
+      email: contact.kind === 'email' ? contact.email : (extraEmail ?? ''),
+      name,
+      tz: isValidTimeZone(tz) ? tz : DEFAULT_TZ,
+    });
   } else {
     await consumeOtp(db, otpId);
   }
@@ -539,6 +594,15 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
     return;
   }
   const live = req.query.published === '1' ? renderLiveCard(coach, await paymentsConnected(coach)) : raw('');
+  const askCard = renderAskCard(await pendingAskForCoach(db, coachId));
+  const phoneCard = coach.phone
+    ? req.query.phone === 'done'
+      ? html`<p class="muted">Texts about your sessions will go to ${coach.phone}.</p>`
+      : raw('')
+    : renderAddPhoneCard(
+        typeof req.query.phone === 'string' ? req.query.phone : '',
+        typeof req.query.to === 'string' ? req.query.to : '',
+      );
   const sessions = await db.query<{
     id: number;
     starts_at_utc: string;
@@ -567,6 +631,8 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
           ${coachNav('schedule')}
           <h1>Coming up</h1>
           ${live}
+          ${askCard}
+          ${phoneCard}
           <p class="muted"><a href="/app/schedule?setup=1">Add more by talking</a></p>
           ${assistant.reply
             ? html`<div class="card ask-reply">
@@ -600,6 +666,112 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
         </div>`,
     ),
   );
+});
+
+// ---- Screen 2 actions: the overflow question and adding a mobile ----
+
+function renderAskCard(ask: PendingAsk | null) {
+  if (!ask) return raw('');
+  return html`<div class="card ask-reply">
+    <p><strong>${ask.label} is full</strong>, ${ask.waiting} waiting. Open a second group? We'll ask your roster one at a time.</p>
+    <form class="btn-row" method="post" action="/app/overflow/${ask.sessionId}">
+      <button type="submit" name="answer" value="yes">Ask my roster</button>
+      <button type="submit" name="answer" value="no" class="ghost">Not now</button>
+    </form>
+  </div>`;
+}
+
+const PHONE_NOTICES: Record<string, string> = {
+  bad: 'Enter a US or Canadian mobile number.',
+  capped: 'Too many codes for that number today. Try again tomorrow.',
+  wrong: 'That code did not match. Try again.',
+  taken: 'That number is already on another Coachatron account.',
+  consent: 'Check the box to get texts from Coachatron.',
+};
+
+/** For a coach who joined by email: add a mobile to get texts when a
+ * session fills, and to run the week by text. Verified with a text code. */
+function renderAddPhoneCard(state: string, to: string) {
+  const notice = Object.hasOwn(PHONE_NOTICES, state) ? PHONE_NOTICES[state] : null;
+  const parsed = to ? normalizePhone(to) : null;
+  if ((state === 'sent' || state === 'wrong') && parsed) {
+    return html`<div class="card">
+      <p>We texted a code to ${parsed}.</p>
+      <form method="post" action="/app/phone/verify">
+        <input type="hidden" name="phone" value="${parsed}" />
+        <label for="phone-code">Code</label>
+        <input id="phone-code" name="code" inputmode="numeric" autocomplete="one-time-code" required />
+        <button type="submit" class="ghost">Add this mobile</button>
+      </form>
+      ${notice ? html`<p class="error">${notice}</p>` : raw('')}
+    </div>`;
+  }
+  return html`<div class="card">
+    <p class="muted">Get a text when a session fills, and run your week by text.</p>
+    <form method="post" action="/app/phone">
+      <label for="add-phone">Your mobile (US or Canada)</label>
+      <input id="add-phone" name="phone" type="tel" autocomplete="tel" placeholder="(555) 555-0100" required />
+      ${smsConsentCheckbox()}
+      <button type="submit" class="ghost">Send code</button>
+    </form>
+    ${notice ? html`<p class="error">${notice}</p>` : raw('')}
+  </div>`;
+}
+
+coachRouter.post('/app/overflow/:sessionId', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  await answerAskFromWeb(db, coachId, Number(req.params.sessionId), field(req.body, 'answer') === 'yes');
+  res.redirect(303, '/app/schedule');
+});
+
+coachRouter.post('/app/phone', requireAuth, async (req, res) => {
+  const db = getDb();
+  const phone = normalizePhone(field(req.body, 'phone'));
+  if (!phone || !canText(phone)) {
+    res.redirect(303, '/app/schedule?phone=bad');
+    return;
+  }
+  if (!smsConsentChecked(req.body)) {
+    res.redirect(303, '/app/schedule?phone=consent');
+    return;
+  }
+  await recordConsent(db, phone, '/app/phone', consentMeta(req));
+  const code = await createOtp(db, { kind: 'phone', phone });
+  const outcome = await sendText(db, {
+    to: phone,
+    body: `Coachatron: your code to add this mobile is ${code}. Expires in 10 minutes.`,
+    coachId: res.locals.coachId as number,
+    template: 'otp',
+    perRecipientDailyMax: OTP_DAILY_MAX_PER_CONTACT,
+  });
+  if (outcome !== 'sent') {
+    res.redirect(303, `/app/schedule?phone=${outcome === 'capped' ? 'capped' : 'bad'}`);
+    return;
+  }
+  res.redirect(303, `/app/schedule?phone=sent&to=${encodeURIComponent(phone)}`);
+});
+
+coachRouter.post('/app/phone/verify', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const phone = normalizePhone(field(req.body, 'phone'));
+  if (!phone) {
+    res.redirect(303, '/app/schedule?phone=bad');
+    return;
+  }
+  const otpId = await checkOtp(db, { kind: 'phone', phone }, field(req.body, 'code'));
+  if (!otpId) {
+    res.redirect(303, `/app/schedule?phone=wrong&to=${encodeURIComponent(phone)}`);
+    return;
+  }
+  const result = await setCoachPhone(db, coachId, phone);
+  if (result === 'taken') {
+    res.redirect(303, '/app/schedule?phone=taken');
+    return;
+  }
+  await consumeOtp(db, otpId);
+  res.redirect(303, '/app/schedule?phone=done');
 });
 
 coachRouter.post('/app/setup', requireAuth, async (req, res) => {

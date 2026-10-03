@@ -14,6 +14,7 @@ const TICK_MS = 60_000;
 export function createApp() {
   const app = express();
   app.use('/webhooks/store', express.raw({ type: '*/*' }), storeWebhookRouter);
+  // Inbound texts are signed over the raw body, so keep it raw here.
   app.use('/webhooks/sms', express.raw({ type: '*/*' }), smsInboundRouter);
   app.use('/webhooks/sms-status', express.raw({ type: '*/*' }), smsStatusRouter);
   app.use(express.urlencoded({ extended: true }));
@@ -63,6 +64,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   };
   void tick();
   setInterval(() => void tick(), TICK_MS);
+
+  if ((process.env.APP_BASE_URL ?? '').startsWith('https://') && !(process.env.RELAY_INBOUND_SECRET ?? '').trim()) {
+    console.warn('RELAY_INBOUND_SECRET is not set: inbound texts get 503 in production and are accepted unsigned elsewhere.');
+  }
 
   createApp().listen(PORT, () => {
     console.log(`Coachatron listening on ${PORT} (Node ${process.version})`);

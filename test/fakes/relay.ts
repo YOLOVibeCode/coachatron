@@ -9,6 +9,17 @@ import { listenLoopback } from '../helpers/listen.js';
 export interface FakeSms {
   to: string;
   body: string;
+  /** The X-App-Env header the app sent, if any. */
+  appEnv?: string | null;
+}
+
+export interface FakeEmail {
+  to: string;
+  subject: string;
+  text: string;
+  html: string | null;
+  from: string | null;
+  fromName: string | null;
 }
 
 export interface FakeBuyLink {
@@ -37,6 +48,7 @@ export interface FakeOnboard {
 export interface FakeRelay {
   url: string;
   sms: FakeSms[];
+  emails: FakeEmail[];
   buyLinks: FakeBuyLink[];
   onboards: FakeOnboard[];
   /** The relay's current agreement_version for every product. */
@@ -66,6 +78,7 @@ export async function startFakeRelay(): Promise<FakeRelay> {
   app.use(express.json());
 
   const sms: FakeSms[] = [];
+  const emails: FakeEmail[] = [];
   const buyLinks: FakeBuyLink[] = [];
   const onboards: FakeOnboard[] = [];
   const sellers = new Map<string, FakeSeller>();
@@ -137,13 +150,27 @@ export async function startFakeRelay(): Promise<FakeRelay> {
       res.status(400).json({ error: true, code: 21610, message: 'unsubscribed' });
       return;
     }
-    sms.push({ to, body: String(req.body.body) });
+    sms.push({ to, body: String(req.body.body), appEnv: req.header('x-app-env') ?? null });
     res.json({ id: `sms_${sms.length}` });
   });
 
+  // The relay's native shape: to, subject, text or html, optional from / fromName.
   app.post('/email/send', (req, res) => {
     if (!requireApiKey(req, res)) return;
-    res.json({ id: 'email_1' });
+    const { to, subject, text, html, from, fromName } = req.body ?? {};
+    if (!to || !subject || (!html && !text)) {
+      res.status(422).json({ error: true, message: 'to, subject, and html or text are required' });
+      return;
+    }
+    emails.push({
+      to: String(to),
+      subject: String(subject),
+      text: String(text ?? ''),
+      html: html ? String(html) : null,
+      from: from ? String(from) : null,
+      fromName: fromName ? String(fromName) : null,
+    });
+    res.status(201).json({ success: true, email: { to, subject, status: 'sent', messageId: `email_${emails.length}` } });
   });
 
   const server: Server = createServer(app);
@@ -153,6 +180,7 @@ export async function startFakeRelay(): Promise<FakeRelay> {
   return Object.assign(relay, {
     url: base,
     sms,
+    emails,
     buyLinks,
     onboards,
     seller: (product: string, sellerKey: string) => sellers.get(id(product, sellerKey)),

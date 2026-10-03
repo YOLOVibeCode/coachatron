@@ -45,6 +45,7 @@ export default defineRailway((ctx) => {
     replicas: { "us-east4-eqdc4a": 1 },
     domains: env.domains.map((domain) => ({ domain, port: 3000 })),
     // Values live in Railway, never in this file. preserve() keeps each one.
+    // Every variable on web must be listed here: apply deletes any it omits.
     env: {
       APP_BASE_URL: preserve(),
       APP_ENV: preserve(),
@@ -57,6 +58,9 @@ export default defineRailway((ctx) => {
       RELAY_API_KEY: preserve(),
       RELAY_BASE_URL: preserve(),
       RELAY_CONNECT_PRODUCT: preserve(),
+      RELAY_INBOUND_SECRET: preserve(),
+      // dev only: texts and emails are captured in smtp4dev, never sent.
+      RELAY_APP_ENV: preserve(),
       RELAY_WEBHOOK_SECRET: preserve(),
       SESSION_SECRET: preserve(),
       STORE_BASE_URL: preserve(),
