@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { getDb, type DbClient } from '../db/client.js';
 import { findCoachByHandle, getConnectRecipientKey, normalizePhone, type CoachRow } from '../domain/auth.js';
-import { html, page, raw } from '../lib/html.js';
+import { html, page, raw, smsConsentCheckbox } from '../lib/html.js';
 import { formatLocal } from '../lib/time.js';
 import {
   getPackagesForCoach,
@@ -17,6 +17,9 @@ import {
 } from '../domain/pricing.js';
 import { checkOverflow, acceptOffer, declineOffer, describeOffer, getOfferByToken } from '../domain/cascade.js';
 import { buyerEmail, connectBuyUrl } from '../relay/buy-link.js';
+import { recordConsent } from '../domain/sms-consent.js';
+import { SMS_BRAND, SMS_PURPOSE, SUPPORT_EMAIL } from '../config.js';
+import type { Request } from 'express';
 
 export const publicRouter = Router();
 
@@ -49,6 +52,56 @@ function field(body: unknown, key: string): string {
   const value = (body as Record<string, unknown> | undefined)?.[key];
   return typeof value === 'string' ? value.trim() : '';
 }
+
+function smsConsentChecked(body: unknown): boolean {
+  const value = (body as Record<string, unknown> | undefined)?.sms_consent;
+  return value === '1' || value === 'on' || value === true;
+}
+
+function consentMeta(req: Request, source: string): { ip: string | null; userAgent: string | null; source: string } {
+  return {
+    ip: typeof req.ip === 'string' ? req.ip : null,
+    userAgent: typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : null,
+    source,
+  };
+}
+
+publicRouter.get('/privacy', (_req, res) => {
+  res.status(200).send(
+    page(
+      'Privacy',
+      html`<h1>Privacy Policy</h1>
+        <h2>Text messages</h2>
+        <p>
+          ${SMS_BRAND} sends SMS for ${SMS_PURPOSE}. Message frequency varies. Message and data rates may apply. Reply STOP to opt out or HELP for help.
+        </p>
+        <p>
+          We do not share, sell, or provide your mobile phone number or SMS opt-in data to third parties or affiliates for marketing or promotional purposes.
+        </p>`,
+    ),
+  );
+});
+
+publicRouter.get('/terms', (_req, res) => {
+  res.status(200).send(
+    page(
+      'Terms',
+      html`<h1>Terms of Service</h1>
+        <section id="sms">
+          <h2>SMS program</h2>
+          <p><strong>Program name:</strong> ${SMS_BRAND} session texts</p>
+          <p>
+            ${SMS_BRAND} sends ${SMS_PURPOSE} when you opt in on our booking or sign-in forms by checking the SMS consent box.
+          </p>
+          <p>Message frequency varies.</p>
+          <p>Message and data rates may apply.</p>
+          <p>Reply STOP to opt out; reply HELP for help.</p>
+          <p>Help: ${SUPPORT_EMAIL}</p>
+          <p>Carriers are not liable for delayed or undelivered messages.</p>
+        </section>`,
+    ),
+  );
+});
 
 // ---- Screen 8: coach's public page (sessions list) ----
 
@@ -134,6 +187,7 @@ function renderBookingForm(
         <input id="athlete_name" name="athlete_name" value="${values.athlete_name ?? ''}" required />
         <label for="contact_phone">Your phone</label>
         <input id="contact_phone" name="contact_phone" type="tel" value="${values.contact_phone ?? ''}" required />
+        ${smsConsentCheckbox()}
         <label for="contact_email">Your email (optional)</label>
         <input id="contact_email" name="contact_email" type="email" value="${values.contact_email ?? ''}" />
         <button type="submit">Continue to payment</button>
@@ -174,6 +228,11 @@ publicRouter.post('/c/:handle/sessions/:sessionId/book', async (req, res) => {
     return;
   }
 
+  if (smsConsentChecked(req.body)) {
+    const meta = consentMeta(req, `/c/${coach.handle}/sessions/${session.id}/book`);
+    await recordConsent(db, contactPhone, meta.source, { ip: meta.ip, userAgent: meta.userAgent });
+  }
+
   // Re-check capacity server-side even if the list page the parent saw was
   // stale — SPEC.md §7.2.
   const bookedCount = await countBookedForSession(db, session.id);
@@ -187,6 +246,7 @@ publicRouter.post('/c/:handle/sessions/:sessionId/book', async (req, res) => {
             <input type="hidden" name="athlete_name" value="${athleteName}" />
             <input type="hidden" name="contact_phone" value="${rawPhone}" />
             <input type="hidden" name="contact_email" value="${contactEmail ?? ''}" />
+            ${smsConsentCheckbox()}
             <button type="submit">Join the waitlist</button>
           </form>
           <a class="action" href="/c/${coach.handle}">See other times</a>`,
@@ -222,6 +282,11 @@ publicRouter.post('/c/:handle/sessions/:sessionId/waitlist', async (req, res) =>
   if (!athleteName || !contactPhone) {
     res.status(422).send(notFound());
     return;
+  }
+
+  if (smsConsentChecked(req.body)) {
+    const meta = consentMeta(req, `/c/${coach.handle}/sessions/${session.id}/waitlist`);
+    await recordConsent(db, contactPhone, meta.source, { ip: meta.ip, userAgent: meta.userAgent });
   }
 
   await db.query(

@@ -17,7 +17,7 @@ async function bookSession(base: string, handle: string, sessionId: number, athl
   const bookRes = await fetch(`${base}/c/${handle}/sessions/${sessionId}/book`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ athlete_name: athlete, contact_phone: phone }),
+    body: JSON.stringify({ athlete_name: athlete, contact_phone: phone, sms_consent: '1' }),
     redirect: 'manual',
   });
   assert.equal(bookRes.status, 303);

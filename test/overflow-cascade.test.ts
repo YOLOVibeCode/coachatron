@@ -6,13 +6,10 @@ import { withRelay } from './helpers/relay.js';
 import { seedCoachWithSession, seedRosterMember, seedBookedSession, seedWaitlistEntry } from './helpers/fixtures.js';
 import { checkOverflow, startCascade, advanceCascade, acceptOffer } from '../src/domain/cascade.js';
 import type { DbClient } from '../src/db/client.js';
+import { postSignedSms } from './helpers/sms-webhook.js';
 
 async function smsTo(base: string, from: string, body: string): Promise<Response> {
-  return fetch(`${base}/webhooks/sms`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ from, body }),
-  });
+  return postSignedSms(base, { From: from, Body: body });
 }
 
 async function countOffers(db: DbClient, sessionId: number): Promise<number> {
@@ -196,22 +193,25 @@ test('STOP opts a roster member out; the cascade skips them without ever offerin
     ]);
     assert.equal(offers.rows.length, 1);
     assert.equal(offers.rows[0].roster_member_id, second.id, 'the opted-out member must be skipped entirely');
-    assert.equal(relay.sms.filter((m) => m.to === first.phone).length, 1, 'only the STOP confirmation, never an offer');
+    assert.equal(relay.sms.filter((m) => m.to === first.phone).length, 0, 'STOP does not trigger an offer or extra text');
   });
 });
 
 test('HELP always gets exactly one reply; an unrecognized keyword points at the web link', async () => {
   await withRelay(async (relay) => {
-    await freshDb();
+    const db = await freshDb();
+    const { grantSmsConsent } = await import('../src/domain/sms-consent.js');
+    await grantSmsConsent(db, '+15559990000');
     await withServer(async (base) => {
       const helpRes = await smsTo(base, '+15559990000', 'HELP');
       assert.equal(helpRes.status, 200);
-      assert.equal(relay.sms.length, 1);
+      assert.match(await helpRes.text(), /<Message>/);
+      assert.equal(relay.sms.length, 0);
 
       const otherRes = await smsTo(base, '+15559990000', 'banana');
       assert.equal(otherRes.status, 200);
-      assert.equal(relay.sms.length, 2);
-      assert.match(relay.sms[1].body, /\/start\//);
+      assert.equal(relay.sms.length, 1);
+      assert.match(relay.sms[0].body, /\/start\//);
     });
   });
 });

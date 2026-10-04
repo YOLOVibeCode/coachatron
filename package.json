@@ -19,6 +19,7 @@
   "dependencies": {
     "@noctusoft/store-client": "file:packages/store-client",
     "express": "^5.2.1",
+    "libphonenumber-js": "^1.13.14",
     "pg": "^8.23.1"
   },
   "devDependencies": {

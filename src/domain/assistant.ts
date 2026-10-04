@@ -1,6 +1,6 @@
 import type { DbClient } from '../db/client.js';
 import type { CoachRow } from './auth.js';
-import { startCascade, isOptedOut } from './cascade.js';
+import { startCascade } from './cascade.js';
 import { summarizeMoney } from './money.js';
 import { addCalendarDays, zonedParts, zonedTimeToUtc } from './scheduling.js';
 import { APP_BASE_URL } from '../config.js';
@@ -542,14 +542,12 @@ async function executeCancel(db: DbClient, coach: CoachRow, sessionId: number): 
       await db.query('update credit set remaining = remaining + 1 where id = $1', [athlete.credit_id]);
       credits += 1;
     }
-    if (!(await isOptedOut(db, athlete.contact_phone))) {
-      await sendText(db, {
-        to: athlete.contact_phone,
-        body: `${athlete.athlete_name}'s ${row.name} on ${formatLocal(row.starts_at_utc, row.tz)} has been cancelled.`,
-        coachId: coach.id,
-        template: 'session-cancelled',
-      });
-    }
+    await sendText(db, {
+      to: athlete.contact_phone,
+      body: `${athlete.athlete_name}'s ${row.name} on ${formatLocal(row.starts_at_utc, row.tz)} has been cancelled.`,
+      coachId: coach.id,
+      template: 'session-cancelled',
+    });
   }
 
   await db.query("update session set status = 'cancelled' where id = $1", [sessionId]);
@@ -629,7 +627,6 @@ async function executeBroadcast(db: DbClient, coach: CoachRow, classified: Class
   );
   let sent = 0;
   for (const athlete of athletes.rows) {
-    if (await isOptedOut(db, athlete.contact_phone)) continue;
     const outcome = await sendText(db, { to: athlete.contact_phone, body, coachId: coach.id, template: 'broadcast' });
     if (outcome === 'sent') sent += 1;
   }

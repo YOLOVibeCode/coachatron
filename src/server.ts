@@ -3,7 +3,7 @@ import { PORT } from './config.js';
 import { landingRouter } from './routes/landing.js';
 import { coachRouter } from './routes/coach.js';
 import { publicRouter } from './routes/public.js';
-import { webhooksRouter } from './routes/webhooks.js';
+import { smsInboundRouter, smsStatusRouter } from './routes/webhooks.js';
 import { storeWebhookRouter } from './routes/store-webhook.js';
 import { getDb } from './db/client.js';
 import { runMigrations } from './db/migrate.js';
@@ -15,7 +15,8 @@ export function createApp() {
   const app = express();
   app.use('/webhooks/store', express.raw({ type: '*/*' }), storeWebhookRouter);
   // Inbound texts are signed over the raw body, so keep it raw here.
-  app.use('/webhooks/sms', express.raw({ type: '*/*' }));
+  app.use('/webhooks/sms', express.raw({ type: '*/*' }), smsInboundRouter);
+  app.use('/webhooks/sms-status', express.raw({ type: '*/*' }), smsStatusRouter);
   app.use(express.urlencoded({ extended: true }));
   app.use(express.json());
 
@@ -23,7 +24,6 @@ export function createApp() {
   app.use(landingRouter);
   app.use(coachRouter);
   app.use(publicRouter);
-  app.use(webhooksRouter);
 
   return app;
 }
@@ -66,7 +66,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   setInterval(() => void tick(), TICK_MS);
 
   if ((process.env.APP_BASE_URL ?? '').startsWith('https://') && !(process.env.RELAY_INBOUND_SECRET ?? '').trim()) {
-    console.warn('RELAY_INBOUND_SECRET is not set: inbound texts are accepted unsigned.');
+    console.warn('RELAY_INBOUND_SECRET is not set: inbound texts get 503 in production and are accepted unsigned elsewhere.');
   }
 
   createApp().listen(PORT, () => {

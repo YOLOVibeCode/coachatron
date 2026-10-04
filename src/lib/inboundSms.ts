@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac } from 'node:crypto';
 
 /** Inbound texts arrive from the Noctusoft relay, which passes Twilio's own
  * form fields through unchanged (From, To, Body, ...) and signs the request:
@@ -15,18 +15,6 @@ export function inboundSmsUrl(): string {
 
 export function relaySignature(secret: string, url: string, raw: Buffer): string {
   return createHmac('sha256', secret).update(url).update(raw).digest('base64');
-}
-
-/** With RELAY_INBOUND_SECRET set, only a correctly signed request passes.
- * Without it (local, tests, or before the number exists) every request
- * passes, and the server warns at boot when that happens on https. */
-export function inboundSignatureOk(raw: Buffer, header: string | undefined): boolean {
-  const secret = (process.env.RELAY_INBOUND_SECRET ?? '').trim();
-  if (!secret) return true;
-  if (!header) return false;
-  const expected = Buffer.from(relaySignature(secret, inboundSmsUrl(), raw));
-  const given = Buffer.from(header.trim());
-  return expected.length === given.length && timingSafeEqual(expected, given);
 }
 
 /** The sender and text, from the relay's form fields (From, Body) or the
