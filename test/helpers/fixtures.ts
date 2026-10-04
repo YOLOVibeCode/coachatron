@@ -1,5 +1,6 @@
 import type { DbClient } from '../../src/db/client.js';
 import { createCoach, type CoachRow } from '../../src/domain/auth.js';
+import { grantSmsConsent } from '../../src/domain/sms-consent.js';
 import crypto from 'node:crypto';
 
 export interface SeededSession {
@@ -27,6 +28,7 @@ export async function seedCoachWithSession(
     email: `jamie${phone.slice(-7)}@example.com`,
     tz: 'America/Chicago',
   });
+  await grantSmsConsent(db, coach.phone);
 
   const typeResult = await db.query<{ id: number }>(
     `insert into session_type (coach_id, name, duration_min, capacity, price_cents, active)
@@ -77,6 +79,7 @@ export async function seedRosterMember(
   coachId: number,
   name: string,
   priority: number,
+  opts: { consent?: boolean } = {},
 ): Promise<SeededRosterMember> {
   const phone = `+1777${Math.floor(1000000 + Math.random() * 8999999)}`;
   const result = await db.query<{ id: number }>(
@@ -85,6 +88,9 @@ export async function seedRosterMember(
      returning id`,
     [coachId, name, phone, priority],
   );
+  if (opts?.consent !== false) {
+    await grantSmsConsent(db, phone);
+  }
   return { id: result.rows[0].id, phone };
 }
 
@@ -98,6 +104,7 @@ export async function seedBookedSession(db: DbClient, sessionId: number, athlete
      returning id`,
     [sessionId, athleteName, contactPhone, manageToken],
   );
+  await grantSmsConsent(db, contactPhone);
   return result.rows[0].id;
 }
 

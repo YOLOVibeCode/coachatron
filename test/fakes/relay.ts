@@ -9,6 +9,8 @@ import { listenLoopback } from '../helpers/listen.js';
 export interface FakeSms {
   to: string;
   body: string;
+  /** The X-App-Env header the app sent, if any. */
+  appEnv?: string | null;
 }
 
 export interface FakeEmail {
@@ -143,7 +145,12 @@ export async function startFakeRelay(): Promise<FakeRelay> {
 
   app.post('/sms/send', (req, res) => {
     if (!requireApiKey(req, res)) return;
-    sms.push({ to: String(req.body.to), body: String(req.body.body) });
+    const to = String(req.body.to);
+    if (to === '+15552161000') {
+      res.status(400).json({ error: true, code: 21610, message: 'unsubscribed' });
+      return;
+    }
+    sms.push({ to, body: String(req.body.body), appEnv: req.header('x-app-env') ?? null });
     res.json({ id: `sms_${sms.length}` });
   });
 

@@ -131,8 +131,8 @@ All sends go through the relay. Rules from SPEC.md §10 stand (transactional onl
   route is data in `products/manifest.json`, not an `inbound.js` change.
 - **What arrives:** Twilio's own form fields (`From`, `To`, `Body`, …),
   urlencoded, with `x-relay-signature` = base64 HMAC-SHA256(secret, url + raw
-  body). `src/lib/inboundSms.ts` checks it whenever `RELAY_INBOUND_SECRET` is
-  set (mint it with `node scripts/relay-keys.js inbound-secret --product
+  body). `src/routes/webhooks.ts` checks it whenever `RELAY_INBOUND_SECRET` is
+  set, and answers 503 in production when it is not (mint it with `node scripts/relay-keys.js inbound-secret --product
   coachatron --rotate` in the relay repo). `INBOUND_SMS_URL` must equal the
   manifest `url` exactly. The relay ignores a non-XML reply, so Coachatron
   answers by sending a text, not TwiML.

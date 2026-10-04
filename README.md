@@ -157,6 +157,17 @@ forwards Twilio's form fields to `/webhooks/sms`, signed with
 number serves every environment for sending; incoming texts go to uat while
 testing and to production at launch (`docs/PLATFORM.md` section 3).
 
+## Testing texts without a phone (development)
+
+Development runs with `RELAY_APP_ENV=dev`. The relay then captures every text
+and email instead of sending it, in smtp4dev at
+[mail.dev.noctusoft.com](https://mail.dev.noctusoft.com/) (IP-allowlisted). A
+text to `+1 555 555 0100` shows up as an email to
+`sms-15555550100@sms.capture.noctusoft.com`. Nothing reaches a phone, so any
+number, including one outside the US and Canada, can sign in on development to
+try the text flows. uat and production leave `RELAY_APP_ENV` unset and really
+send.
+
 ## Texting ceilings
 
 Every outbound text goes through `sendText()` in `src/domain/outbound.ts`

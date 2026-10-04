@@ -59,6 +59,8 @@ export default defineRailway((ctx) => {
       RELAY_BASE_URL: preserve(),
       RELAY_CONNECT_PRODUCT: preserve(),
       RELAY_INBOUND_SECRET: preserve(),
+      // dev only: texts and emails are captured in smtp4dev, never sent.
+      RELAY_APP_ENV: preserve(),
       RELAY_WEBHOOK_SECRET: preserve(),
       SESSION_SECRET: preserve(),
       STORE_BASE_URL: preserve(),
