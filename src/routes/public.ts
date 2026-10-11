@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { getDb, type DbClient } from '../db/client.js';
 import { findCoachByHandle, getConnectRecipientKey, normalizePhone, type CoachRow } from '../domain/auth.js';
-import { html, page, raw, smsConsentCheckbox } from '../lib/html.js';
+import { html, operatorLine, page, raw, smsConsentCheckbox } from '../lib/html.js';
 import { formatLocal } from '../lib/time.js';
 import {
   getPackagesForCoach,
@@ -17,8 +17,9 @@ import {
 } from '../domain/pricing.js';
 import { checkOverflow, acceptOffer, declineOffer, describeOffer, getOfferByToken } from '../domain/cascade.js';
 import { buyerEmail, connectBuyUrl } from '../relay/buy-link.js';
-import { recordConsent } from '../domain/sms-consent.js';
-import { SMS_BRAND, SMS_PURPOSE, SUPPORT_EMAIL } from '../config.js';
+import { hasActiveConsent, recordConsent } from '../domain/sms-consent.js';
+import { canText, sendText } from '../domain/outbound.js';
+import { SMS_BRAND, SMS_OPT_IN_CONFIRMATION, SMS_PURPOSE, SUPPORT_EMAIL } from '../config.js';
 import type { Request } from 'express';
 
 export const publicRouter = Router();
@@ -71,6 +72,7 @@ publicRouter.get('/privacy', (_req, res) => {
     page(
       'Privacy',
       html`<h1>Privacy Policy</h1>
+        ${operatorLine()}
         <h2>Text messages</h2>
         <p>
           ${SMS_BRAND} sends SMS for ${SMS_PURPOSE}. Message frequency varies. Message and data rates may apply. Reply STOP to opt out or HELP for help.
@@ -87,12 +89,14 @@ publicRouter.get('/terms', (_req, res) => {
     page(
       'Terms',
       html`<h1>Terms of Service</h1>
+        ${operatorLine()}
         <section id="sms">
           <h2>SMS program</h2>
           <p><strong>Program name:</strong> ${SMS_BRAND} session texts</p>
           <p>
-            ${SMS_BRAND} sends ${SMS_PURPOSE} when you opt in on our booking or sign-in forms by checking the SMS consent box.
+            ${SMS_BRAND} sends ${SMS_PURPOSE} when you opt in by checking the SMS consent box on our booking, waitlist, or sign-in forms, or at <a href="/sms">coachatron.com/sms</a>. The box is never checked for you, and texts are not required to sign in or book.
           </p>
+          <p>A sign-in code you ask for is sent once and does not sign you up for other texts. If you text us first, we reply to that text.</p>
           <p>Message frequency varies.</p>
           <p>Message and data rates may apply.</p>
           <p>Reply STOP to opt out; reply HELP for help.</p>
@@ -101,6 +105,92 @@ publicRouter.get('/terms', (_req, res) => {
         </section>`,
     ),
   );
+});
+
+// ---- Text messages: what Coachatron texts and a standalone opt-in ----
+
+const SMS_NO_SHARING =
+  'We do not share, sell, or provide your mobile phone number or SMS opt-in data to third parties or affiliates for marketing or promotional purposes.';
+
+function renderSmsPage(values: { phone?: string } = {}, notice?: { kind: 'error' | 'ok'; text: string }) {
+  return page(
+    'Text messages',
+    html`<h1>Text messages from ${SMS_BRAND}</h1>
+      ${operatorLine()}
+      <p>
+        ${SMS_BRAND} (coachatron.com) is a booking site for independent youth sports coaches. Coaches
+        publish their sessions; parents and athletes book and pay. Texts are optional: you can sign in with your email and book
+        a session without them.
+      </p>
+      <h2>What we text</h2>
+      <ul>
+        <li>Sign-in codes you ask for. Each request sends one code and does not sign you up for other texts.</li>
+        <li>If you check the box: booking confirmations, session reminders, and session updates such as a time change or a cancellation.</li>
+        <li>Coaches who check the box also get a text when a session fills and offers to coach an extra session.</li>
+        <li>Replies to texts you send us. A coach who texts their week to our number gets a link back to see it and go live.</li>
+      </ul>
+      <ul>
+        <li>Every message starts with "${SMS_BRAND}:".</li>
+        <li>Message frequency varies with your bookings.</li>
+        <li>Message and data rates may apply.</li>
+        <li>Reply STOP to opt out at any time, or HELP for help.</li>
+        <li>Support: ${SUPPORT_EMAIL}</li>
+        <li>No marketing texts.</li>
+        <li>${SMS_NO_SHARING}</li>
+      </ul>
+      <p>See our <a href="/terms#sms">SMS Terms</a> and <a href="/privacy">Privacy Policy</a>.</p>
+      <h2>Opt in</h2>
+      <p class="muted">
+        The same box appears wherever ${SMS_BRAND} asks for a mobile number: sign-in, booking, and the waitlist. It is never
+        checked for you, and you can sign in or book without it.
+      </p>
+      <form method="post" action="/sms">
+        <label for="sms-phone">Mobile number (US or Canada)</label>
+        <input id="sms-phone" name="phone" type="tel" autocomplete="tel" placeholder="(555) 555-0100" value="${values.phone ?? ''}" required />
+        <div hidden aria-hidden="true">
+          <label for="sms-website">Leave this empty</label>
+          <input id="sms-website" name="website" tabindex="-1" autocomplete="off" />
+        </div>
+        ${smsConsentCheckbox()}
+        <button type="submit">Opt in</button>
+      </form>
+      ${notice ? html`<p class="${notice.kind === 'error' ? 'error' : 'muted'}">${notice.text}</p>` : raw('')}`,
+  );
+}
+
+publicRouter.get('/sms', (_req, res) => {
+  res.status(200).send(renderSmsPage());
+});
+
+publicRouter.post('/sms', async (req, res) => {
+  const rawPhone = field(req.body, 'phone');
+  // Bots fill every field; a person never sees this one.
+  if (field(req.body, 'website')) {
+    res.status(200).send(renderSmsPage({}, { kind: 'ok', text: "You're opted in." }));
+    return;
+  }
+  const phone = normalizePhone(rawPhone);
+  if (!phone || !canText(phone)) {
+    res.status(422).send(renderSmsPage({ phone: rawPhone }, { kind: 'error', text: 'Enter a US or Canadian mobile number.' }));
+    return;
+  }
+  if (!smsConsentChecked(req.body)) {
+    res
+      .status(422)
+      .send(renderSmsPage({ phone: rawPhone }, { kind: 'error', text: 'Check the box to get texts. A number alone is not consent.' }));
+    return;
+  }
+  const db = getDb();
+  const meta = consentMeta(req, '/sms');
+  await recordConsent(db, phone, meta.source, { ip: meta.ip, userAgent: meta.userAgent });
+  await sendText(db, {
+    to: phone,
+    body: SMS_OPT_IN_CONFIRMATION,
+    coachId: null,
+    template: 'opt-in-confirmation',
+    perRecipientDailyMax: 1,
+  });
+  res.status(200).send(renderSmsPage({}, { kind: 'ok', text: `You're opted in. We texted ${phone} to confirm. Reply STOP any time to opt out.` }));
 });
 
 // ---- Screen 8: coach's public page (sessions list) ----
@@ -288,6 +378,7 @@ publicRouter.post('/c/:handle/sessions/:sessionId/waitlist', async (req, res) =>
     const meta = consentMeta(req, `/c/${coach.handle}/sessions/${session.id}/waitlist`);
     await recordConsent(db, contactPhone, meta.source, { ip: meta.ip, userAgent: meta.userAgent });
   }
+  const textsOn = await hasActiveConsent(db, contactPhone);
 
   await db.query(
     'insert into waitlist (session_id, contact_phone, athlete_name) values ($1, $2, $3)',
@@ -300,7 +391,9 @@ publicRouter.post('/c/:handle/sessions/:sessionId/waitlist', async (req, res) =>
     page(
       'On the waitlist',
       html`<h1>You're on the waitlist</h1>
-        <p class="muted">${session.name} — ${formatLocal(session.starts_at_utc, session.tz)}. We'll text ${contactPhone} if a spot opens.</p>
+        <p class="muted">${session.name} — ${formatLocal(session.starts_at_utc, session.tz)}. ${textsOn
+          ? `We'll text ${contactPhone} if a spot opens.`
+          : `You didn't choose texts, so check back at ${coach.name}'s page for an open spot.`}</p>
         <a class="action" href="/c/${coach.handle}">Back to ${coach.name}'s sessions</a>`,
     ),
   );

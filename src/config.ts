@@ -42,6 +42,10 @@ export function coachatronEmailFrom(): string {
 export const SMS_BRAND = 'Coachatron';
 export const SMS_PURPOSE = 'booking confirmations, reminders, and session updates';
 export const SMS_CONSENT_TEXT_VERSION = 'v1';
+/** Sent once when someone opts in at /sms, so the owner of the number can
+ * say STOP if it was not them. */
+export const SMS_OPT_IN_CONFIRMATION =
+  "Coachatron: you're opted in to booking and session texts. Msg frequency varies. Msg & data rates may apply. Reply HELP for help, STOP to opt out.";
 export const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL ?? 'support@coachatron.com';
 /** E.164 of the product SMS number. Empty until provisioned; the landing
  * page hides the "text it" line when unset. Read at request time so tests
