@@ -46,28 +46,31 @@ function gsmLength(text: string): number | null {
 }
 
 /** Fits a text into one SMS segment: GSM-7 up to 160, otherwise UCS-2 up
- * to 70. PLATFORM.md §4.5: "a second segment is never sent." */
-export function toOneSegment(body: string): string {
+ * to 70. PLATFORM.md §4.5: "a second segment is never sent." `reserve`
+ * leaves that many characters free for a GSM-7 line added after. */
+export function toOneSegment(body: string, reserve = 0): string {
   let text = body.trim();
   for (const [re, to] of TRANSLITERATE) text = text.replace(re, to);
   const gsm = gsmLength(text);
   if (gsm !== null) {
-    if (gsm <= GSM_SEGMENT) return text;
+    const max = GSM_SEGMENT - reserve;
+    if (gsm <= max) return text;
     let out = '';
     let used = 0;
     for (const ch of text) {
       const w = GSM_EXTENDED.has(ch) ? 2 : 1;
-      if (used + w > GSM_SEGMENT - 3) break;
+      if (used + w > max - 3) break;
       out += ch;
       used += w;
     }
     return `${out.trimEnd()}...`;
   }
   // UCS-2 counts UTF-16 code units; never split a surrogate pair.
-  if (text.length <= UCS2_SEGMENT) return text;
+  const max = UCS2_SEGMENT - reserve;
+  if (text.length <= max) return text;
   let out = '';
   for (const ch of text) {
-    if (out.length + ch.length > UCS2_SEGMENT - 3) break;
+    if (out.length + ch.length > max - 3) break;
     out += ch;
   }
   return `${out.trimEnd()}...`;
@@ -111,12 +114,29 @@ export interface OutboundText {
   perRecipientDailyMax?: number;
 }
 
-const CONSENT_EXEMPT_TEMPLATES = new Set(['consent-request']);
+/** Texts that answer the person this moment and need no standing consent:
+ * a sign-in code they asked for, and replies to a text they sent us. An
+ * opt-out still stops them. Everything else needs the consent box. */
+const ONE_TIME_TEMPLATES = new Set(['otp', 'auto-reply', 'assistant']);
+
+/** Conversation replies to a coach skip the opt-out line; every other text
+ * carries it. */
+const NO_OPT_OUT_LINE_TEMPLATES = new Set(['assistant']);
+
+const OPT_OUT_LINE = 'Reply STOP to opt out.';
 
 function withBrand(body: string): string {
   const prefix = `${SMS_BRAND}:`;
   if (body.startsWith(prefix)) return body;
   return `${prefix} ${body}`;
+}
+
+/** The final one-segment text: brand first, opt-out line last unless the
+ * text already says STOP. The body is shortened, never the opt-out line. */
+export function composeText(body: string, template: string): string {
+  const branded = withBrand(body.trim());
+  if (NO_OPT_OUT_LINE_TEMPLATES.has(template) || /\bSTOP\b/.test(branded)) return toOneSegment(branded);
+  return `${toOneSegment(branded, OPT_OUT_LINE.length + 1)} ${OPT_OUT_LINE}`;
 }
 
 type Channel = 'sms' | 'email';
@@ -182,20 +202,18 @@ async function log(
 }
 
 export async function sendText(db: DbClient, msg: OutboundText, now: Date = new Date()): Promise<SendOutcome> {
-  const body = toOneSegment(withBrand(msg.body));
+  const body = composeText(msg.body, msg.template);
   if (!canText(msg.to)) {
     await log(db, msg, body, 'refused-destination', null, now);
     return 'refused';
   }
-  if (!CONSENT_EXEMPT_TEMPLATES.has(msg.template)) {
-    if (await isOptedOut(db, msg.to)) {
-      await log(db, msg, body, 'refused-opt-out', null, now);
-      return 'refused';
-    }
-    if (!(await hasActiveConsent(db, msg.to))) {
-      await log(db, msg, body, 'refused-no-consent', null, now);
-      return 'refused';
-    }
+  if (await isOptedOut(db, msg.to)) {
+    await log(db, msg, body, 'refused-opt-out', null, now);
+    return 'refused';
+  }
+  if (!ONE_TIME_TEMPLATES.has(msg.template) && !(await hasActiveConsent(db, msg.to))) {
+    await log(db, msg, body, 'refused-no-consent', null, now);
+    return 'refused';
   }
   const hit = await ceilingHit(db, msg, now);
   if (hit) {

@@ -290,11 +290,26 @@ export function smsConsentCheckbox(): SafeHtml {
   </label>`;
 }
 
+/** Shown by a phone field that sends a code the person asks for. That one
+ * text needs no box; the box is only for the texts that keep coming. */
+export function oneTimeCodeNote(): SafeHtml {
+  return html`<p class="muted sms-once">If you enter a mobile, we'll text a one-time code to it. Message and data rates may apply. Texts after that are optional: check the box below only if you want them.</p>`;
+}
+
+/** Who runs Coachatron, in the footer and at the top of the legal pages, so
+ * a reviewer can tie the site to the business behind it. */
+export function operatorLine(): SafeHtml {
+  return html`<p class="operator">Coachatron is operated by Noctusoft, Inc. (<a href="https://noctusoft.com">https://noctusoft.com</a>)</p>`;
+}
+
 export function siteFooter(): SafeHtml {
   return html`<footer class="site-footer">
+    ${operatorLine()}
     <a href="/privacy">Privacy</a>
     <span aria-hidden="true"> · </span>
     <a href="/terms">Terms</a>
+    <span aria-hidden="true"> · </span>
+    <a href="/sms">Text messages</a>
   </footer>`;
 }
 
@@ -310,6 +325,8 @@ export function page(title: string, body: SafeHtml): string {
   .site-footer a { color: var(--teal); }
   .sms-consent { display: block; margin: 12px 0; font-size: 0.95rem; color: var(--screen-muted); }
   .sms-consent input { margin-right: 8px; }
+  .sms-once { font-size: 0.95rem; }
+  .operator { font-size: 0.9rem; color: var(--screen-muted); }
 </style>
 </head>
 <body>

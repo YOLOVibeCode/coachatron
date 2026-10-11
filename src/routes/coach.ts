@@ -23,7 +23,7 @@ import {
 import { APP_BASE_URL, APP_FEE_BPS, OTP_DAILY_MAX_PER_CONTACT, SELLER_AGREEMENT_VERSION } from '../config.js';
 import { acceptSellerAgreement, getSellerStatus, startSellerOnboarding } from '../relay/seller.js';
 import { createWeeklySlots, deactivateSlot, listWeeklySlots, type WeeklySlot } from '../domain/scheduling.js';
-import { coachNav, html, page, raw, smsConsentCheckbox } from '../lib/html.js';
+import { coachNav, html, oneTimeCodeNote, page, raw, smsConsentCheckbox } from '../lib/html.js';
 import { DEFAULT_TZ, formatLocal, isValidTimeZone } from '../lib/time.js';
 import { getPackagesForCoach, getPlansForCoach, createPackage, createPlan } from '../domain/pricing.js';
 import { summarizeMoney } from '../domain/money.js';
@@ -40,8 +40,7 @@ import {
   renderSetupPreview,
   type SetupDraft,
 } from '../domain/setup.js';
-import { recordConsent } from '../domain/sms-consent.js';
-import { sendRosterConsentRequest } from '../domain/cascade.js';
+import { hasActiveConsent, recordConsent } from '../domain/sms-consent.js';
 
 // ---- Roster functions (M4 overflow cascade) ----
 
@@ -112,6 +111,7 @@ function renderContactForm(value = '', error?: string, saved = false) {
       <form method="post" action="/signin/otp">
         <label for="contact">Email or mobile number</label>
         <input id="contact" name="contact" type="text" inputmode="email" autocomplete="username" autocapitalize="off" spellcheck="false" placeholder="you@example.com or (555) 555-0100" value="${value}" required />
+        ${oneTimeCodeNote()}
         ${smsConsentCheckbox()}
         <button type="submit">Send code</button>
       </form>
@@ -152,13 +152,9 @@ coachRouter.post('/signin/otp', async (req, res) => {
     res.status(422).send(renderContactForm(rawContact, "We can't text that number yet. Use your email instead.", saved));
     return;
   }
-  if (contact.kind === 'phone') {
-    if (!smsConsentChecked(req.body)) {
-      res
-        .status(422)
-        .send(renderContactForm(rawContact, 'Check the box to receive your sign-in code and session texts by SMS.', saved));
-      return;
-    }
+  // The code is one text the person asked for; the box only covers the
+  // texts after it, so leaving it unchecked never blocks signing in.
+  if (contact.kind === 'phone' && smsConsentChecked(req.body)) {
     await recordConsent(db, contact.phone, '/signin/otp', consentMeta(req));
   }
   const code = await createOtp(db, contact);
@@ -595,10 +591,13 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
   }
   const live = req.query.published === '1' ? renderLiveCard(coach, await paymentsConnected(coach)) : raw('');
   const askCard = renderAskCard(await pendingAskForCoach(db, coachId));
+  const phoneState = typeof req.query.phone === 'string' ? req.query.phone : '';
   const phoneCard = coach.phone
-    ? req.query.phone === 'done'
+    ? phoneState === 'done'
       ? html`<p class="muted">Texts about your sessions will go to ${coach.phone}.</p>`
-      : raw('')
+      : (await hasActiveConsent(db, coach.phone))
+        ? raw('')
+        : renderTextsOnCard(phoneState)
     : renderAddPhoneCard(
         typeof req.query.phone === 'string' ? req.query.phone : '',
         typeof req.query.to === 'string' ? req.query.to : '',
@@ -689,6 +688,21 @@ const PHONE_NOTICES: Record<string, string> = {
   consent: 'Check the box to get texts from Coachatron.',
 };
 
+/** For a coach who signed in with a mobile but left the box unchecked: the
+ * same box, to turn on texts when a session fills. Until then those go by
+ * email when there is one, and always wait on this screen. */
+function renderTextsOnCard(state: string) {
+  const notice = state === 'consent' ? PHONE_NOTICES.consent : null;
+  return html`<div class="card">
+    <p class="muted">Get a text when a session fills, and run your week by text.</p>
+    <form method="post" action="/app/phone/consent">
+      ${smsConsentCheckbox()}
+      <button type="submit" class="ghost">Turn on texts</button>
+    </form>
+    ${notice ? html`<p class="error">${notice}</p>` : raw('')}
+  </div>`;
+}
+
 /** For a coach who joined by email: add a mobile to get texts when a
  * session fills, and to run the week by text. Verified with a text code. */
 function renderAddPhoneCard(state: string, to: string) {
@@ -750,6 +764,21 @@ coachRouter.post('/app/phone', requireAuth, async (req, res) => {
     return;
   }
   res.redirect(303, `/app/schedule?phone=sent&to=${encodeURIComponent(phone)}`);
+});
+
+coachRouter.post('/app/phone/consent', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coach = await findCoachById(db, res.locals.coachId as number);
+  if (!coach?.phone) {
+    res.redirect(303, '/app/schedule');
+    return;
+  }
+  if (!smsConsentChecked(req.body)) {
+    res.redirect(303, '/app/schedule?phone=consent');
+    return;
+  }
+  await recordConsent(db, coach.phone, '/app/phone/consent', consentMeta(req));
+  res.redirect(303, '/app/schedule?phone=done');
 });
 
 coachRouter.post('/app/phone/verify', requireAuth, async (req, res) => {
@@ -1112,6 +1141,10 @@ coachRouter.get('/app/roster', requireAuth, async (_req, res) => {
   const db = getDb();
   const coachId = res.locals.coachId as number;
   const members = await listRosterMembers(db, coachId);
+  const consented = new Set<string>();
+  for (const m of members) {
+    if (await hasActiveConsent(db, m.phone)) consented.add(m.phone);
+  }
 
   res.status(200).send(
     page(
@@ -1125,6 +1158,7 @@ coachRouter.get('/app/roster', requireAuth, async (_req, res) => {
                 (m) =>
                   html`<li class="card">
                     <div class="row"><span>${m.name}</span><span class="muted">${m.phone}</span></div>
+                    <p class="muted">${consented.has(m.phone) ? 'Texts on' : 'Not opted in yet: no offers until they do'}</p>
                     <form class="roster-priority-form" method="post" action="/app/roster/${m.id}/priority">
                       <input type="number" name="priority" value="${m.priority}" min="0" required aria-label="Priority for ${m.name}" />
                       <button type="submit">Update priority</button>
@@ -1139,7 +1173,8 @@ coachRouter.get('/app/roster', requireAuth, async (_req, res) => {
           <label for="phone">Phone</label>
           <input id="phone" name="phone" type="tel" required />
           <button type="submit">Add to roster</button>
-        </form>`,
+        </form>
+        <p class="muted">We don't text the people you add. Ask them to opt in at ${APP_BASE_URL}/sms with this number. Offers go only to people who have.</p>`,
     ),
   );
 });
@@ -1163,10 +1198,6 @@ coachRouter.post('/app/roster', requireAuth, async (_req, res) => {
   }
 
   await addRosterMember(db, coachId, name, phone);
-  const coach = await findCoachById(db, coachId);
-  if (coach) {
-    await sendRosterConsentRequest(db, coachId, coach.name, phone);
-  }
   res.redirect(303, '/app/roster');
 });
 
