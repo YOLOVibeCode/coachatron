@@ -92,7 +92,7 @@ function renderLanding(): string {
         <h2>What you skip</h2>
         <ul>
           <li>No setup wizard.</li>
-          <li>No passwords. Your phone is the sign-in.</li>
+          <li>No passwords. Your email or phone is the sign-in.</li>
           <li>No app to download.</li>
         </ul>
       </section>

@@ -52,25 +52,9 @@ export async function clearRevocation(db: DbClient, phone: string, purpose: stri
   );
 }
 
-export async function queuePendingConsent(
-  db: DbClient,
-  phone: string,
-  coachId: number,
-  addedForLabel: string,
-  purpose: string = SMS_PURPOSE,
-): Promise<void> {
-  await db.query(
-    `insert into sms_consent_pending (phone, added_by_coach_id, added_for_label, purpose, sent_at)
-     values ($1, $2, $3, $4, now())
-     on conflict (phone) do update set
-       added_by_coach_id = excluded.added_by_coach_id,
-       added_for_label = excluded.added_for_label,
-       purpose = excluded.purpose,
-       sent_at = now()`,
-    [phone, coachId, addedForLabel, purpose],
-  );
-}
-
+/** Numbers a coach added to a roster used to get one "reply YES" text.
+ * That text is gone: nobody is texted until they opt in themselves. A YES
+ * to a request sent before then still records consent. */
 export async function hasPendingConsent(db: DbClient, phone: string): Promise<boolean> {
   const result = await db.query<{ phone: string }>('select phone from sms_consent_pending where phone = $1', [phone]);
   return result.rows.length > 0;

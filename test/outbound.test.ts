@@ -6,7 +6,8 @@ import { freshDb } from './helpers/db.js';
 import { withServer } from './helpers/server.js';
 import { withRelay } from './helpers/relay.js';
 import { seedCoachWithSession } from './helpers/fixtures.js';
-import { isDomesticDestination, segmentCount, sendText, toOneSegment } from '../src/domain/outbound.js';
+import { composeText, isDomesticDestination, segmentCount, sendText, toOneSegment } from '../src/domain/outbound.js';
+import { revokeConsent } from '../src/domain/sms-consent.js';
 import { grantSmsConsent } from '../src/domain/sms-consent.js';
 import type { DbClient } from '../src/db/client.js';
 
@@ -44,6 +45,38 @@ test('every text fits one segment: GSM up to 160, UCS-2 up to 70', () => {
   for (const body of ['a'.repeat(161), `${'é'.repeat(100)}ş`, `Tue${' '.repeat(200)}`, '😀'.repeat(50)]) {
     assert.equal(segmentCount(toOneSegment(body)), 1, JSON.stringify(body.slice(0, 20)));
   }
+});
+
+test('every text starts with the brand and ends with the opt-out line, still one segment', () => {
+  assert.equal(composeText('Sam has Keeper Group Tue.', 'reminder'), 'Coachatron: Sam has Keeper Group Tue. Reply STOP to opt out.');
+  assert.equal(
+    composeText('Coachatron: reply YES or STOP.', 'reminder'),
+    'Coachatron: reply YES or STOP.',
+    'a text that already says STOP gets no second line',
+  );
+  assert.equal(composeText('Here is your week.', 'assistant'), 'Coachatron: Here is your week.', 'conversation replies stay short');
+
+  for (const body of ['x'.repeat(400), '⚽ '.repeat(80), `Sam’s ${'group '.repeat(40)}`]) {
+    const text = composeText(body, 'reminder');
+    assert.ok(text.endsWith(' Reply STOP to opt out.'), text);
+    assert.equal(segmentCount(text), 1, text);
+  }
+});
+
+test('a code or a reply needs no standing consent; an opt-out stops everything', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const to = '+15550002222';
+    assert.equal(await sendText(db, { to, body: 'your code is 123456.', coachId: null, template: 'otp' }), 'sent');
+    assert.equal(await sendText(db, { to, body: 'Got it.', coachId: null, template: 'auto-reply' }), 'sent');
+    assert.equal(await sendText(db, { to, body: 'Sam is Tue.', coachId: null, template: 'reminder' }), 'refused');
+    assert.equal(relay.sms.length, 2);
+
+    await revokeConsent(db, to);
+    assert.equal(await sendText(db, { to, body: 'your code is 654321.', coachId: null, template: 'otp' }), 'refused');
+    assert.equal(relay.sms.length, 2);
+    assert.deepEqual((await statuses(db)).slice(-2), ['refused-no-consent', 'refused-opt-out']);
+  });
 });
 
 test('only US and Canadian numbers are texted', () => {
