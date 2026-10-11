@@ -1,5 +1,6 @@
 import express from 'express';
 import { PORT } from './config.js';
+import { healthRouter } from './routes/health.js';
 import { landingRouter } from './routes/landing.js';
 import { coachRouter } from './routes/coach.js';
 import { publicRouter } from './routes/public.js';
@@ -20,6 +21,7 @@ export function createApp() {
   app.use(express.urlencoded({ extended: true }));
   app.use(express.json());
 
+  app.use(healthRouter);
   // GET / is also the Railway healthcheck, so it never touches the database.
   app.use(landingRouter);
   app.use(coachRouter);

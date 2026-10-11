@@ -287,9 +287,6 @@ test("empty landing text goes to sign-in with no cookie", async () => {
 
 test(
   "a stranger texts their week, taps the link, and gets a draft; a parent still gets the booking link",
-  {
-    todo: "open: sendText refuses unconsented numbers, so the stranger never receives the /start link",
-  },
   async () => {
     await withRelay(async (relay) => {
       const db = await freshDb();

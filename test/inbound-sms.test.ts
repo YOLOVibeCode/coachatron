@@ -90,7 +90,6 @@ test(
 
 test(
   'a stranger texts their week in the relay format and gets a start link',
-  { todo: 'open: sendText refuses unconsented numbers, so the stranger never receives the /start link' },
   async () => {
   await withRelay(async (relay) => {
     await freshDb();

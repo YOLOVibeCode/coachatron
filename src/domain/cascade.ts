@@ -1,28 +1,10 @@
 import { randomBytes } from 'node:crypto';
 import type { DbClient } from '../db/client.js';
-import { sendEmailMessage, sendText } from './outbound.js';
+import { sendEmailMessage, sendText, type SendOutcome } from './outbound.js';
 import { APP_BASE_URL } from '../config.js';
 import { expireLivePendingForCoach } from './assistantPending.js';
 import { clipSms, formatConfirmWhen } from '../lib/time.js';
-import { SMS_PURPOSE } from '../config.js';
-import { hasActiveConsent, queuePendingConsent } from './sms-consent.js';
-
-export async function sendRosterConsentRequest(
-  db: DbClient,
-  coachId: number,
-  coachName: string,
-  phone: string,
-): Promise<void> {
-  await queuePendingConsent(db, phone, coachId, coachName);
-  await sendText(db, {
-    to: phone,
-    coachId,
-    template: 'consent-request',
-    body: clipSms(
-      `Coachatron: ${coachName} added this number for ${SMS_PURPOSE}. Reply YES to receive these texts. Reply STOP to opt out.`,
-    ),
-  });
-}
+import { hasActiveConsent } from './sms-consent.js';
 
 export const OVERFLOW_OFFER_TTL_MINUTES = 20;
 
@@ -37,13 +19,19 @@ export async function upsertOptOut(db: DbClient, phone: string): Promise<void> {
 
 /** All cascade-initiated (non-critical) sends go through sendText, which
  * enforces opt-out and consent. */
-async function sendUnlessOptedOut(db: DbClient, coachId: number, template: string, to: string, body: string): Promise<void> {
-  await sendText(db, { to, body, coachId, template });
+async function sendUnlessOptedOut(
+  db: DbClient,
+  coachId: number,
+  template: string,
+  to: string,
+  body: string,
+): Promise<SendOutcome> {
+  return sendText(db, { to, body, coachId, template });
 }
 
 /** Tells the coach about their session: a text to their mobile, or, for a
- * coach who joined by email and has no mobile yet, an email that links to
- * the schedule, where the same YES / Not now buttons wait. */
+ * coach with no mobile or who has not turned texts on, an email that links
+ * to the schedule, where the same YES / Not now buttons wait. */
 async function notifyCoach(
   db: DbClient,
   info: Pick<SessionOverflowInfo, 'coachId' | 'coachPhone' | 'coachEmail'>,
@@ -52,8 +40,8 @@ async function notifyCoach(
   emailSubject: string,
 ): Promise<void> {
   if (info.coachPhone) {
-    await sendUnlessOptedOut(db, info.coachId, template, info.coachPhone, text);
-    return;
+    const outcome = await sendUnlessOptedOut(db, info.coachId, template, info.coachPhone, text);
+    if (outcome !== 'refused') return;
   }
   if (!info.coachEmail) return;
   const link = `${process.env.APP_BASE_URL ?? APP_BASE_URL}/app/schedule`;
