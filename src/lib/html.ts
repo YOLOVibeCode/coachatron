@@ -225,6 +225,7 @@ export const POSTCARD_TOKENS_CSS = `
   .setup-type:last-of-type { border-bottom: 0; }
   .setup-questions { margin: 8px 0 0; padding-left: 1.2rem; font-family: ui-sans-serif, system-ui, sans-serif; }
   a.action.ghost, .action.ghost { background: transparent; color: var(--teal); border: 1px solid var(--teal); }
+  button.danger, .action.danger { background: var(--alert); border-color: var(--alert); }
   .coach-nav {
     display: flex;
     flex-wrap: wrap;

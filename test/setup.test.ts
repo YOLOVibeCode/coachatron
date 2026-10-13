@@ -263,7 +263,7 @@ test('a model failure or a spent budget falls back to the forms, never a 500', a
         assert.equal(failed.headers.get('location'), '/app/schedule?setup=1&e=read');
         const page = await (await fetch(`${base}/app/schedule?setup=1&e=read`, { headers: { cookie } })).text();
         assert.match(page, /couldn&#39;t read that/);
-        assert.match(page, /href="\/app\/session-types">Set it up by hand/);
+        assert.match(page, /href="\/app\/session-types">Set up with a form instead/);
         assert.equal(await count(db, 'setup_draft'), 0);
 
         for (let i = 0; i < 30; i += 1) {

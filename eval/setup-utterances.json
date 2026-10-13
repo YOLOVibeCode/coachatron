@@ -115,6 +115,14 @@
       }
     },
     {
+      "id": "science-math-tutor-weekdays",
+      "text": "Science/Math tutor, available from Monday to Friday betweek 5PM to 8PM. Can handle 5 students, $15 per hour",
+      "expect": {
+        "types": [{ "name_includes": "Science", "capacity": 5, "price_cents": 1500 }],
+        "weekly_min": 1
+      }
+    },
+    {
       "id": "refine-thursday",
       "draft_text": "Keeper group Tuesdays and Thursdays at 6, an hour, 8 kids, $35",
       "text": "actually make Thursday 6:30",

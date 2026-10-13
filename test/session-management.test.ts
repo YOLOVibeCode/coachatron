@@ -92,9 +92,15 @@ test('coach can cancel a session and SMS all athletes', async () => {
       });
       assert.equal(getRes.status, 200);
       const body = await getRes.text();
-      assert.ok(body.includes('3 attendees'));
+      assert.ok(body.includes('Booked (3)'));
 
-      // Cancel the session
+      const confirmGet = await fetch(`${base}/app/sessions/${seed.sessionId}/cancel`, {
+        headers: { cookie: makeAuthCookie('test-token') },
+      });
+      assert.equal(confirmGet.status, 200);
+      assert.match(await confirmGet.text(), /Confirm cancel/);
+
+      const smsBefore = relay.sms.length;
       const cancelForm = new URLSearchParams();
       const cancelRes = await coachPost(base, `/app/sessions/${seed.sessionId}/cancel`, cancelForm, makeAuthCookie('test-token'));
       assert.equal(cancelRes.status, 303);
@@ -110,6 +116,59 @@ test('coach can cancel a session and SMS all athletes', async () => {
       for (const phone of athletePhones) {
         assert.ok(relay.sms.some((m) => m.to === phone), `expected SMS to ${phone}`);
       }
+
+      const cancelAgain = await coachPost(base, `/app/sessions/${seed.sessionId}/cancel`, cancelForm, makeAuthCookie('test-token'));
+      assert.equal(cancelAgain.status, 303);
+      assert.equal(relay.sms.length, smsBefore + athletePhones.length);
+    });
+  });
+});
+
+test('coach cancel returns package credit and confirm flow is idempotent on SMS', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 3 });
+
+    const pack = await db.query<{ id: number }>(
+      `insert into package (coach_id, name, credits, price_cents, active) values ($1, '10-pack', 10, 15000, true) returning id`,
+      [seed.coach.id],
+    );
+    const credit = await db.query<{ id: number; remaining: number }>(
+      `insert into credit (coach_id, contact_phone, package_id, remaining, source) values ($1, $2, $3, 2, 'package') returning id, remaining`,
+      [seed.coach.id, '+15550000099', pack.rows[0].id],
+    );
+    await db.query(
+      `insert into booking (session_id, athlete_name, contact_phone, payment_source, credit_id, status, manage_token)
+       values ($1, 'Credit Kid', $2, 'PackageCredit', $3, 'booked', 'tok-credit-kid')`,
+      [seed.sessionId, '+15550000099', credit.rows[0].id],
+    );
+    const { grantSmsConsent } = await import('../src/domain/sms-consent.js');
+    await grantSmsConsent(db, '+15550000099');
+
+    await db.query(
+      `insert into coach_session (token, coach_id, expires_at) values ($1, $2, now() + interval '30 days')`,
+      ['test-token', seed.coach.id],
+    );
+
+    await withServer(async (base) => {
+      const confirmGet = await fetch(`${base}/app/sessions/${seed.sessionId}/cancel`, {
+        headers: { cookie: makeAuthCookie('test-token') },
+      });
+      assert.equal(confirmGet.status, 200);
+
+      const smsBefore = relay.sms.length;
+      const cancelForm = new URLSearchParams();
+      const cancelRes = await coachPost(base, `/app/sessions/${seed.sessionId}/cancel`, cancelForm, makeAuthCookie('test-token'));
+      assert.equal(cancelRes.status, 303);
+
+      const remaining = await db.query<{ remaining: number }>('select remaining from credit where id = $1', [
+        credit.rows[0].id,
+      ]);
+      assert.equal(remaining.rows[0].remaining, 3);
+
+      const cancelAgain = await coachPost(base, `/app/sessions/${seed.sessionId}/cancel`, cancelForm, makeAuthCookie('test-token'));
+      assert.equal(cancelAgain.status, 303);
+      assert.equal(relay.sms.length, smsBefore + 1);
     });
   });
 });
@@ -138,10 +197,12 @@ test('cannot cancel a session that has already started', async () => {
     await withServer(async (base) => {
       // Try to cancel the session
       const cancelForm = new URLSearchParams();
-      const cancelRes = await coachPost(base, `/app/sessions/${seed.sessionId}/cancel`, cancelForm, makeAuthCookie('test-token'));
-      assert.equal(cancelRes.status, 409);
+      const confirmGet = await fetch(`${base}/app/sessions/${seed.sessionId}/cancel`, {
+        headers: { cookie: makeAuthCookie('test-token') },
+      });
+      assert.equal(confirmGet.status, 409);
 
-      const body = await cancelRes.text();
+      const body = await confirmGet.text();
       assert.ok(body.includes('already passed'));
     });
   });
@@ -165,12 +226,14 @@ test('coach can delete a session', async () => {
       });
       assert.equal(getRes.status, 200);
 
-      // Cancel the session
+      const confirmGet = await fetch(`${base}/app/sessions/${seed.sessionId}/cancel`, {
+        headers: { cookie: makeAuthCookie('test-token') },
+      });
+      assert.equal(confirmGet.status, 200);
       const cancelForm = new URLSearchParams();
       const cancelRes = await coachPost(base, `/app/sessions/${seed.sessionId}/cancel`, cancelForm, makeAuthCookie('test-token'));
       assert.equal(cancelRes.status, 303);
 
-      // Verify session status changed
       const sessionRows = await db.query<{ status: string }>('select status from session where id = $1', [seed.sessionId]);
       assert.equal(sessionRows.rows[0].status, 'cancelled');
     });

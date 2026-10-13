@@ -238,6 +238,19 @@ export function setupSystemPrompt(
 
 export type ExtractResult = { kind: 'ok'; raw: unknown } | { kind: 'cap' } | { kind: 'error' };
 
+export type SetupExtractErrorReason = 'timeout' | `http_${number}` | 'empty' | 'bad_json';
+
+export function classifySetupExtractError(err: unknown): SetupExtractErrorReason {
+  if (err instanceof Error) {
+    if (err.name === 'AbortError') return 'timeout';
+    const http = /^litellm (\d+)$/.exec(err.message);
+    if (http) return `http_${http[1]}` as SetupExtractErrorReason;
+    if (err.message === 'litellm empty content') return 'empty';
+  }
+  if (err instanceof SyntaxError) return 'bad_json';
+  return 'bad_json';
+}
+
 export async function extractSetupPlan(
   db: DbClient,
   coach: CoachRow,
@@ -271,8 +284,17 @@ export async function extractSetupPlan(
       outcome: 'extracted',
     });
     return { kind: 'ok', raw };
-  } catch {
-    await logAssistant(db, { coachId: coach.id, phone: coach.phone, channel, rawMessage: text, layer: 'setup', outcome: 'error' });
+  } catch (err) {
+    const reason = classifySetupExtractError(err);
+    await logAssistant(db, {
+      coachId: coach.id,
+      phone: coach.phone,
+      channel,
+      rawMessage: text,
+      layer: 'setup',
+      outcome: 'error',
+      payload: { reason },
+    });
     return { kind: 'error' };
   }
 }
