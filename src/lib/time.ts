@@ -38,6 +38,28 @@ export function formatConfirmWhen(isoUtc: string, tz: string): string {
   return `${weekday} ${month} ${day}, ${hour12}:${minute}${ap}`;
 }
 
+/** e.g. "5:00 – 6:00 PM" for a session block on the coach schedule. */
+export function formatTimeRange(isoUtc: string, durationMin: number, tz: string): string {
+  const start = new Date(isoUtc);
+  const end = new Date(start.getTime() + durationMin * 60_000);
+  const startFmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(start);
+  const endFmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(end);
+  return `${startFmt} – ${endFmt}`;
+}
+
+export function formatCoachDollars(cents: number): string {
+  if (cents % 100 === 0) return `$${cents / 100}`;
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
 export function clipSms(text: string, max = 160): string {
   const t = text.trim();
   if (t.length <= max) return t;

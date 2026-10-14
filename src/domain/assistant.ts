@@ -15,6 +15,7 @@ import {
   type IntentName,
 } from '../llm/schema.js';
 import { clipSms, formatConfirmWhen, formatLocal } from '../lib/time.js';
+import { cancelScheduledSession } from './cancelSession.js';
 import { sendText } from './outbound.js';
 import {
   consumePending,
@@ -513,46 +514,13 @@ async function executeWrite(
 }
 
 async function executeCancel(db: DbClient, coach: CoachRow, sessionId: number): Promise<string> {
-  const session = await db.query<{
-    id: number;
-    starts_at_utc: string;
-    tz: string;
-    name: string;
-  }>(
-    `select s.id, s.starts_at_utc, s.tz, st.name
-     from session s
-     join session_type st on st.id = s.session_type_id
-     where s.id = $1 and st.coach_id = $2 and s.status = 'scheduled'`,
-    [sessionId, coach.id],
+  const result = await cancelScheduledSession(db, coach.id, sessionId);
+  if (result.kind === 'not_found') return 'That session is gone.';
+  if (result.kind === 'already_started') return 'Session already started.';
+  if (result.kind === 'already_cancelled') return 'That session is already cancelled.';
+  return clipSms(
+    `Cancelled. ${result.athletesNotified} athletes notified, ${result.creditsReturned} credits returned.`,
   );
-  const row = session.rows[0];
-  if (!row) return 'That session is gone.';
-  if (new Date(row.starts_at_utc) < new Date()) return 'Session already started.';
-
-  const cancelled = await db.query<{ contact_phone: string; athlete_name: string; credit_id: number | null }>(
-    `update booking set status = 'cancelled'
-     where session_id = $1 and status in ('booked', 'attended', 'noshow')
-     returning contact_phone, athlete_name, credit_id`,
-    [sessionId],
-  );
-
-  let credits = 0;
-  for (const athlete of cancelled.rows) {
-    if (athlete.credit_id) {
-      await db.query('update credit set remaining = remaining + 1 where id = $1', [athlete.credit_id]);
-      credits += 1;
-    }
-    await sendText(db, {
-      to: athlete.contact_phone,
-      body: `${athlete.athlete_name}'s ${row.name} on ${formatLocal(row.starts_at_utc, row.tz)} has been cancelled.`,
-      coachId: coach.id,
-      template: 'session-cancelled',
-    });
-  }
-
-  await db.query("update session set status = 'cancelled' where id = $1", [sessionId]);
-  const n = cancelled.rows.length;
-  return clipSms(`Cancelled. ${n} athletes notified, ${credits} credits returned.`);
 }
 
 async function executeAdd(db: DbClient, coach: CoachRow, classified: ClassifiedIntent): Promise<string> {

@@ -114,7 +114,7 @@ test('weekly times screen: add with a location, list, remove; schedule links eac
       const schedule = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
       assert.match(schedule, /href="\/app\/sessions\/\d+"/);
       assert.match(schedule, /class="coach-nav"/);
-      assert.match(schedule, /0\/2 ·/);
+      assert.match(schedule, /0 of 2 spots booked/);
 
       const removeRes = await fetch(`${base}/app/session-types/${seed.sessionTypeId}/slots/${slots.rows[0].id}/remove`, {
         method: 'POST',

@@ -102,7 +102,7 @@ function renderLanding(): string {
       </section>
       <footer class="colophon">
         <p>Already set up? <a href="/signin">Sign in</a></p>
-        <p>Prefer forms? <a href="/signin">Set it up by hand</a></p>
+        <p>Prefer forms? <a href="/signin">Set up with a form instead</a></p>
       </footer>
     </div>`,
   );

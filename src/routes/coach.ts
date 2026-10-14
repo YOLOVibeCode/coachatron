@@ -24,7 +24,8 @@ import { APP_BASE_URL, APP_FEE_BPS, OTP_DAILY_MAX_PER_CONTACT, SELLER_AGREEMENT_
 import { acceptSellerAgreement, getSellerStatus, startSellerOnboarding } from '../relay/seller.js';
 import { createWeeklySlots, deactivateSlot, listWeeklySlots, type WeeklySlot } from '../domain/scheduling.js';
 import { coachNav, html, oneTimeCodeNote, page, raw, smsConsentCheckbox } from '../lib/html.js';
-import { DEFAULT_TZ, formatLocal, isValidTimeZone } from '../lib/time.js';
+import { cancelScheduledSession, countSessionCancelNotifyAthletes } from '../domain/cancelSession.js';
+import { DEFAULT_TZ, formatCoachDollars, formatLocal, formatTimeRange, isValidTimeZone } from '../lib/time.js';
 import { getPackagesForCoach, getPlansForCoach, createPackage, createPlan } from '../domain/pricing.js';
 import { summarizeMoney } from '../domain/money.js';
 import { handleCoachMessage, loadScheduleAssistant, resolvePendingForCoach } from '../domain/assistant.js';
@@ -301,6 +302,60 @@ coachRouter.post('/signin/verify', async (req, res) => {
 
 // ---- Screen 4: session types ----
 
+type SessionTypeFields = {
+  name: string;
+  durationMin: number;
+  capacity: number;
+  priceCents: number;
+  backupPayCents: number | null;
+};
+
+function parseSessionTypeBody(body: Record<string, unknown>): SessionTypeFields | null {
+  const name = field(body, 'name');
+  const durationMin = Number(field(body, 'duration_min'));
+  const capacity = Number(field(body, 'capacity'));
+  const priceDollars = Number(field(body, 'price_dollars'));
+  const priceCents = Math.round(priceDollars * 100);
+  const backupPayRaw = field(body, 'backup_pay_dollars');
+  const backupPayCents = backupPayRaw ? Math.round(Number(backupPayRaw) * 100) : null;
+  if (
+    !name ||
+    !Number.isInteger(durationMin) ||
+    durationMin <= 0 ||
+    !Number.isInteger(capacity) ||
+    capacity <= 0 ||
+    !Number.isFinite(priceCents) ||
+    priceCents <= 0 ||
+    (backupPayCents !== null && (!Number.isFinite(backupPayCents) || backupPayCents < 0))
+  ) {
+    return null;
+  }
+  return { name, durationMin, capacity, priceCents, backupPayCents };
+}
+
+function renderSessionTypeForm(
+  action: string,
+  submitLabel: string,
+  values?: Partial<SessionTypeFields> & { priceDollars?: number; backupPayDollars?: number },
+) {
+  const priceDollars = values?.priceDollars ?? (values?.priceCents != null ? values.priceCents / 100 : undefined);
+  const backupPayDollars =
+    values?.backupPayDollars ?? (values?.backupPayCents != null ? values.backupPayCents / 100 : undefined);
+  return html`<form method="post" action="${action}">
+    <label for="name">Session name</label>
+    <input id="name" name="name" required placeholder="e.g. Group training" value="${values?.name ?? ''}" />
+    <label for="duration_min">Duration (minutes)</label>
+    <input id="duration_min" name="duration_min" type="number" min="1" required value="${values?.durationMin ?? ''}" />
+    <label for="capacity">Capacity</label>
+    <input id="capacity" name="capacity" type="number" min="1" required value="${values?.capacity ?? ''}" />
+    <label for="price_dollars">Price (dollars)</label>
+    <input id="price_dollars" name="price_dollars" type="number" min="0" step="0.01" required value="${priceDollars ?? ''}" />
+    <label for="backup_pay_dollars">Backup coach pays (dollars, optional)</label>
+    <input id="backup_pay_dollars" name="backup_pay_dollars" type="number" min="0" step="0.01" value="${backupPayDollars ?? ''}" />
+    <button type="submit">${submitLabel}</button>
+  </form>`;
+}
+
 coachRouter.get('/app/session-types', requireAuth, async (_req, res) => {
   const db = getDb();
   const coachId = res.locals.coachId as number;
@@ -322,52 +377,27 @@ coachRouter.get('/app/session-types', requireAuth, async (_req, res) => {
         <h1>Session types</h1>
         ${types.rows.map(
           (t) =>
-            html`<a class="card" href="/app/session-types/${t.id}/generate-week">
+            html`<div class="card">
               <strong>${t.name}</strong>
               <div class="meta">
-                <span>${t.duration_min} min · ${t.capacity} athletes · $${(t.price_cents / 100).toFixed(2)}</span>
-                <span>Weekly times ›</span>
+                <span>${t.duration_min} min · ${t.capacity} athletes · ${formatCoachDollars(t.price_cents)}</span>
               </div>
-              ${t.backup_pay_cents ? html`<div class="meta"><span>Backup coach pays $${(t.backup_pay_cents / 100).toFixed(2)}</span></div>` : raw('')}
-            </a>`,
+              ${t.backup_pay_cents ? html`<div class="meta"><span>Backup coach pays ${formatCoachDollars(t.backup_pay_cents)}</span></div>` : raw('')}
+              <div class="btn-row">
+                <a class="action ghost" href="/app/session-types/${t.id}/edit">Edit</a>
+                <a class="action" href="/app/session-types/${t.id}/generate-week">Weekly times ›</a>
+              </div>
+            </div>`,
         )}
-        <form method="post" action="/app/session-types">
-          <label for="name">Name</label>
-          <input id="name" name="name" required />
-          <label for="duration_min">Duration (minutes)</label>
-          <input id="duration_min" name="duration_min" type="number" min="1" required />
-          <label for="capacity">Capacity</label>
-          <input id="capacity" name="capacity" type="number" min="1" required />
-          <label for="price_dollars">Price (dollars)</label>
-          <input id="price_dollars" name="price_dollars" type="number" min="0" step="0.01" required />
-          <label for="backup_pay_dollars">Backup coach pays (dollars, optional)</label>
-          <input id="backup_pay_dollars" name="backup_pay_dollars" type="number" min="0" step="0.01" />
-          <button type="submit">Create session type</button>
-        </form>`,
+        ${renderSessionTypeForm('/app/session-types', 'Create session type')}`,
     ),
   );
 });
 
 coachRouter.post('/app/session-types', requireAuth, async (req, res) => {
   const coachId = res.locals.coachId as number;
-  const name = field(req.body, 'name');
-  const durationMin = Number(field(req.body, 'duration_min'));
-  const capacity = Number(field(req.body, 'capacity'));
-  const priceDollars = Number(field(req.body, 'price_dollars'));
-  const priceCents = Math.round(priceDollars * 100);
-  const backupPayRaw = field(req.body, 'backup_pay_dollars');
-  const backupPayCents = backupPayRaw ? Math.round(Number(backupPayRaw) * 100) : null;
-
-  if (
-    !name ||
-    !Number.isInteger(durationMin) ||
-    durationMin <= 0 ||
-    !Number.isInteger(capacity) ||
-    capacity <= 0 ||
-    !Number.isFinite(priceCents) ||
-    priceCents <= 0 ||
-    (backupPayCents !== null && (!Number.isFinite(backupPayCents) || backupPayCents < 0))
-  ) {
+  const parsed = parseSessionTypeBody(req.body as Record<string, unknown>);
+  if (!parsed) {
     res.status(422).send(
       page(
         'Session types',
@@ -383,8 +413,83 @@ coachRouter.post('/app/session-types', requireAuth, async (req, res) => {
   await db.query(
     `insert into session_type (coach_id, name, duration_min, capacity, price_cents, backup_pay_cents, active)
      values ($1, $2, $3, $4, $5, $6, true)`,
-    [coachId, name, durationMin, capacity, priceCents, backupPayCents || null],
+    [coachId, parsed.name, parsed.durationMin, parsed.capacity, parsed.priceCents, parsed.backupPayCents || null],
   );
+  res.redirect(303, '/app/session-types');
+});
+
+coachRouter.get('/app/session-types/:id/edit', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const typeId = Number(req.params.id);
+  const typeRows = await db.query<{
+    id: number;
+    name: string;
+    duration_min: number;
+    capacity: number;
+    price_cents: number;
+    backup_pay_cents: number | null;
+  }>(
+    'select id, name, duration_min, capacity, price_cents, backup_pay_cents from session_type where id = $1 and coach_id = $2',
+    [typeId, coachId],
+  );
+  if (typeRows.rows.length === 0) {
+    res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
+    return;
+  }
+  const t = typeRows.rows[0];
+  res.status(200).send(
+    page(
+      'Edit session type',
+      html`${coachNav('types')}
+        <h1>Edit session type</h1>
+        ${renderSessionTypeForm(`/app/session-types/${typeId}/edit`, 'Save changes', {
+          name: t.name,
+          durationMin: t.duration_min,
+          capacity: t.capacity,
+          priceCents: t.price_cents,
+          backupPayCents: t.backup_pay_cents,
+        })}
+        <a class="action ghost" href="/app/session-types">Back</a>`,
+    ),
+  );
+});
+
+coachRouter.post('/app/session-types/:id/edit', requireAuth, async (req, res) => {
+  const coachId = res.locals.coachId as number;
+  const typeId = Number(req.params.id);
+  const parsed = parseSessionTypeBody(req.body as Record<string, unknown>);
+  if (!parsed) {
+    res.status(422).send(
+      page(
+        'Edit session type',
+        html`<h1>Edit session type</h1>
+          <p class="error">Fill in every field with a positive number.</p>
+          <a class="action" href="/app/session-types/${typeId}/edit">Back</a>`,
+      ),
+    );
+    return;
+  }
+  const db = getDb();
+  const updated = await db.query<{ id: number }>(
+    `update session_type
+     set name = $1, duration_min = $2, capacity = $3, price_cents = $4, backup_pay_cents = $5
+     where id = $6 and coach_id = $7
+     returning id`,
+    [
+      parsed.name,
+      parsed.durationMin,
+      parsed.capacity,
+      parsed.priceCents,
+      parsed.backupPayCents || null,
+      typeId,
+      coachId,
+    ],
+  );
+  if (updated.rows.length === 0) {
+    res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
+    return;
+  }
   res.redirect(303, '/app/session-types');
 });
 
@@ -392,8 +497,14 @@ coachRouter.get('/app/session-types/:id/generate-week', requireAuth, async (req,
   const db = getDb();
   const coachId = res.locals.coachId as number;
   const typeId = Number(req.params.id);
-  const typeRows = await db.query<{ id: number; name: string }>(
-    'select id, name from session_type where id = $1 and coach_id = $2',
+  const typeRows = await db.query<{
+    id: number;
+    name: string;
+    duration_min: number;
+    capacity: number;
+    price_cents: number;
+  }>(
+    'select id, name, duration_min, capacity, price_cents from session_type where id = $1 and coach_id = $2',
     [typeId, coachId],
   );
   if (typeRows.rows.length === 0) {
@@ -405,16 +516,17 @@ coachRouter.get('/app/session-types/:id/generate-week', requireAuth, async (req,
 });
 
 function renderWeeklyTimes(
-  type: { id: number; name: string },
+  type: { id: number; name: string; duration_min: number; capacity: number; price_cents: number },
   slots: Array<{ id: number; weekday: number; time_local: string; location_text: string | null }>,
   kept: number,
   error?: string,
 ) {
+  const typeLine = `${type.name} · ${type.duration_min} min · ${type.capacity} athletes · ${formatCoachDollars(type.price_cents)}`;
   return page(
     'Weekly times',
     html`${coachNav('types')}
-      <h1>${type.name}</h1>
-      <p class="muted">Weekly times. Sessions stay on your calendar 8 weeks ahead.</p>
+      <h1>Weekly times</h1>
+      <p class="muted">${typeLine}. Sessions stay on your calendar 8 weeks ahead.</p>
       ${kept > 0
         ? html`<p class="muted">${kept} upcoming ${kept === 1 ? 'session has' : 'sessions have'} bookings and stayed. Cancel ${kept === 1 ? 'it' : 'them'} from the schedule if you need to.</p>`
         : raw('')}
@@ -447,8 +559,14 @@ coachRouter.post('/app/session-types/:id/generate-week', requireAuth, async (req
   const coachId = res.locals.coachId as number;
   const typeId = Number(req.params.id);
 
-  const typeRows = await db.query<{ id: number; name: string }>(
-    'select id, name from session_type where id = $1 and coach_id = $2',
+  const typeRows = await db.query<{
+    id: number;
+    name: string;
+    duration_min: number;
+    capacity: number;
+    price_cents: number;
+  }>(
+    'select id, name, duration_min, capacity, price_cents from session_type where id = $1 and coach_id = $2',
     [typeId, coachId],
   );
   if (typeRows.rows.length === 0) {
@@ -496,8 +614,8 @@ coachRouter.post('/app/session-types/:id/slots/:slotId/remove', requireAuth, asy
 // screen: a coach with nothing on the calendar sees "Tell me your week".
 
 const SETUP_NOTICES: Record<string, string> = {
-  read: "I couldn't read that. Try again, or set it up by hand.",
-  cap: "That's all the reading I can do today. Set it up by hand for now.",
+  read: "I couldn't read that. Try again, or set up with a form instead.",
+  cap: "That's all the reading I can do today. Set up with a form instead for now.",
   stale: 'That setup already went live or was cleared.',
 };
 
@@ -546,7 +664,7 @@ function renderSetupScreen(
       <p class="muted">
         ${hasSchedule
           ? html`<a href="/app/schedule">Back to the schedule</a>`
-          : html`Rather use forms? <a href="/app/session-types">Set it up by hand</a>.`}
+          : html`Rather use forms? <a href="/app/session-types">Set up with a form instead</a>.`}
       </p>`,
   );
 }
@@ -609,9 +727,11 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
     name: string;
     capacity: number;
     price_cents: number;
+    duration_min: number;
     booked: string;
   }>(
     `select s.id, s.starts_at_utc, s.tz, st.name, coalesce(s.capacity_override, st.capacity) as capacity, st.price_cents,
+            st.duration_min,
             coalesce((select count(*) from booking b where b.session_id = s.id and b.status = 'booked'), 0)::text as booked
      from session s
      join session_type st on st.id = s.session_type_id
@@ -632,7 +752,7 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
           ${live}
           ${askCard}
           ${phoneCard}
-          <p class="muted"><a href="/app/schedule?setup=1">Add more by talking</a></p>
+          <p><a class="action ghost" href="/app/schedule?setup=1">Add more by talking</a></p>
           ${assistant.reply
             ? html`<div class="card ask-reply">
                 <p>${assistant.reply.body}</p>
@@ -652,13 +772,13 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
                 (s) =>
                   html`<a class="card" href="/app/sessions/${s.id}">
                     <strong>${formatLocal(s.starts_at_utc, s.tz)}</strong>
-                    <div class="meta"><span>${s.name}</span><span>${s.booked}/${s.capacity} · $${(s.price_cents / 100).toFixed(2)}</span></div>
+                    <div class="meta"><span>${formatTimeRange(s.starts_at_utc, s.duration_min, s.tz)} · ${s.name} · ${s.booked} of ${s.capacity} spots booked · ${formatCoachDollars(s.price_cents)}</span></div>
                   </a>`,
               )}
         </div>
         <div class="schedule-ask">
-          <form method="post" action="/app/schedule/ask">
-            <label for="ask">Text the week</label>
+          <form method="post" action="/app/schedule/ask" onsubmit="this.querySelector('button[type=submit]').disabled=true;this.querySelector('button[type=submit]').textContent='Working…';">
+            <label for="ask">Tell me what to change</label>
             <input id="ask" name="text" type="text" placeholder="Text the week. &quot;who's at 6pm&quot; or &quot;cancel tomorrow&quot;" />
             <button type="submit">Send</button>
           </form>
@@ -876,9 +996,10 @@ async function loadSessionForCoach(db: DbClient, coachId: number, sessionId: num
   starts_at_utc: string;
   tz: string;
   name: string;
+  status: string;
 } | null> {
-  const result = await db.query<{ id: number; starts_at_utc: string; tz: string; name: string }>(
-    `select s.id, s.starts_at_utc, s.tz, st.name
+  const result = await db.query<{ id: number; starts_at_utc: string; tz: string; name: string; status: string }>(
+    `select s.id, s.starts_at_utc, s.tz, st.name, s.status
      from session s
      join session_type st on st.id = s.session_type_id
      where s.id = $1 and st.coach_id = $2`,
@@ -919,7 +1040,7 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
         <h1>${session.name}</h1>
         <p class="muted">${formatLocal(session.starts_at_utc, session.tz)}</p>
         
-        <h2>Roster (${bookings.rows.length} attendees)</h2>
+        <h2>Booked (${bookings.rows.filter((b) => b.status === 'booked').length})</h2>
         ${bookings.rows.length === 0
           ? html`<p class="muted">No bookings yet.</p>`
           : html`<ul>
@@ -942,9 +1063,9 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
             </ul>`}
         
         <h2>Action</h2>
-        <form method="post" action="/app/sessions/${sessionId}/cancel">
-          <button type="submit" class="action">Cancel session</button>
-        </form>
+        ${session.status === 'scheduled' && new Date(session.starts_at_utc) >= new Date()
+          ? html`<a class="action" href="/app/sessions/${sessionId}/cancel">Cancel session</a>`
+          : raw('')}
         
         <a class="action" href="/app/schedule">Back to schedule</a>`,
     ),
@@ -978,22 +1099,20 @@ coachRouter.post('/app/sessions/:id/bookings/:bookingId/attendance', requireAuth
   res.redirect(303, `/app/sessions/${sessionId}`);
 });
 
-coachRouter.post('/app/sessions/:id/cancel', requireAuth, async (req, res) => {
+coachRouter.get('/app/sessions/:id/cancel', requireAuth, async (req, res) => {
   const db = getDb();
   const coachId = res.locals.coachId as number;
   const sessionId = Number(req.params.id);
 
-  // Verify session belongs to this coach
   const session = await loadSessionForCoach(db, coachId, sessionId);
   if (!session) {
     res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
     return;
   }
-
-  // starts_at_utc is already an absolute instant (timestamptz); compare it
-  // directly against "now" - no per-connection SET timezone dance needed
-  // (and `SET timezone TO $1` is not even valid SQL: SET does not accept a
-  // bind parameter).
+  if (session.status === 'cancelled') {
+    res.redirect(303, '/app/schedule');
+    return;
+  }
   if (new Date(session.starts_at_utc) < new Date()) {
     res.status(409).send(
       page('Cannot cancel', html`<h1>Session already started</h1>
@@ -1003,25 +1122,49 @@ coachRouter.post('/app/sessions/:id/cancel', requireAuth, async (req, res) => {
     return;
   }
 
-  // Idempotent: a double-submitted cancel must not re-send cancellation
-  // texts to everyone a second time.
-  const cancelled = await db.query<{ contact_phone: string; athlete_name: string }>(
-    `update booking set status = 'cancelled'
-     where session_id = $1 and status in ('booked', 'attended', 'noshow')
-     returning contact_phone, athlete_name`,
-    [sessionId],
+  const notifyCount = await countSessionCancelNotifyAthletes(db, sessionId);
+  const when = formatLocal(session.starts_at_utc, session.tz);
+  const athleteWord = notifyCount === 1 ? 'athlete' : 'athletes';
+  res.status(200).send(
+    page(
+      'Cancel session',
+      html`${coachNav('schedule')}
+        <h1>Cancel session</h1>
+        <p>Cancel ${when}? ${notifyCount} ${athleteWord} will get a text.</p>
+        <form method="post" action="/app/sessions/${sessionId}/cancel">
+          <div class="btn-row">
+            <button type="submit" class="action danger">Confirm cancel</button>
+            <a class="action ghost" href="/app/sessions/${sessionId}">Keep session</a>
+          </div>
+        </form>`,
+    ),
   );
+});
 
-  for (const athlete of cancelled.rows) {
-    await sendText(db, {
-      to: athlete.contact_phone,
-      body: `${athlete.athlete_name}'s ${session.name} on ${formatLocal(session.starts_at_utc, session.tz)} has been cancelled.`,
-      coachId,
-      template: 'session-cancelled',
-    });
+coachRouter.post('/app/sessions/:id/cancel', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const sessionId = Number(req.params.id);
+
+  const session = await loadSessionForCoach(db, coachId, sessionId);
+  if (!session) {
+    res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
+    return;
   }
 
-  await db.query("update session set status = 'cancelled' where id = $1", [sessionId]);
+  const result = await cancelScheduledSession(db, coachId, sessionId);
+  if (result.kind === 'not_found') {
+    res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
+    return;
+  }
+  if (result.kind === 'already_started') {
+    res.status(409).send(
+      page('Cannot cancel', html`<h1>Session already started</h1>
+        <p class="error">This session has already passed and cannot be cancelled.</p>
+        <a class="action" href="/app/sessions/${sessionId}">Back to session detail</a>`),
+    );
+    return;
+  }
 
   res.redirect(303, '/app/schedule');
 });
@@ -1042,45 +1185,44 @@ coachRouter.get('/app/pricing', requireAuth, async (_req, res) => {
         <h2>Session packages</h2>
         ${packagesList.length === 0
           ? html`<p class="muted">No packages yet.</p>`
-          : packagesList.map(
-              (p) =>
-                html`<div class="card">
-                  <strong>${p.name}</strong><br />
-                  ${p.credits} sessions — $${(p.price_cents / 100).toFixed(2)}
-                  ${p.expires_days ? html`<br /><span class="muted">Expires in ${p.expires_days} days</span>` : raw('')}
-                </div>`,
-            )}
-        <form method="post" action="/app/pricing/package">
-          <label for="pkg_name">Package name</label>
-          <input id="pkg_name" name="name" required />
-          <label for="pkg_credits">Number of sessions</label>
-          <input id="pkg_credits" name="credits" type="number" min="1" required />
-          <label for="pkg_price_dollars">Price (dollars)</label>
-          <input id="pkg_price_dollars" name="price_dollars" type="number" min="0" step="0.01" required />
-          <label for="pkg_expires_days">Expires after days (optional)</label>
-          <input id="pkg_expires_days" name="expires_days" type="number" min="1" />
-          <button type="submit">Create package</button>
-        </form>
+          : packagesList.map((p) => {
+              const expiry = p.expires_days ? ` · Expires after ${p.expires_days} days` : '';
+              return html`<div class="card">${p.name} · ${formatCoachDollars(p.price_cents)}${expiry}</div>`;
+            })}
+        <details>
+          <summary>+ New package</summary>
+          <form method="post" action="/app/pricing/package">
+            <label for="pkg_name">Package name</label>
+            <input id="pkg_name" name="name" required placeholder="e.g. 10-session pack" />
+            <label for="pkg_credits">Number of sessions</label>
+            <input id="pkg_credits" name="credits" type="number" min="1" required placeholder="e.g. 10" />
+            <label for="pkg_price_dollars">Price (dollars)</label>
+            <input id="pkg_price_dollars" name="price_dollars" type="number" min="0" step="0.01" required placeholder="e.g. 150" />
+            <label for="pkg_expires_days">Expires after days (optional)</label>
+            <input id="pkg_expires_days" name="expires_days" type="number" min="1" placeholder="e.g. 60" />
+            <button type="submit">Create package</button>
+          </form>
+        </details>
 
         <h2>Monthly plans</h2>
         ${plansList.length === 0
           ? html`<p class="muted">No monthly plans yet.</p>`
           : plansList.map(
               (p) =>
-                html`<div class="card">
-                  <strong>${p.name}</strong><br />
-                  $${(p.price_cents / 100).toFixed(2)} / month — ${p.credits_per_month} sessions
-                </div>`,
+                html`<div class="card">${p.name} · ${formatCoachDollars(p.price_cents)} · ${p.credits_per_month} sessions per month</div>`,
             )}
-        <form method="post" action="/app/pricing/plan">
-          <label for="plan_name">Plan name</label>
-          <input id="plan_name" name="name" required />
-          <label for="plan_price_dollars">Price (dollars)</label>
-          <input id="plan_price_dollars" name="price_dollars" type="number" min="0" step="0.01" required />
-          <label for="plan_credits">Sessions per month</label>
-          <input id="plan_credits" name="credits_per_month" type="number" min="1" required />
-          <button type="submit">Create plan</button>
-        </form>`,
+        <details>
+          <summary>+ New plan</summary>
+          <form method="post" action="/app/pricing/plan">
+            <label for="plan_name">Plan name</label>
+            <input id="plan_name" name="name" required placeholder="e.g. Monthly" />
+            <label for="plan_price_dollars">Price (dollars)</label>
+            <input id="plan_price_dollars" name="price_dollars" type="number" min="0" step="0.01" required placeholder="e.g. 300" />
+            <label for="plan_credits">Sessions per month</label>
+            <input id="plan_credits" name="credits_per_month" type="number" min="1" required placeholder="e.g. 20" />
+            <button type="submit">Create plan</button>
+          </form>
+        </details>`,
     ),
   );
 });
