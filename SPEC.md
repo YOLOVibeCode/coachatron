@@ -161,26 +161,34 @@ one-field-per-screen.
 
 1. Opens the coach's link. Sees a list of open sessions with date, time, spots
    left, price. No login wall.
-2. Taps a session → enters athlete name, parent email, phone.
+2. Taps a session → enters athlete name, parent email, phone. A parent can add
+   more children in the same pass, up to the coach's limit (default 2, §9.5).
 3. Chooses how to pay: **this session** ($35), **a package** (10 for $300), or
    **a monthly plan** ($120/mo). Existing credits are detected by phone number
    and applied automatically.
 4. Pays. Square hosted checkout — we never touch card data.
 5. Gets an SMS + email confirmation with a manage link (reschedule/cancel within
-   policy).
+   the coach's cancellation window, §9.5).
 
 ### 7.3 Capacity overflow — the differentiating flow
 
 1. A session type's bookings cross its **overflow threshold** (default: the
    session is full *and* a second athlete has joined the waitlist; configurable).
-2. Coachatron does **not** auto-book anyone. It sends the coach one SMS:
-   *"Tue 6pm is full with 3 waiting. Open a second group? Reply YES and I'll ask
-   your roster."*
-3. On YES, we create a parallel session and SMS the roster **in priority order**,
-   one at a time, each with a short expiry (default 20 min):
+2. Coachatron does **not** auto-book anyone. It sends the coach one SMS that
+   asks which kind of help they want, and the Schedule screen asks the same
+   question with buttons:
+   *"Tue 6pm is full with 3 waiting. Reply 1 to open a second group, 2 to add a
+   backup coach, N for no."* *(Decided 2026-10-14: the coach chooses each time.)*
+   - **Second group:** a parallel session at the same time and place, with the
+     same session type and capacity, run by the roster member who accepts.
+   - **Backup coach:** the roster member who accepts joins the original
+     session, and its capacity grows by the session type's capacity.
+3. On 1 or 2, we SMS the roster **in priority order**, one at a time, each with
+   a short expiry (default 20 min). The offer says which job it is:
    *"Coachatron: Tue Oct 7, 6pm, Field 3, 8 keepers, $80. Reply Y to claim."*
-4. First acceptance assigns the session and stops the cascade. Everyone else gets
-   nothing (no "sorry" spam).
+4. First acceptance assigns the roster member (to the new session, or to the
+   original) and stops the cascade. Everyone else gets nothing (no "sorry"
+   spam).
 5. Waitlisted athletes are told a slot opened and are charged only when they
    confirm.
 6. If nobody accepts before the cascade exhausts, the coach gets one SMS saying
@@ -227,11 +235,12 @@ Ship nothing else until a real coach has taken real money through this.
 
 **Included non-screen work:** Square OAuth connect, SMS send/receive via the
 Noctusoft relay, overflow cascade engine, package-credit ledger, recurring
-session generation, cancellation policy enforcement.
+session generation, cancellation policy enforcement (the coach-set window and
+credit rules in §9.5).
 
 ### 8.2 Slice 2 — after 10 paying coaches
 
-- Coach-set cancellation/refund policy windows
+- Coach-set refund policy (the cancellation window moved to Slice 1, §9.5)
 - Multiple locations on a session type
 - Athlete "my sessions" magic-link dashboard
 - Assistant coach pay tracking (what we owe them, not payroll)
@@ -311,6 +320,27 @@ credit and releases the session slot when the webhook arrives. **We do not
 refund our application fee on partial refunds in v1** — this is stated plainly in
 the coach's terms rather than hidden.
 
+### 9.5 Booking policy
+
+*(Decided 2026-10-14.)* Every rule has a default, so a coach who changes
+nothing still has a working policy (P3). The coach changes the defaults on the
+Pricing screen (screen 5) and waives a credit on Session detail (screen 3). No
+new screen.
+
+| Rule | Default | The coach can |
+|---|---|---|
+| **No-show** | The booking's credit is used | Waive it for that booking; the credit comes back |
+| **Cancellation window** | 24 hours before the session starts | Set a different window |
+| **Parent cancels before the window** | The credit comes back | — |
+| **Parent cancels inside the window** | Treated as a no-show: the credit is used | Waive it for that booking |
+| **Children per parent** | Up to 2 in one booking pass | Set a different limit |
+| **Overflow** | The coach picks a second group or a backup coach each time (§7.3) | — |
+
+Each child takes one spot and uses one credit (or one drop-in charge). The
+manage-booking page tells a parent, before they confirm, when cancelling now
+will use their credit. Card refunds still follow §9.4; these rules move credits
+only.
+
 ---
 
 ## 10. Messaging
@@ -333,8 +363,8 @@ marketing. Messages are short enough to read in a notification preview.
 | Payment failed (subscription) | Athlete/parent | SMS + email |
 
 **Inbound SMS** is parsed for a small fixed vocabulary only in Slice 1: `Y`/`YES`,
-`N`/`NO`, `STOP`, `HELP`. Anything else gets a single reply pointing at the web
-link.
+`N`/`NO`, `STOP`, `HELP`, plus `1` and `2` as the coach's answer to an overflow
+ask (§7.3). Anything else gets a single reply pointing at the web link.
 
 In Slice 2 this grows into **natural-language control** — the coach runs the
 business by texting in plain English. Intent extraction goes through one
@@ -467,14 +497,15 @@ Item 4 is the only one that matters. The others are how we get there.
 1. ~~**Connect Hub readiness.**~~ **Answered 2026-09-21: build against it.** It
    is implemented and tested, including subscriptions. The remaining risk moved
    from engineering to legal/ops — see `docs/PLATFORM.md` §2.1.
-2. **No-show policy.** Does a no-show consume a package credit? Recommend yes by
-   default, coach-overridable per booking — but confirm with the launch coach.
+2. ~~**No-show policy.**~~ **Answered 2026-10-14:** a no-show uses the credit,
+   and the coach can waive it per booking. See §9.5.
 3. **Assistant coach payment.** Coachatron tells the coach what they owe an
    assistant. Do we ever move that money? Recommend no, indefinitely.
-4. **Cancellation window.** Default 24h? Below that, does the athlete lose the
-   credit? Needs a real answer before checkout copy is written.
-5. **Multiple athletes, one parent, one session.** Book two children into the
-   same session in one flow, or two passes? Affects the booking form materially.
+4. ~~**Cancellation window.**~~ **Answered 2026-10-14:** the coach sets it,
+   default 24 hours. Cancelling inside it uses the credit, like a no-show, and
+   the coach can waive it. See §9.5.
+5. ~~**Multiple athletes, one parent, one session.**~~ **Answered 2026-10-14:**
+   one flow, up to a coach-set limit, default 2 children. See §9.5.
 6. **Trademark.** "Coachatron" needs a USPTO knockout search before any spend on
    brand assets.
 7. **Email confirmations (§7.2 step 5, §10).** Slice 1 as built sends SMS
