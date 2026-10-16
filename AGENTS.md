@@ -25,12 +25,25 @@ Fill these in as the project gains them, and keep them true:
 | Dev | `npm run dev` |
 | Eval voice setup (calls the live model; run on purpose only) | `LITELLM_API_KEY=... npm run eval:setup` |
 
+## Testing texts end to end
+
+Coachatron's number (`+1 833-364-5083`) cannot text itself, so the round trip needs a
+second number. The operator sends from the shared Noctusoft number (`+1 855-573-5222`)
+with the `twilio` CLI and reads the replies in Twilio's logs. Never send from another
+product's number: the relay would forward Coachatron's reply into that product.
+
+- Only the operator's own session runs it, after saying what will be sent and getting a yes. Never `npm test`, CI, or the Cloud Agent.
+- Texts to Coachatron's number land on production (the relay routes it to `coachatron.com`), so they create real test records there. Payments stay on the Stripe sandbox.
+- Cover the app's own keywords (`Y`, `N`, `1`, `2`, `HELP`, `STOP`) through the inbound route. Twilio answers STOP/START/HELP at the number level too, so those prove Twilio, not the app. Send START afterwards to undo an opt-out.
+- Print dates, statuses and counts, not message bodies beyond the test's own texts. Never print credentials.
+- Full steps: `~/.claude/rules/sms-testing.md`.
+
 ## Never
 
 - Do not hold funds, store card data, or make Coachatron the merchant of record.
 - Do not add a thirteenth screen. Slice 1 is the twelve in SPEC.md §8.1.
 - Do not push to `main` or `develop`. Open a PR into `develop`.
-- Do not deploy. Do not call live Square, Twilio, or a model provider.
+- Do not deploy. Do not call live Square, Twilio, or a model provider. The one exception is the text test below, run by the operator from their Mac.
 - Do not put goalkeeper-specific words in the product name, schema, or URL structure.
 - Do not switch the Cloud Agent to Fast, Opus, or GPT. Do not buy extra Max usage.
 
