@@ -159,6 +159,11 @@ export async function createCoachSession(db: DbClient, coachId: number): Promise
   return token;
 }
 
+/** Ends one signed-in session (one browser); others stay signed in. */
+export async function deleteCoachSession(db: DbClient, token: string): Promise<void> {
+  await db.query('delete from coach_session where token = $1', [token]);
+}
+
 export async function getCoachBySessionToken(db: DbClient, token: string): Promise<number | null> {
   const result = await db.query<{ coach_id: number }>(
     'select coach_id from coach_session where token = $1 and expires_at > now()',

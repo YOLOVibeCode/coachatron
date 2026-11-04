@@ -20,6 +20,7 @@ import {
   newOtpCode,
   type OtpCheck,
   createCoachSession,
+  deleteCoachSession,
   getCoachBySessionToken,
   findCoachById,
   createCoach,
@@ -395,6 +396,14 @@ coachRouter.post('/signin/verify', async (req, res) => {
   }
   res.setHeader('Set-Cookie', cookies);
   res.redirect(303, '/app/schedule');
+});
+
+// Sign out: ends this browser's session on the server and clears the cookie.
+coachRouter.post('/signout', async (req, res) => {
+  const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
+  if (token) await deleteCoachSession(getDb(), token);
+  res.setHeader('Set-Cookie', clearCookie(SESSION_COOKIE));
+  res.redirect(303, '/signin');
 });
 
 // ---- Screen 4: session types ----
@@ -1263,7 +1272,10 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
           ? html`<a class="action" href="/app/sessions/${sessionId}/cancel">Cancel session</a>`
           : raw('')}
         
-        <a class="action" href="/app/schedule">Back to schedule</a>`,
+        <a class="action" href="/app/schedule">Back to schedule</a>
+        <form method="post" action="/signout">
+          <button type="submit" class="ghost">Sign out</button>
+        </form>`,
     ),
   );
 });
@@ -1650,7 +1662,10 @@ async function renderMoney(res: Response, coach: CoachRow, opts: { status?: numb
           <p><strong>${summary.nextWeekCount} sessions projected</strong></p>
           <p class="muted">Value: ${formatDollars(summary.nextWeekCents)}</p>
         </div>
-        <a class="action" href="/app/schedule">Back to schedule</a>`,
+        <a class="action" href="/app/schedule">Back to schedule</a>
+        <form method="post" action="/signout">
+          <button type="submit" class="ghost">Sign out</button>
+        </form>`,
     ),
   );
 }
