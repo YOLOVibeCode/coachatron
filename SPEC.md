@@ -230,6 +230,26 @@ one-field-per-screen.
 The rule that makes this safe: **the coach's YES is always required before any
 money or commitment moves.** The system proposes; the coach disposes.
 
+*(Implemented 2026-11-04. A session is asked about once, and a coach answers
+one question at a time: the next full session is asked about after that. 1,
+2 and N answer only the coach's own open question, from the coach's phone or
+the Schedule screen's three buttons; a Y gets the choices again. One offer is
+out at a time, and the first acceptance is decided in one transaction holding
+the offer's and the session's rows, so it happens once. A second group is a
+new session linked to the full one. A roster member who cannot get texts is
+not offered anything, and the coach is told who, once, with a link to send
+them: screen 12 in its opt-in state, which records consent by the same rules
+as the other forms. The new spots go to the waitlist in the order people
+joined: a text when the parent chose texts, an email otherwise, each with a
+link that holds the spot for 15 minutes, and a spot nobody claims in that
+time goes to the next person. The waitlist also gets a spot freed by a
+parent's cancel or a hold that ran out, and keeps first claim on free spots
+until each person waiting has been offered one. In quiet hours the offers
+wait until 8am in the coach's zone, unless the session starts first. The
+coach is told who took the job and how many waitlisted parents were offered
+a spot. A coach's cancel, or the session starting, ends its question and
+withdraws any offer still out.)*
+
 ### 7.4 Coach gets paid
 
 Money settles directly into the coach's own Stripe account, and Stripe pays it
@@ -469,6 +489,17 @@ manage-booking page tells a parent, before they confirm, when cancelling now
 will use their credit. Card refunds still follow §9.4; these rules move credits
 only.
 
+*(Implemented 2026-11-04. The window is 0 to 168 hours and the limit 1 to 10
+children. A parent's paid drop-in cancelled before the window becomes one
+session credit with the coach, with no expiry. A late cancel's payment stays
+with the coach and counts as collected. When the coach cancels the session
+itself, a late cancel's credit comes back, and a credit already given back is
+not given twice. The children of one booking pass are held, paid for and
+booked together, each with their own manage link and confirmation. The
+relay's buy link names one open amount with no quantity, so several
+children's drop-ins are one charge of the price for each, and a package or
+pack is offered only when it covers every child.)*
+
 ---
 
 ## 10. Messaging
@@ -586,7 +617,7 @@ message_log(id, to_phone, template, body, provider_id, sent_at, status)
 `credit.contact_phone` is the join key for a buyer, by design (§9.2). Normalize
 to E.164 on write.
 
-Added since the sketch (migrations 0013–0020): `request_limit` (fixed-window
+Added since the sketch (migrations 0013–0024): `request_limit` (fixed-window
 counts per client address, phone, or email) and `otp_code.attempts`;
 `coach.email_verified_at`; `coach_payments` (whether the coach can take
 charges, and the payment texts owed) and `payments_link`;
@@ -596,7 +627,13 @@ store event, handled once) and `payment_attention` (payments kept for the
 coach to resolve). Migration 0019 adds `refund` (one row per refunded
 payment: its status, try, and what it withdrew) and `payment_dispute`, and a
 booking's status can be `refunded`. Migration 0020 adds `credit.refund_id`
-(held while a refund is on its way) and `withdrawn_at`.
+(held while a refund is on its way) and `withdrawn_at`. Migrations 0021–0024 add
+`overflow_ask.kind`, `closed_at` and `outcome`, `offer.kind` and `ask_id`,
+`session.overflow_of` (a second group's full session), and
+`roster_member.optin_token`; `waitlist.contact_email`, `state` and
+`offer_booking_id`; `coach.cancel_window_hours` and `children_per_booking`,
+`booking.late_cancel` and `waived_at`; and `booking.pass_id` (the children of
+one booking pass).
 
 Two column names predate the move to Stripe and were kept: `square_merchant_id`
 is unused (a coach reaches their Stripe account through

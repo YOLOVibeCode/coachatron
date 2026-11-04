@@ -103,17 +103,17 @@ The twelve screens of Coachatron (Slice 1):
 | # | Screen | Route(s) | Who |
 |---|--------|----------|-----|
 | 1 | Sign in (and the texted payments link) | `/signin`, `/signin/otp`, `/signin/verify`, `/p/:token` | Coach |
-| 2 | Schedule (and voice setup) | `/app/schedule`, `/app/setup`, `/app/setup/publish`, `/app/setup/discard` | Coach |
-| 3 | Session detail | `/app/sessions/:id`, `/app/sessions/:id/bookings/:bookingId/attendance`, `/app/sessions/:id/bookings/:bookingId/refund`, `/app/sessions/:id/cancel` | Coach |
+| 2 | Schedule (voice setup, and the overflow question) | `/app/schedule`, `/app/setup`, `/app/setup/publish`, `/app/setup/discard`, `/app/overflow/:sessionId` | Coach |
+| 3 | Session detail | `/app/sessions/:id`, `/app/sessions/:id/bookings/:bookingId/attendance`, `/app/sessions/:id/bookings/:bookingId/waive`, `/app/sessions/:id/bookings/:bookingId/refund`, `/app/sessions/:id/cancel` | Coach |
 | 4 | Session types | `/app/session-types`, `/app/session-types/:id/generate-week` (weekly times), `/app/session-types/:id/slots/:slotId/remove` | Coach |
-| 5 | Pricing | `/app/pricing`, `/app/pricing/package`, `/app/pricing/plan` | Coach |
+| 5 | Pricing (and the booking policy) | `/app/pricing`, `/app/pricing/package`, `/app/pricing/plan`, `/app/pricing/policy` | Coach |
 | 6 | Roster | `/app/roster`, `/app/roster/:id/priority` | Coach |
 | 7 | Money (refunds, disputes, and connecting payments) | `/app/money`, `/app/money/refund`, `/app/money/payments`, `/signout` | Coach |
 | 8 | Public page | `/c/:handle` | Athlete |
 | 9 | Booking form | `/c/:handle/sessions/:sessionId/book`, `/c/:handle/sessions/:sessionId/waitlist` | Athlete |
 | 10 | Checkout | `/c/:handle/checkout/:token` | Athlete |
 | 11 | Manage booking | `/booking/:token`, `/booking/:token/cancel` | Athlete |
-| 12 | Offer response | `/offer/:token` | Assistant coach |
+| 12 | Offer response (and a roster member's opt-in link) | `/offer/:token` | Assistant coach |
 
 All routes are server-rendered HTML. No SPA.
 

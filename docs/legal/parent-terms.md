@@ -89,6 +89,9 @@ The page you return to after paying shows the link too.
 - Credits are tied to the **mobile number you booked with** and to **that
   coach**. A parent booking for two children with one number draws from one
   pool of credits.
+- You can book more than one child at once, up to the coach's limit (2 unless
+  the coach sets another). Each child takes a spot and uses one credit, or one
+  drop-in payment, and has their own manage link.
 - When you book again with that coach, checkout offers to use a credit. To
   use one, you enter a code we text to the booking's mobile number, which
   shows the number is yours; arriving from the manage link of a booking
@@ -130,20 +133,29 @@ instead of the credit, and say so here.]
 - **The cancellation window is [COACH'S WINDOW] before the session starts.**
   The coach sets it; if they have not, it is **24 hours**.
 - Cancel **before the window** (earlier than [COACH'S WINDOW] before the
-  start): the credit you used comes back.
+  start): the credit you used comes back, and a session you paid for by card
+  becomes one session credit with that coach, which does not expire.
 - Cancel **inside the window**: it counts as a no-show (section 5), and the
   credit is used. The coach may choose to give it back.
 - The manage page tells you, before you confirm, whether cancelling now will
   use your credit.
 
-[Attorney: the window and the default of 24 hours follow the open booking-policy
-decision (`SPEC.md` §15 item 4). Today the app returns the credit for any
-cancellation made before the session starts and has no window yet; the manage
-page does not show the warning yet. These terms should match whatever ships.]
+- If the coach cancels the session after you cancelled inside the window,
+  your credit comes back.
 
-[Attorney: a parent who cancels a card-paid drop-in gets nothing back today.
-Decide whether that becomes a credit, a refund, or the coach's published
-policy.]
+[Attorney: the app applies this window as of 2026-11-04 (`SPEC.md` §9.5): the
+coach sets 0 to 168 hours, the default is 24, the manage page shows the cut-off
+time and says before you confirm whether cancelling now uses the credit, and
+a card-paid drop-in cancelled before the window becomes a session credit, not
+a card refund. Decide whether a parent may ask for a card refund instead.]
+
+**Waitlist.** If a session is full, you can join its waitlist. When a spot
+opens, people waiting are offered it in the order they joined: we hold it for
+you for 15 minutes and send you a link to book it, by text if you opted in to
+texts, or by email if you gave one. If you do not book it in that time, it goes
+to the next person. Spots do not open overnight: between 9pm and 8am in the
+coach's time zone we wait until morning, unless the session starts first.
+Nothing is charged until you book.
 
 ## 5. No-shows
 

@@ -193,6 +193,16 @@ SPEC.md §8.1.
   parent pays (`booking.hold_expires_at`), counted again from when they pick a
   way to pay; capacity counts live bookings plus unexpired holds. One phone
   holds one spot per session at a time.
+- **Several children** *(2026-11-04, SPEC.md §9.5)*. One booking pass holds a
+  spot per child (`booking.pass_id`), paid for through the first booking's
+  checkout. The Connect buy link (`signConnectBuyLink`, the relay's
+  `sellerBuy`) carries one open amount and no quantity, so the drop-in link
+  is the price times the children, and the paid event must match that total.
+  A package or pack is offered only when it covers every child.
+- **Waitlist spots** *(2026-11-04, SPEC.md §7.3)*. A spot that opens goes to
+  the waitlist in order: a held booking with its checkout link, sent by text
+  or email, for 15 minutes, then to the next person (the tick's
+  `moveWaitlists`).
 - **Checkout** is reached by `booking.checkout_token`, never the booking's
   serial id. Session credits are used only once the booking's phone is
   proven (`booking.phone_verified_at`): a code texted to it at checkout, or
