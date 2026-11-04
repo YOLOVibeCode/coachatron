@@ -1,6 +1,8 @@
 export const APP_FEE_BPS = 500;
 /** The marketplace terms the Money screen shows; must equal the relay Connect app's agreement_version. */
 export const SELLER_AGREEMENT_VERSION = 'v1';
+/** What a coach sells, for the payment provider's business profile. */
+export const SELLER_PRODUCT_DESCRIPTION = 'Private and group coaching sessions booked through Coachatron';
 export const PORT = Number(process.env.PORT ?? 3000);
 export const DATABASE_URL = process.env.DATABASE_URL ?? '';
 export const NODE_ENV = process.env.NODE_ENV ?? 'development';

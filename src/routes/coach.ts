@@ -28,9 +28,16 @@ import {
   getConnectRecipientKey,
   type CoachRow,
 } from '../domain/auth.js';
-import { APP_BASE_URL, APP_FEE_BPS, OTP_DAILY_MAX_PER_CONTACT, SELLER_AGREEMENT_VERSION } from '../config.js';
+import {
+  APP_BASE_URL,
+  APP_FEE_BPS,
+  OTP_DAILY_MAX_PER_CONTACT,
+  SELLER_AGREEMENT_VERSION,
+  SELLER_PRODUCT_DESCRIPTION,
+} from '../config.js';
 import { acceptSellerAgreement, getSellerStatus, startSellerOnboarding } from '../relay/seller.js';
 import {
+  appBaseUrl,
   coachPageUrl,
   consumePaymentsLink,
   markPaymentsStarted,
@@ -1799,9 +1806,16 @@ coachRouter.post('/app/money/payments', requireAuth, async (req, res) => {
       await acceptSellerAgreement(sellerKey, SELLER_AGREEMENT_VERSION);
     }
     await markPaymentsStarted(db, coach.id);
+    // What the app already knows, so the provider's form asks for less.
     const url = await startSellerOnboarding(sellerKey, {
-      returnUrl: `${process.env.APP_BASE_URL ?? APP_BASE_URL}/app/money`,
+      returnUrl: `${appBaseUrl()}/app/money`,
       email: coach.email,
+      profile: {
+        phone: coach.phone,
+        entityType: 'individual',
+        businessUrl: coachPageUrl(coach.handle),
+        productDescription: SELLER_PRODUCT_DESCRIPTION,
+      },
     });
     res.redirect(303, url);
   } catch {

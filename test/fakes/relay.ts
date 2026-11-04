@@ -45,6 +45,8 @@ export interface FakeOnboard {
   sellerKey: string;
   returnUrl: string;
   email: string | null;
+  /** Profile fields the app offered to prefill, when it sent any. */
+  profile?: Record<string, string>;
 }
 
 export interface FakeRelay {
@@ -57,6 +59,8 @@ export interface FakeRelay {
   onboards: FakeOnboard[];
   /** The relay's current agreement_version for every product. */
   agreementVersion: string;
+  /** When true, /onboard answers 400 to any field it does not know. */
+  strictOnboard: boolean;
   /** How many times the app asked for a seller's status. */
   statusChecks: number;
   seller(product: string, sellerKey: string): FakeSeller | undefined;
@@ -93,6 +97,7 @@ export async function startFakeRelay(): Promise<FakeRelay> {
   const relay = {
     agreementVersion: 'v1',
     limited: { sms: false, email: false },
+    strictOnboard: false,
     statusChecks: 0,
   };
 
@@ -137,7 +142,19 @@ export async function startFakeRelay(): Promise<FakeRelay> {
       res.status(428).json({ code: 'AGREEMENT_REQUIRED' });
       return;
     }
-    onboards.push({ product, sellerKey, returnUrl: String(req.body.returnUrl ?? ''), email: req.body.email ?? null });
+    const { returnUrl, email, ...rest } = (req.body ?? {}) as Record<string, unknown>;
+    if (relay.strictOnboard && Object.keys(rest).length > 0) {
+      res.status(400).json({ code: 'INVALID_REQUEST', error: `unknown fields: ${Object.keys(rest).join(', ')}` });
+      return;
+    }
+    const profile = Object.fromEntries(Object.entries(rest).map(([k, v]) => [k, String(v)]));
+    onboards.push({
+      product,
+      sellerKey,
+      returnUrl: String(returnUrl ?? ''),
+      email: typeof email === 'string' ? email : null,
+      ...(Object.keys(profile).length > 0 ? { profile } : {}),
+    });
     res.json({ url: `${base}/connect/${product}/onboard?state=fake-${sellerKey}`, expiresAt: new Date(Date.now() + 3600_000).toISOString() });
   });
 

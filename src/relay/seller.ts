@@ -56,15 +56,42 @@ export async function acceptSellerAgreement(sellerKey: string, version: string):
   if (!res.ok) return fail(res);
 }
 
+/** What the app already knows about the coach, offered to prefill the
+ * provider's onboarding form. Every field is optional. */
+export interface SellerProfile {
+  /** E.164. */
+  phone?: string | null;
+  entityType?: 'individual' | 'company';
+  /** The coach's public page. */
+  businessUrl?: string;
+  productDescription?: string;
+}
+
+function profileFields(profile: SellerProfile | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!profile) return out;
+  for (const key of ['phone', 'entityType', 'businessUrl', 'productDescription'] as const) {
+    const value = profile[key];
+    if (typeof value === 'string' && value) out[key] = value;
+  }
+  return out;
+}
+
 /**
  * A relay onboarding link. The relay sends the coach back to `returnUrl?seller=connected|pending|failed`.
  * For a connected coach the same link opens the form for changing bank and identity details.
  */
-export async function startSellerOnboarding(sellerKey: string, args: { returnUrl: string; email: string | null }): Promise<string> {
-  const res = await relayFetch(sellerPath(sellerKey, '/onboard'), {
-    method: 'POST',
-    body: JSON.stringify({ returnUrl: args.returnUrl, ...(args.email ? { email: args.email } : {}) }),
-  });
+export async function startSellerOnboarding(
+  sellerKey: string,
+  args: { returnUrl: string; email: string | null; profile?: SellerProfile },
+): Promise<string> {
+  const base = { returnUrl: args.returnUrl, ...(args.email ? { email: args.email } : {}) };
+  const extra = profileFields(args.profile);
+  const post = (body: Record<string, string>) =>
+    relayFetch(sellerPath(sellerKey, '/onboard'), { method: 'POST', body: JSON.stringify(body) });
+  let res = await post({ ...base, ...extra });
+  // A relay that does not take the profile fields still gets the coach onboard.
+  if ((res.status === 400 || res.status === 422) && Object.keys(extra).length > 0) res = await post(base);
   if (!res.ok) return fail(res);
   const body = (await res.json()) as Record<string, unknown>;
   const url = String(body.url ?? '');
