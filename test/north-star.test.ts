@@ -545,7 +545,7 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           // confirmed, offers no second payment, and already has the manage link.
           const returned = new URL(q.return);
           const confirming = await (await get(`${returned.pathname}${returned.search}`)).text();
-          assert.match(visible(confirming), /Confirming your payment Group — Sat, \w{3} \d{1,2}, 9:00 AM\. If you paid, this takes a moment\. Please don't pay again\./);
+          assert.match(visible(confirming), /Checking for your payment Group — Sat, \w{3} \d{1,2}, 9:00 AM\. If you paid, this takes a moment\. Please don't pay again\./);
           assert.doesNotMatch(confirming, /Pay \$/);
           assert.match(confirming, /href="\/booking\/[A-Za-z0-9_-]{22}">Manage this booking</);
           const textsToParent = () => relay.sms.filter((m) => m.to === PARENT_PHONE);

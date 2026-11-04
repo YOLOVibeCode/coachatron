@@ -126,13 +126,13 @@ test('back from the hosted payment page, the return link says the payment is bei
         const res = await fetch(`${base}${shape}`);
         assert.equal(res.status, 200, shape);
         const html = await res.text();
-        assert.match(html, /Confirming your payment/, shape);
+        assert.match(html, /Checking for your payment/, shape);
         assert.match(html, /Manage this booking/, shape);
         assert.doesNotMatch(html, /Pay \$/, shape);
       }
       for (const shape of [back.pathname, `${back.pathname}?paid=0`]) {
         const html = await (await fetch(`${base}${shape}`)).text();
-        assert.doesNotMatch(html, /Confirming your payment/, shape);
+        assert.doesNotMatch(html, /Checking for your payment/, shape);
         assert.match(html, /Pay \$35\.00/, shape);
       }
     });

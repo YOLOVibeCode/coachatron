@@ -384,7 +384,7 @@ test('a parent whose payment could not book is told so, and is not offered to pa
         const body = await (await fetch(`${base}${path}`)).text();
         assert.match(body, /We got your payment/, path);
         assert.match(body, /Jamie Coach has it and will be in touch/, path);
-        assert.doesNotMatch(body, /Confirming your payment|name="mode"/, path);
+        assert.doesNotMatch(body, /Checking for your payment|name="mode"/, path);
       }
       const again = await postCheckout(base, seed.coach.handle, late.key, { mode: 'dropin' });
       assert.equal(again.status, 409);

@@ -686,6 +686,8 @@ publicRouter.get('/c/:handle/checkout/:token', async (req, res) => {
     return;
   }
   // Back from the hosted payment page before its confirmation has arrived.
+  // A parent who leaves that page without paying comes back to the same
+  // link, so this page reads right for both.
   if (cameBackFromPaying(req.originalUrl)) {
     res.status(200).send(renderPaymentConfirming(coach, ctx.session, ctx.booking, req.params.token));
     return;
@@ -730,8 +732,8 @@ function renderAlreadyBooked(coach: CoachRow, session: SessionForBooking, bookin
 
 function renderPaymentConfirming(coach: CoachRow, session: SessionForBooking, booking: Pick<BookingRow, 'manage_token'>, checkoutToken: string) {
   return page(
-    'Confirming payment',
-    html`<h1>Confirming your payment</h1>
+    'Checking for your payment',
+    html`<h1>Checking for your payment</h1>
       <p class="muted">${session.name} — ${formatLocal(session.starts_at_utc, session.tz)}. If you paid, this takes a moment. Please don't pay again.</p>
       <a class="action" href="/c/${coach.handle}/checkout/${checkoutToken}?paid=1">Check again</a>
       ${manageLinkBlock(booking, 'action ghost')}

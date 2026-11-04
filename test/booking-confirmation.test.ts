@@ -134,7 +134,10 @@ test('back from paying before the payment is confirmed, the page says so and has
       const returnUrl = new URL(new URL(pay.headers.get('location') ?? '', base).searchParams.get('return') ?? '');
       const back = await fetch(new URL(returnUrl.pathname + returnUrl.search, base));
       const body = await back.text();
-      assert.match(body, /Confirming your payment/);
+      assert.match(body, /Checking for your payment/);
+      assert.doesNotMatch(body, /Confirming|You're booked/, 'nothing says the payment was made');
+      // The payment page sends a parent who leaves without paying back here too.
+      assert.ok(body.includes(`Didn't finish paying? <a href="/c/${seed.coach.handle}/checkout/${b.key}">Choose how to pay</a>`));
       assert.ok(body.includes(`/booking/${(await latestBooking(db)).manage_token}`));
       assert.doesNotMatch(body, /name="mode" value="dropin"/, 'no second payment is offered on this page');
     });
