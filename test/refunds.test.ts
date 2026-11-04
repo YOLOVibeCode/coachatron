@@ -210,6 +210,25 @@ test('a payment kept for the coach is refunded with one tap and a confirmation, 
   });
 });
 
+test('a payment that matched no booking can be refunded, and the coach is asked to tell the parent', async (t) => {
+  quiet(t);
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 2, priceCents: 3500 });
+    await withServer(async (base) => {
+      const res = await postStorePaid(base, { userId: 'not-a-booking', amountCents: 3500, paymentId: 'ns_pay_stray', sellerKey: seed.coach.handle });
+      assert.equal(res.status, 200);
+      const attentionId = (await db.query<{ id: number }>("select id from payment_attention where payment_ref = 'ns_pay_stray'")).rows[0].id;
+      const cookie = await coachCookie(db, seed.coach.id);
+      const confirm = await getPage(base, `/app/money?refund=a${attentionId}`, cookie);
+      assert.match(confirm, /We have no way to reach this parent, so please tell them yourself\./);
+      await postForm(base, '/app/money/refund', cookie, { target: `a${attentionId}` });
+      assert.equal(relay.refunds[0].paymentRef, 'ns_pay_stray');
+    });
+    assert.equal((await refundRow(db, 'ns_pay_stray')).parent_told, 'none');
+  });
+});
+
 test('a payment that became credit when the coach cancelled is refunded while the credit is unused', async () => {
   await withRelay(async (relay) => {
     const db = await freshDb();
@@ -287,6 +306,10 @@ test('a refund call that gets no answer is sent again with the same key, so it i
       assert.match(detail, /Payments did not answer\. Try again in a minute: the refund will not be made twice\./);
       assert.match(detail, /Refund not sent yet/);
       assert.match(detail, /Try the refund again/);
+
+      const money = await getPage(base, '/app/money', cookie);
+      assert.match(money, /Payments to resolve/);
+      assert.match(money, /The refund of \$35 has not gone through yet: payments did not answer\./);
 
       relay.refundError = null;
       await postForm(base, `/app/sessions/${seed.sessionId}/bookings/${bookingId}/refund`, cookie);

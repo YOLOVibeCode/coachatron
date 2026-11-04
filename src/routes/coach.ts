@@ -1493,7 +1493,11 @@ function renderRefundConfirm(check: Refundability, opts: { action: string; keepH
   }
   if (plan.kind === 'kept-payment') effects.push('This payment booked nothing, so nothing else changes.');
   effects.push(`The whole ${amount} goes back to the card it came from. Coachatron's ${APP_FEE_BPS / 100}% fee is returned with it; Stripe keeps its card processing fee.`);
-  effects.push('The parent is told by text if they chose texts, and by email if they gave one.');
+  effects.push(
+    plan.reachable
+      ? 'The parent is told by text if they chose texts, and by email if they gave one.'
+      : 'We have no way to reach this parent, so please tell them yourself.',
+  );
   return html`<div class="card" id="refund">
     <p><strong>Refund ${amount}?</strong></p>
     <p class="muted">${what}</p>

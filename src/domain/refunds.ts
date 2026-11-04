@@ -183,6 +183,8 @@ export interface RefundPlan {
   releasesBooking: boolean;
   /** Unused session credits the refund withdraws. */
   creditsWithdrawn: number;
+  /** A booking holds the parent's number or email, so they can be told. */
+  reachable: boolean;
 }
 
 export type Refundability = { ok: true; plan: RefundPlan } | { ok: false; block: RefundBlock };
@@ -237,6 +239,7 @@ async function planForBooking(db: DbClient, b: PurchaseBooking, attentionId: num
       kind: credits.kind,
       releasesBooking: LIVE.has(b.status),
       creditsWithdrawn: existing?.refunded_at ? 0 : credits.unused,
+      reachable: true,
     },
   };
 }
@@ -291,6 +294,7 @@ export async function checkRefund(db: DbClient, coachId: number, target: RefundT
       kind: 'kept-payment',
       releasesBooking: false,
       creditsWithdrawn: 0,
+      reachable: session !== null,
     },
   };
 }
@@ -650,10 +654,10 @@ export async function listRefunds(db: DbClient, coachId: number, limit = 20): Pr
   return result.rows;
 }
 
-/** Refunds that need the coach: one that failed, or part of a payment
- * refunded outside Coachatron. */
-export function needsAttention(item: Pick<RefundRow, 'status'>): boolean {
-  return item.status === 'failed' || item.status === 'partial';
+/** Refunds that need the coach: one that failed, one whose call got no
+ * answer, or part of a payment refunded outside Coachatron. */
+export function needsAttention(item: Pick<RefundRow, 'status' | 'error_code'>): boolean {
+  return item.status === 'failed' || item.status === 'partial' || (item.status === 'requested' && item.error_code !== null);
 }
 
 /** The refund row of each payment, by payment ref. */
