@@ -252,8 +252,11 @@ SPEC.md §8.1.
   `requested` or `pending`, or whose payment's other bookings are not all
   booked, does not move. Each move is a `booking_move` row (migration 0031),
   shown on Session detail of both sessions; the booking's `reminder_sent`
-  row is cleared so the new time gets its 24-hour reminder, and the freed
-  spot is offered to the waitlist.
+  row is cleared so the new time gets its 24-hour reminder, and the tick
+  claims a reminder only while the booking is still in the session it read
+  (under a share lock on the booking), so a move that lands between the
+  tick's read and its claim sends no reminder for the old time and leaves
+  the new time's reminder due. The freed spot is offered to the waitlist.
 - **A coach's cancel** returns a credit for every paid booking, including a
   paid drop-in, which becomes one session credit with the coach with no
   expiry. Each step can run again, so a cancel that stopped part way

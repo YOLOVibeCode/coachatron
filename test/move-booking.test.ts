@@ -13,6 +13,7 @@ import { newBookingToken } from '../src/domain/pricing.js';
 import { sendBookingConfirmation } from '../src/domain/bookingMessages.js';
 import { moveByParent } from '../src/domain/moveBooking.js';
 import { applyRefunded } from '../src/domain/refunds.js';
+import { sendDueReminders } from '../src/jobs/tick.js';
 import type { DbClient } from '../src/db/client.js';
 
 /** A parent moves a booking from its manage page (SPEC.md §7.2) to another
@@ -524,5 +525,41 @@ test("a move from either child's link locks the payment's bookings in the order 
     assert.deepEqual(refunding.order, [mia.id, leo.id]);
     assert.deepEqual(moving.order, refunding.order, "from Leo's link");
     assert.deepEqual(back.order, refunding.order, "from Mia's link");
+  });
+});
+
+test('a move while the tick sends reminders: no reminder for the time it left, and the new time gets its own', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const { seed, from, to } = await twoSessions(db, { fromHours: 10 });
+    // A short window, so a booking inside the 24-hour reminder range can still move.
+    await db.query('update coach set tz = $2, cancel_window_hours = 2 where id = $1', [seed.coach.id, zoneAt(12)]);
+    await grantSmsConsent(db, PHONE);
+    const b = await dropIn(db, from);
+
+    // The move lands after the tick has read which reminders are due, and
+    // before it claims this one.
+    let moved: string | null = null;
+    const racing: DbClient = {
+      async query<T>(sql: string, params?: unknown[]) {
+        const result = await db.query<T>(sql, params);
+        if (moved === null && /\bfrom booking b\b/.test(sql) && /not exists \(select 1 from reminder_sent/.test(sql)) {
+          moved = (await moveByParent(db, b.token, to)).kind;
+        }
+        return result;
+      },
+      transaction: <T>(fn: (tx: DbClient) => Promise<T>) => db.transaction!(fn),
+    };
+    const now = new Date();
+    assert.equal(await sendDueReminders(racing, now), 0);
+    assert.equal(moved, 'moved');
+    assert.equal(relay.sms.filter((m) => m.to === PHONE).length, 0, 'no reminder for the session it left');
+    assert.equal((await db.query('select 1 from reminder_sent where booking_id = $1', [b.id])).rows.length, 0);
+
+    // 20 hours before the new time, its reminder goes.
+    assert.equal(await sendDueReminders(db, new Date(now.getTime() + 76 * 60 * 60 * 1000)), 1);
+    const reminders = relay.sms.filter((m) => m.to === PHONE);
+    assert.equal(reminders.length, 1);
+    assert.match(reminders[0].body, /^Coachatron: Mia's Goalkeeper Group is /);
   });
 });
