@@ -344,6 +344,16 @@ test('a family with session credits can still book with them while payments are 
       const checkoutPath = booked.headers.get('location') ?? '';
       assert.match(checkoutPath, new RegExp(`^/c/${seed.coach.handle}/checkout/[A-Za-z0-9_-]{22}$`));
 
+      // Credits are used once the parent proves the phone with a texted code.
+      const offer = await (await fetch(`${base}${checkoutPath}`)).text();
+      assert.match(offer, /Text me a code/);
+      assert.doesNotMatch(offer, /Pay \$/);
+      assert.doesNotMatch(offer, /Buy |Subscribe to /);
+      assert.equal((await form(base, checkoutPath, { mode: 'send_code' })).status, 200);
+      const code = /\b(\d{6})\b/.exec(relay.sms.filter((m) => m.to === '+15550007777').at(-1)?.body ?? '')?.[1];
+      assert.ok(code, 'a code was texted');
+      assert.equal((await form(base, checkoutPath, { mode: 'verify_code', code })).status, 303);
+
       const checkout = await (await fetch(`${base}${checkoutPath}`)).text();
       assert.match(checkout, /Use 1 of 3 session credits/);
       assert.doesNotMatch(checkout, /Pay \$/);

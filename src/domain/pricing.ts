@@ -299,6 +299,11 @@ export async function bookPendingBooking(
   return result.rows.length === 1;
 }
 
+/** The parent proved they hold this booking's phone. */
+export async function markPhoneVerified(db: DbClient, bookingId: number): Promise<void> {
+  await db.query('update booking set phone_verified_at = now() where id = $1 and phone_verified_at is null', [bookingId]);
+}
+
 export async function restoreCredit(db: DbClient, creditId: number): Promise<void> {
   await db.query('update credit set remaining = remaining + 1 where id = $1', [creditId]);
 }

@@ -1,6 +1,14 @@
 import { Router } from 'express';
 import { getDb, type DbClient } from '../db/client.js';
-import { findCoachByHandle, getConnectRecipientKey, normalizePhone, type CoachRow } from '../domain/auth.js';
+import {
+  checkOtp,
+  consumeOtp,
+  createOtp,
+  findCoachByHandle,
+  getConnectRecipientKey,
+  normalizePhone,
+  type CoachRow,
+} from '../domain/auth.js';
 import { html, operatorLine, page, raw, smsConsentCheckbox } from '../lib/html.js';
 import { formatLocal } from '../lib/time.js';
 import {
@@ -17,6 +25,8 @@ import {
   renewHold,
   restoreCredit,
   takesSpotSql,
+  markPhoneVerified,
+  type BookingRow,
 } from '../domain/pricing.js';
 import { checkOverflow, acceptOffer, declineOffer, describeOffer, getOfferByToken } from '../domain/cascade.js';
 import { buyerEmail, connectBuyUrl } from '../relay/buy-link.js';
@@ -24,7 +34,7 @@ import { hasActiveConsent, isOptedOut, optedOutNotice, recordConsent } from '../
 import { clientKey, SMS_OPT_IN_LIMITS, takeRequest, WAITLIST_LIMITS } from '../domain/requestLimits.js';
 import { canText, sendText } from '../domain/outbound.js';
 import { paymentsOpen } from '../domain/payments.js';
-import { SMS_BRAND, SMS_OPT_IN_CONFIRMATION, SMS_PURPOSE, SUPPORT_EMAIL } from '../config.js';
+import { OTP_DAILY_MAX_PER_CONTACT, SMS_BRAND, SMS_OPT_IN_CONFIRMATION, SMS_PURPOSE, SUPPORT_EMAIL } from '../config.js';
 import type { Request } from 'express';
 
 export const publicRouter = Router();
@@ -72,6 +82,21 @@ function bookingOpensSoon(coach: CoachRow, note?: string) {
 }
 
 const CREDITS_ONLY_NOTE = 'Only session credits can be used until then.';
+
+/** A manage-link token passed along as ?from= or a hidden field, when it
+ * looks like one. */
+function fromToken(value: unknown): string | null {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{16,128}$/.test(value) ? value : null;
+}
+
+/** The parent's earlier booking with this coach that a ?from= link names. */
+async function bookingFromLink(db: DbClient, coach: CoachRow, value: unknown): Promise<BookingWithSession | null> {
+  const token = fromToken(value);
+  if (!token) return null;
+  const booking = await loadBookingByToken(db, token);
+  return booking && booking.coach_id === coach.id ? booking : null;
+}
+
 function sessionStarted(session: { starts_at_utc: string }): boolean {
   return new Date(session.starts_at_utc) <= new Date();
 }
@@ -278,6 +303,9 @@ publicRouter.get('/c/:handle', async (req, res) => {
     return;
   }
 
+  const from = (await bookingFromLink(db, coach, req.query.from)) ? fromToken(req.query.from) : null;
+  const bookQuery = from ? `?from=${encodeURIComponent(from)}` : '';
+
   const sessions = await db.query<{
     id: number;
     starts_at_utc: string;
@@ -317,10 +345,10 @@ publicRouter.get('/c/:handle', async (req, res) => {
                 ${spotsLeft <= 0
                   ? raw('')
                   : open || !needsPayment(s)
-                    ? html`<a class="action" href="/c/${coach.handle}/sessions/${s.id}/book">Book</a>`
+                    ? html`<a class="action" href="/c/${coach.handle}/sessions/${s.id}/book${bookQuery}">Book</a>`
                     : html`<p class="muted">Booking opens soon</p>
                         ${creditsWork
-                          ? html`<p class="muted"><a href="/c/${coach.handle}/sessions/${s.id}/book">Have session credits? Book with them</a></p>`
+                          ? html`<p class="muted"><a href="/c/${coach.handle}/sessions/${s.id}/book${bookQuery}">Have session credits? Book with them</a></p>`
                           : raw('')}`}
               </div>`;
             })}`,
@@ -346,22 +374,28 @@ publicRouter.get('/c/:handle/sessions/:sessionId/book', async (req, res) => {
     res.status(409).send(renderSessionStarted(coach, session));
     return;
   }
+  // Arriving from one of their own manage links, the parent's contact
+  // details are filled in and the link rides along to checkout.
+  const earlier = await bookingFromLink(db, coach, req.query.from);
+  const values = earlier
+    ? { contact_phone: earlier.contact_phone, contact_email: earlier.contact_email ?? undefined, from: fromToken(req.query.from) ?? undefined }
+    : {};
   if (needsPayment(session) && !(await paymentsOpen(db, coach))) {
     // Only a family holding credits can book now; the form stays for them.
     if (!(await coachHasOpenCredits(db, coach.id))) {
       res.status(200).send(bookingOpensSoon(coach));
       return;
     }
-    res.status(200).send(renderBookingForm(coach, session, {}, undefined, { creditsOnly: true }));
+    res.status(200).send(renderBookingForm(coach, session, values, undefined, { creditsOnly: true }));
     return;
   }
-  res.status(200).send(renderBookingForm(coach, session, {}));
+  res.status(200).send(renderBookingForm(coach, session, values));
 });
 
 function renderBookingForm(
   coach: CoachRow,
   session: SessionForBooking,
-  values: { athlete_name?: string; contact_phone?: string; contact_email?: string },
+  values: { athlete_name?: string; contact_phone?: string; contact_email?: string; from?: string },
   error?: string,
   opts: { creditsOnly?: boolean } = {},
 ) {
@@ -373,6 +407,7 @@ function renderBookingForm(
         ? html`<p class="muted">${coach.name} is still setting up payments, so for now you can book only with session credits. Enter the phone number your credits are under.</p>`
         : raw('')}
       <form method="post" action="/c/${coach.handle}/sessions/${session.id}/book">
+        ${values.from ? html`<input type="hidden" name="from" value="${values.from}" />` : raw('')}
         <label for="athlete_name">Athlete name</label>
         <input id="athlete_name" name="athlete_name" value="${values.athlete_name ?? ''}" required />
         <label for="contact_phone">Your phone</label>
@@ -419,7 +454,7 @@ publicRouter.post('/c/:handle/sessions/:sessionId/book', async (req, res) => {
         renderBookingForm(
           coach,
           session,
-          { athlete_name: athleteName, contact_phone: rawPhone, contact_email: contactEmail ?? undefined },
+          { athlete_name: athleteName, contact_phone: rawPhone, contact_email: contactEmail ?? undefined, from: fromToken(field(req.body, 'from')) ?? undefined },
           'Enter the athlete’s name and a valid phone number.',
           { creditsOnly },
         ),
@@ -437,6 +472,12 @@ publicRouter.post('/c/:handle/sessions/:sessionId/book', async (req, res) => {
     await recordConsent(db, contactPhone, meta.source, { ip: meta.ip, userAgent: meta.userAgent });
   }
 
+  // A manage link proves the phone only when its own booking's phone was
+  // proven, by a texted code or by an earlier proven link, and only for
+  // that same phone. Anyone can type a number; credits follow the proof.
+  const earlier = await bookingFromLink(db, coach, field(req.body, 'from'));
+  const phoneVerified = Boolean(earlier && earlier.phone_verified_at && earlier.contact_phone === contactPhone);
+
   // Capacity is checked server-side even if the list page the parent saw was
   // stale (SPEC.md §7.2). The pending booking holds the spot while they pay.
   const pending = await createPendingBooking(db, {
@@ -445,6 +486,7 @@ publicRouter.post('/c/:handle/sessions/:sessionId/book', async (req, res) => {
     athleteName,
     contactPhone,
     contactEmail,
+    phoneVerified,
   });
   if (!pending) {
     res.status(409).send(renderSessionFull(coach, session, { athleteName, rawPhone, contactEmail }));
@@ -526,6 +568,49 @@ async function loadCheckoutContext(db: DbClient, coach: CoachRow, token: string)
   return { booking, session };
 }
 
+/** What the checkout screen says about session credits. Credits belong to a
+ * proven phone: until the parent proves it, the screen offers a texted code
+ * and says nothing about whether this number has any. */
+type CreditState =
+  | { kind: 'available'; remaining: number }
+  | { kind: 'none-on-number' }
+  | { kind: 'offer-code'; masked: string }
+  | { kind: 'code-sent'; masked: string }
+  | { kind: 'hidden' };
+
+type CheckoutOptions = {
+  packages: Array<{ id: number; name: string; credits: number; price_cents: number }>;
+  plans: Array<{ id: number; name: string; price_cents: number; credits_per_month: number }>;
+  credit: CreditState;
+  /** False while the coach cannot take payments: only credits and free sessions are offered. */
+  canPay: boolean;
+};
+
+function maskPhone(phone: string): string {
+  return `••••${phone.slice(-4)}`;
+}
+
+async function loadCheckoutOptions(
+  db: DbClient,
+  coach: CoachRow,
+  booking: BookingRow,
+  opts: { codeSent?: boolean } = {},
+): Promise<CheckoutOptions> {
+  const packages = await getPackagesForCoach(db, coach.id);
+  const plans = await getPlansForCoach(db, coach.id);
+  const phone = booking.contact_phone;
+  let credit: CreditState = { kind: 'hidden' };
+  if (booking.phone_verified_at) {
+    const balance = await getCreditBalance(db, coach.id, phone);
+    credit = balance ? { kind: 'available', remaining: balance.remaining } : { kind: 'none-on-number' };
+  } else if (canText(phone) && (await coachHasOpenCredits(db, coach.id))) {
+    // Whether any parent holds credits with this coach is the coach's fact,
+    // not this number's, so offering a code gives nothing away.
+    credit = opts.codeSent ? { kind: 'code-sent', masked: maskPhone(phone) } : { kind: 'offer-code', masked: maskPhone(phone) };
+  }
+  return { packages, plans, credit, canPay: await paymentsOpen(db, coach) };
+}
+
 publicRouter.get('/c/:handle/checkout/:token', async (req, res) => {
   const db = getDb();
   const coach = await findCoachByHandle(db, req.params.handle);
@@ -543,16 +628,15 @@ publicRouter.get('/c/:handle/checkout/:token', async (req, res) => {
     return;
   }
 
-  const packages = await getPackagesForCoach(db, coach.id);
-  const plans = await getPlansForCoach(db, coach.id);
-  const credit = await getCreditBalance(db, coach.id, ctx.booking.contact_phone);
-  const canPay = await paymentsOpen(db, coach);
-  if (!canPay && !credit && needsPayment(ctx.session)) {
-    res.status(200).send(bookingOpensSoon(coach));
+  const options = await loadCheckoutOptions(db, coach, ctx.booking);
+  // While the coach cannot take payments, the page is for session credits
+  // only; with no credit to offer it says booking opens soon.
+  if (!options.canPay && needsPayment(ctx.session) && (options.credit.kind === 'hidden' || options.credit.kind === 'none-on-number')) {
+    res.status(200).send(bookingOpensSoon(coach, options.credit.kind === 'none-on-number' ? CREDITS_ONLY_NOTE : undefined));
     return;
   }
 
-  res.status(200).send(renderCheckout(coach, ctx.session, req.params.token, { packages, plans, credit, canPay }));
+  res.status(200).send(renderCheckout(coach, ctx.session, req.params.token, options));
 });
 
 function renderAlreadyBooked(coach: CoachRow, session: SessionForBooking) {
@@ -564,13 +648,32 @@ function renderAlreadyBooked(coach: CoachRow, session: SessionForBooking) {
   );
 }
 
-type CheckoutOptions = {
-  packages: Array<{ id: number; name: string; credits: number; price_cents: number }>;
-  plans: Array<{ id: number; name: string; price_cents: number; credits_per_month: number }>;
-  credit: { remaining: number } | null;
-  /** False while the coach cannot take payments: only credits and free sessions are offered. */
-  canPay?: boolean;
-};
+function renderCreditState(coach: CoachRow, action: string, credit: CreditState) {
+  switch (credit.kind) {
+    case 'available':
+      return html`<form method="post" action="${action}">
+        <input type="hidden" name="mode" value="credit" />
+        <button type="submit">Use 1 of ${credit.remaining} session credits</button>
+      </form>`;
+    case 'none-on-number':
+      return html`<p class="muted">No session credits with ${coach.name} on this number.</p>`;
+    case 'offer-code':
+      return html`<form method="post" action="${action}">
+        <input type="hidden" name="mode" value="send_code" />
+        <p class="muted">Have session credits with ${coach.name}? We'll text a code to ${credit.masked} to use them.</p>
+        <button type="submit" class="ghost">Text me a code</button>
+      </form>`;
+    case 'code-sent':
+      return html`<form method="post" action="${action}">
+        <input type="hidden" name="mode" value="verify_code" />
+        <label for="code">We texted a 6-digit code to ${credit.masked}</label>
+        <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" required />
+        <button type="submit">Use my credits</button>
+      </form>`;
+    default:
+      return raw('');
+  }
+}
 
 function renderCheckout(
   coach: CoachRow,
@@ -580,7 +683,7 @@ function renderCheckout(
   error?: string,
 ) {
   const action = `/c/${coach.handle}/checkout/${checkoutToken}`;
-  const canPay = options.canPay !== false;
+  const canPay = options.canPay;
   const packages = canPay ? options.packages : [];
   const plans = canPay ? options.plans : [];
 
@@ -592,12 +695,7 @@ function renderCheckout(
         ? html`<p class="muted">Pay on the Noctusoft hosted page. Apple Pay and cards are there — this app never sees a card.</p>`
         : html`<p class="muted">${coach.name} is still setting up payments, so paying here opens soon.</p>`}
 
-      ${options.credit
-        ? html`<form method="post" action="${action}">
-            <input type="hidden" name="mode" value="credit" />
-            <button type="submit">Use 1 of ${options.credit.remaining} session credits</button>
-          </form>`
-        : raw('')}
+      ${renderCreditState(coach, action, options.credit)}
 
       ${canPay || !needsPayment(session)
         ? html`<form method="post" action="${action}">
@@ -621,7 +719,7 @@ function renderCheckout(
           <button type="submit">Buy ${p.name} — ${p.credits_per_month} ${p.credits_per_month === 1 ? 'session' : 'sessions'} for $${(p.price_cents / 100).toFixed(2)}, one-time</button>
         </form>`,
       )}
-      ${error ? raw(`<p class="error">${error}</p>`) : raw('')}`,
+      ${error ? html`<p class="error">${error}</p>` : raw('')}`,
   );
 }
 
@@ -662,36 +760,72 @@ publicRouter.post('/c/:handle/checkout/:token', async (req, res) => {
     return;
   }
 
-  // Whatever the parent picks, their spot must still be theirs: a lapsed
-  // hold is renewed only while the session has room.
-  if (!(await renewHold(db, ctx.booking, ctx.session.capacity))) {
-    res.status(409).send(
-      renderSessionFull(coach, ctx.session, {
-        athleteName: ctx.booking.athlete_name,
-        rawPhone: phone,
-        contactEmail: ctx.booking.contact_email,
-      }),
-    );
-    return;
-  }
+  const showCheckout = async (status: number, error: string, opts: { codeSent?: boolean } = {}) => {
+    res.status(status).send(renderCheckout(coach, ctx.session, checkoutToken, await loadCheckoutOptions(db, coach, ctx.booking, opts), error));
+  };
 
   try {
+    // Proving the phone, so its credits can be used: the same one-time codes
+    // and daily limit as signing in.
+    if (mode === 'send_code') {
+      if (ctx.booking.phone_verified_at) {
+        res.redirect(303, `/c/${coach.handle}/checkout/${checkoutToken}`);
+        return;
+      }
+      if (!canText(phone)) {
+        await showCheckout(422, "We can't text that number.");
+        return;
+      }
+      const code = await createOtp(db, { kind: 'phone', phone });
+      const outcome = await sendText(db, {
+        to: phone,
+        body: `Coachatron: your code to use your session credits is ${code}. It expires in 10 minutes.`,
+        coachId: null,
+        template: 'otp',
+        perRecipientDailyMax: OTP_DAILY_MAX_PER_CONTACT,
+      });
+      if (outcome === 'sent') {
+        res.status(200).send(renderCheckout(coach, ctx.session, checkoutToken, await loadCheckoutOptions(db, coach, ctx.booking, { codeSent: true })));
+        return;
+      }
+      if (outcome === 'capped') await showCheckout(429, 'Too many codes for this number today. Try again tomorrow.');
+      else await showCheckout(422, "We can't text that number.");
+      return;
+    }
+
+    if (mode === 'verify_code') {
+      const check = await checkOtp(db, { kind: 'phone', phone }, field(req.body, 'code'));
+      if (!check.ok || !(await consumeOtp(db, check.id))) {
+        await showCheckout(401, "That code didn't work. Check it, or ask for a new one.", { codeSent: true });
+        return;
+      }
+      await markPhoneVerified(db, bookingId);
+      res.redirect(303, `/c/${coach.handle}/checkout/${checkoutToken}`);
+      return;
+    }
+
+    if (mode === 'credit' && !ctx.booking.phone_verified_at) {
+      await showCheckout(403, 'Confirm your phone with a texted code to use session credits.');
+      return;
+    }
+
+    // Whatever the parent picks, their spot must still be theirs: a lapsed
+    // hold is renewed only while the session has room.
+    if (!(await renewHold(db, ctx.booking, ctx.session.capacity))) {
+      res.status(409).send(
+        renderSessionFull(coach, ctx.session, {
+          athleteName: ctx.booking.athlete_name,
+          rawPhone: phone,
+          contactEmail: ctx.booking.contact_email,
+        }),
+      );
+      return;
+    }
+
     if (mode === 'credit') {
       const credit = await getCreditBalance(db, coach.id, phone);
       if (!credit || !(await decrementCredit(db, credit.id))) {
-        const packages = await getPackagesForCoach(db, coach.id);
-        const plans = await getPlansForCoach(db, coach.id);
-        res
-          .status(409)
-          .send(
-            renderCheckout(
-              coach,
-              ctx.session,
-              checkoutToken,
-              { packages, plans, credit: null, canPay: await paymentsOpen(db, coach) },
-              'That credit is no longer available.',
-            ),
-          );
+        await showCheckout(409, 'That credit is no longer available.');
         return;
       }
       const booked = await bookPendingBooking(db, ctx.booking, ctx.session.capacity, {
@@ -777,20 +911,7 @@ publicRouter.post('/c/:handle/checkout/:token', async (req, res) => {
 
     res.status(422).send(notFound());
   } catch {
-    const packages = await getPackagesForCoach(db, coach.id);
-    const plans = await getPlansForCoach(db, coach.id);
-    const credit = await getCreditBalance(db, coach.id, phone);
-    res
-      .status(502)
-      .send(
-        renderCheckout(
-          coach,
-          ctx.session,
-          checkoutToken,
-          { packages, plans, credit, canPay: await paymentsOpen(db, coach) },
-          'Checkout is not available right now. Please try again.',
-        ),
-      );
+    await showCheckout(502, 'Checkout is not available right now. Please try again.');
   }
 });
 
@@ -862,18 +983,21 @@ interface BookingWithSession {
   session_id: number;
   athlete_name: string;
   contact_phone: string;
+  contact_email: string | null;
+  phone_verified_at: string | null;
   status: string;
   credit_id: number | null;
   starts_at_utc: string;
   tz: string;
   session_type_name: string;
+  coach_id: number;
   coach_handle: string;
 }
 
 async function loadBookingByToken(db: DbClient, token: string): Promise<BookingWithSession | null> {
   const result = await db.query<BookingWithSession>(
-    `select b.id, b.session_id, b.athlete_name, b.contact_phone, b.status, b.credit_id,
-            s.starts_at_utc, s.tz, st.name as session_type_name, c.handle as coach_handle
+    `select b.id, b.session_id, b.athlete_name, b.contact_phone, b.contact_email, b.phone_verified_at, b.status, b.credit_id,
+            s.starts_at_utc, s.tz, st.name as session_type_name, c.id as coach_id, c.handle as coach_handle
      from booking b
      join session s on s.id = b.session_id
      join session_type st on st.id = s.session_type_id
@@ -923,7 +1047,8 @@ publicRouter.get('/booking/:token', async (req, res) => {
             ? raw('')
             : html`<p class="muted">Cancellations are not accepted after the session starts.</p>`}
 
-        <a class="action" href="/c/${booking.coach_handle}">Back to ${booking.coach_handle}'s page</a>`,
+        <a class="action" href="/c/${booking.coach_handle}?from=${req.params.token}">Book another session</a>
+        <a class="action ghost" href="/c/${booking.coach_handle}">Back to ${booking.coach_handle}'s page</a>`,
     ),
   );
 });
