@@ -43,6 +43,15 @@ export const WAITLIST_LIMITS: LimitRule[] = [
   { bucket: 'waitlist-ip-day', windowMs: DAY, max: 30 },
 ];
 
+/** Booking forms sent from one address. Each one holds a spot for
+ * BOOKING_HOLD_MINUTES while the parent pays, so many from one address
+ * could keep a session looking full. A family booking a few sessions, even
+ * fixing a typo or two, stays far below these. */
+export const BOOKING_HOLD_LIMITS: LimitRule[] = [
+  { bucket: 'hold-ip-hour', windowMs: HOUR, max: 20 },
+  { bucket: 'hold-ip-day', windowMs: DAY, max: 60 },
+];
+
 /** The landing page's week box, from one address. */
 export const START_BOX_LIMITS: LimitRule[] = [{ bucket: 'start-ip-10m', windowMs: 10 * MINUTE, max: 30 }];
 

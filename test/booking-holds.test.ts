@@ -7,6 +7,7 @@ import { seedBookedSession, seedCoachWithSession, seedPackage } from './helpers/
 import { buyerFromLocation, postStorePaid } from './helpers/store-event.js';
 import { bookOnline, countSold, expireHolds, postCheckout } from './helpers/booking.js';
 import { createCredit } from '../src/domain/pricing.js';
+import { BOOKING_HOLD_LIMITS, takeRequest } from '../src/domain/requestLimits.js';
 import { cancelScheduledSession } from '../src/domain/cancelSession.js';
 import type { DbClient } from '../src/db/client.js';
 
@@ -336,3 +337,67 @@ test("a payment for a parent's earlier form takes the spot back from the same ph
     assert.equal(kept.rows.length, 0);
   });
 });
+
+test('one address can start only so many bookings an hour; the form says to try later and holds nothing more', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 40 });
+    const from = { 'x-forwarded-for': '203.0.113.80' };
+    await withServer(async (base) => {
+      for (let i = 0; i < 20; i += 1) {
+        const b = await bookOnline(base, seed.coach.handle, seed.sessionId, `Kid ${i}`, `555222${String(1000 + i)}`, {}, from);
+        assert.equal(b.status, 303, `booking ${i + 1}`);
+      }
+      const res = await fetch(`${base}/c/${seed.coach.handle}/sessions/${seed.sessionId}/book`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...from },
+        body: JSON.stringify({ athlete_name: 'Kid 21', contact_phone: '5552223000' }),
+        redirect: 'manual',
+      });
+      assert.equal(res.status, 429);
+      const page = await res.text();
+      assert.match(page, /Too many bookings started from here for now/);
+      assert.match(page, /<form method="post" action="\/c\/[^"]+\/sessions\/\d+\/book">/, 'the booking form stays, filled in');
+      assert.match(page, /value="Kid 21"/);
+      assert.equal(await countHolds(db, seed.sessionId), 20, 'the refused form holds nothing');
+
+      const other = await bookOnline(base, seed.coach.handle, seed.sessionId, 'Kid 22', '5552223001', {}, { 'x-forwarded-for': '203.0.113.81' });
+      assert.equal(other.status, 303, 'another address is not held back');
+    });
+  });
+});
+
+test('a family booking a few sessions, fixing a typo along the way, is never held back', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 4 });
+    const from = { 'x-forwarded-for': '203.0.113.82' };
+    await withServer(async (base) => {
+      for (const [athlete, phone] of [
+        ['Alex', '5551112222'],
+        ['Alex', '5551112222'],
+        ['Sam', '5551112222'],
+        ['Sam', '5551112222'],
+        ['Jo', '5551112222'],
+      ]) {
+        assert.equal((await bookOnline(base, seed.coach.handle, seed.sessionId, athlete, phone, {}, from)).status, 303);
+      }
+    });
+  });
+});
+
+test('the address limit on bookings also holds over a day', async () => {
+  const db = await freshDb();
+  const day = Date.UTC(2026, 10, 3);
+  // Three an hour stays under the hourly limit; sixty in a day is the most.
+  for (let i = 0; i < 60; i += 1) {
+    assert.equal(await takeRequest(db, BOOKING_HOLD_LIMITS, '203.0.113.83', new Date(day + i * 20 * 60 * 1000)), true, `${i + 1}`);
+  }
+  assert.equal(await takeRequest(db, BOOKING_HOLD_LIMITS, '203.0.113.83', new Date(day + 21 * 60 * 60 * 1000)), false);
+  assert.equal(await takeRequest(db, BOOKING_HOLD_LIMITS, '203.0.113.83', new Date(day + 25 * 60 * 60 * 1000)), true, 'the next day');
+});
+
+async function countHolds(db: DbClient, sessionId: number): Promise<number> {
+  const r = await db.query<{ n: string }>("select count(*)::text as n from booking where session_id = $1 and status = 'pending'", [sessionId]);
+  return Number(r.rows[0].n);
+}

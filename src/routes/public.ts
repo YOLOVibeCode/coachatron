@@ -36,6 +36,7 @@ import { checkOverflow, acceptOffer, declineOffer, describeOffer, getOfferByToke
 import { buyerEmail, connectBuyUrl } from '../relay/buy-link.js';
 import { hasActiveConsent, isOptedOut, optedOutNotice, recordConsent } from '../domain/sms-consent.js';
 import {
+  BOOKING_HOLD_LIMITS,
   clientKey,
   CODE_CHECK_CONTACT_LIMITS,
   CODE_CHECK_IP_LIMITS,
@@ -487,6 +488,22 @@ publicRouter.post('/c/:handle/sessions/:sessionId/book', async (req, res) => {
           session,
           { athlete_name: athleteName, contact_phone: rawPhone, contact_email: contactEmail ?? undefined, from: fromToken(field(req.body, 'from')) ?? undefined },
           'Enter the athlete’s name and a valid phone number.',
+          { creditsOnly },
+        ),
+      );
+    return;
+  }
+
+  // Each form sent holds a spot, so one address can hold only so many.
+  if (!(await takeRequest(db, BOOKING_HOLD_LIMITS, clientKey(req)))) {
+    res
+      .status(429)
+      .send(
+        renderBookingForm(
+          coach,
+          session,
+          { athlete_name: athleteName, contact_phone: rawPhone, contact_email: contactEmail ?? undefined, from: fromToken(field(req.body, 'from')) ?? undefined },
+          'Too many bookings started from here for now. Please try again later.',
           { creditsOnly },
         ),
       );

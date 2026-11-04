@@ -304,10 +304,12 @@ Destination price is enforced by country code: only `+1` (US and Canada) is
 texted, since the relay does not report a per-destination price. "Active
 coach" means a coach with a scheduled session ahead. Sign-in codes are also
 capped at 5 per number or email per day, and requests that send a code, opt
-in at `/sms`, join a waitlist, or use the landing page's box are limited per
-client address (`src/domain/requestLimits.ts`). A code stops working after 5
+in at `/sms`, join a waitlist, start a booking (each holds a spot for 15
+minutes; 20 an hour and 60 a day), or use the landing page's box are limited
+per client address (`src/domain/requestLimits.ts`). A code stops working after 5
 wrong tries, works once, and checks for a number or email count against its
-hourly limit only while it has a live code.
+hourly limit only while it has a live code. The code a parent asks for at
+checkout to use session credits follows the same rules.
 When the relay's own caps answer 429, the send path returns `busy` and the
 page asks to try again later.
 
