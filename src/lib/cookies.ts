@@ -11,9 +11,19 @@ export function parseCookies(header: string | undefined): Record<string, string>
     if (eq === -1) continue;
     const key = part.slice(0, eq).trim();
     const value = part.slice(eq + 1).trim();
-    if (key) out[key] = decodeURIComponent(value);
+    if (key) out[key] = safeDecode(value);
   }
   return out;
+}
+
+/** A stray cookie from another app on the same domain can carry a bad
+ * percent-escape ("100%"). Keep its raw text rather than fail the request. */
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }
 
 /** Secure whenever the site is served over https (every Railway

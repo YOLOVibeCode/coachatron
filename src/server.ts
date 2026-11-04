@@ -9,11 +9,16 @@ import { storeWebhookRouter } from './routes/store-webhook.js';
 import { getDb } from './db/client.js';
 import { runMigrations } from './db/migrate.js';
 import { runTick } from './jobs/tick.js';
+import { pageHeaders, trustProxyHops } from './lib/headers.js';
 
 const TICK_MS = 60_000;
 
 export function createApp() {
   const app = express();
+  app.disable('x-powered-by');
+  // Limits and consent records need the visitor's address, not the proxy's.
+  app.set('trust proxy', trustProxyHops());
+  app.use(pageHeaders);
   app.use('/webhooks/store', express.raw({ type: '*/*' }), storeWebhookRouter);
   // Inbound texts are signed over the raw body, so keep it raw here.
   app.use('/webhooks/sms', express.raw({ type: '*/*' }), smsInboundRouter);
