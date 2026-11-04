@@ -2,7 +2,7 @@ import type { DbClient } from '../db/client.js';
 import type { CoachRow } from './auth.js';
 import { startCascade } from './cascade.js';
 import { summarizeMoney } from './money.js';
-import { addCalendarDays, zonedParts, zonedTimeToUtc } from './scheduling.js';
+import { addCalendarDays, SLOT_HORIZON_DAYS, zonedParts, zonedTimeToUtc } from './scheduling.js';
 import { APP_BASE_URL } from '../config.js';
 import { reserveModelCall } from './modelBudget.js';
 import { coachHasSchedule, handleSetupMessage, setupSmsReply } from './setup.js';
@@ -14,7 +14,7 @@ import {
   type ClassifiedIntent,
   type IntentName,
 } from '../llm/schema.js';
-import { clipSms, formatConfirmWhen, formatLocal } from '../lib/time.js';
+import { clipSms, formatConfirmWhen, isValidInstant } from '../lib/time.js';
 import { cancelScheduledSession, dropInCreditNote, previewSessionCancel } from './cancelSession.js';
 import { sendText } from './outbound.js';
 import {
@@ -53,6 +53,9 @@ export interface SessionBrief {
 export type AssistantChannel = 'sms' | 'web';
 
 const EIGHT_WEEKS_MS = 56 * 24 * 60 * 60 * 1000;
+/** How far ahead the assistant adds or moves a session: as far as the
+ * calendar keeps weekly times, and as far as it lists sessions. */
+const SCHEDULE_HORIZON_MS = SLOT_HORIZON_DAYS * 24 * 60 * 60 * 1000;
 const CONFIDENCE_FLOOR = 0.75;
 const WEEKDAYS_LONG = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 const WEEKDAYS_SHORT = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
@@ -330,6 +333,7 @@ async function llmClassify(
     'Classify one message from a coach into a single intent object. JSON only.',
     `Closed intents: ${INTENT_NAMES.join(', ')}.`,
     `Coach timezone: ${coach.tz}.`,
+    `Now: ${formatConfirmWhen(now.toISOString(), coach.tz)} (${now.toISOString()}). Resolve "tomorrow", weekdays and times against this.`,
     'One intent, one session, or one broadcast. Multi-session commands are unknown.',
     'Never invent a session id. confidence is 0..1. Below 0.75 is unknown.',
     'Do not include phone numbers, emails, or card data.',
@@ -400,8 +404,8 @@ function resolveAgainstSessions(
     classified.intent === 'roster.offer';
   if (needsSession && classified.session_id == null) return unknownIntent(classified.source);
   if (classified.intent === 'session.add' && classified.session_type_id == null) return unknownIntent(classified.source);
-  if (classified.intent === 'session.add' && !classified.when) return unknownIntent(classified.source);
-  if (classified.intent === 'session.move' && !classified.new_when) return unknownIntent(classified.source);
+  if (classified.intent === 'session.add' && !isValidInstant(classified.when)) return unknownIntent(classified.source);
+  if (classified.intent === 'session.move' && !isValidInstant(classified.new_when)) return unknownIntent(classified.source);
   return classified;
 }
 
@@ -458,12 +462,22 @@ function athleteBroadcastBody(session: SessionBrief, classified: ClassifiedInten
   return clipSms(`Coachatron: ${session.name} on ${when} has an update from your coach.`);
 }
 
+/** A question that ends "Reply Y." whatever is cut: the overlap note gives
+ * way first, then the start of the question. */
+function confirmQuestion(question: string, note: string | null): string {
+  const tail = ' Reply Y.';
+  if (note && question.length + note.length + tail.length <= 160) return `${question}${note}${tail}`;
+  const shortNote = note ? ' Overlaps another session.' : '';
+  return `${clipSms(question, 160 - shortNote.length - tail.length)}${shortNote}${tail}`;
+}
+
 async function renderConfirm(
   db: DbClient,
   classified: ClassifiedIntent,
   sessions: SessionBrief[],
   types: Array<{ id: number; name: string; duration_min: number }>,
   tz: string,
+  overlapNote: string | null = null,
 ): Promise<string | null> {
   if (classified.intent === 'session.cancel') {
     const session = sessionById(sessions, classified.session_id);
@@ -486,14 +500,14 @@ async function renderConfirm(
     if (!type || !classified.when) return null;
     const when = formatConfirmWhen(classified.when, tz);
     const place = classified.location ? ` at ${classified.location}` : '';
-    return clipSms(`Add ${type.duration_min}-min ${type.name} ${when}${place}? Reply Y.`);
+    return confirmQuestion(`Add ${type.duration_min}-min ${type.name} ${when}${place}?`, overlapNote);
   }
   if (classified.intent === 'session.move') {
     const session = sessionById(sessions, classified.session_id);
     if (!session || !classified.new_when) return null;
     const from = formatConfirmWhen(session.startsAtUtc, session.tz);
     const to = formatConfirmWhen(classified.new_when, session.tz);
-    return clipSms(`Move ${session.name} from ${from} to ${to}? Reply Y.`);
+    return confirmQuestion(`Move ${session.name} from ${from} to ${to}?`, overlapNote);
   }
   if (classified.intent === 'broadcast.send') {
     const session = sessionById(sessions, classified.session_id);
@@ -514,15 +528,16 @@ async function executeWrite(
   db: DbClient,
   coach: CoachRow,
   classified: ClassifiedIntent,
+  now: Date,
 ): Promise<string> {
   if (classified.intent === 'session.cancel' && classified.session_id != null) {
     return executeCancel(db, coach, classified.session_id);
   }
   if (classified.intent === 'session.add') {
-    return executeAdd(db, coach, classified);
+    return executeAdd(db, coach, classified, now);
   }
   if (classified.intent === 'session.move' && classified.session_id != null && classified.new_when) {
-    return executeMove(db, coach, classified.session_id, classified.new_when, classified.location);
+    return executeMove(db, coach, classified.session_id, classified.new_when, classified.location, now);
   }
   if (classified.intent === 'broadcast.send' && classified.session_id != null) {
     return executeBroadcast(db, coach, classified);
@@ -545,7 +560,85 @@ async function executeCancel(db: DbClient, coach: CoachRow, sessionId: number): 
   );
 }
 
-async function executeAdd(db: DbClient, coach: CoachRow, classified: ClassifiedIntent): Promise<string> {
+/** Why a new start time cannot be used, or null. A start in the past or
+ * past the horizon is refused, and so is one where the coach already has a
+ * session of the same type starting at that moment (a second group at the
+ * same time comes from the overflow question instead). */
+async function startProblem(
+  db: DbClient,
+  coachId: number,
+  typeId: number,
+  starts: Date,
+  now: Date,
+  movingId: number | null,
+): Promise<string | null> {
+  if (starts.getTime() <= now.getTime()) return 'That time has already passed.';
+  if (starts.getTime() > now.getTime() + SCHEDULE_HORIZON_MS) return `I can schedule up to ${SLOT_HORIZON_DAYS / 7} weeks ahead.`;
+  const same = await db.query<{ name: string; starts_at_utc: string; tz: string }>(
+    `select st.name, s.starts_at_utc, s.tz
+     from session s join session_type st on st.id = s.session_type_id
+     where st.coach_id = $1 and st.id = $2 and s.status = 'scheduled' and s.starts_at_utc = $3
+       and s.id <> coalesce($4::int, -1)
+     limit 1`,
+    [coachId, typeId, starts.toISOString(), movingId],
+  );
+  const dup = same.rows[0];
+  return dup ? clipSms(`You already have ${dup.name} ${formatConfirmWhen(iso(dup.starts_at_utc), dup.tz)}.`) : null;
+}
+
+/** " Overlaps Keeper Group at 6:00pm." when another scheduled session of the
+ * coach's runs during the new one, so the coach's Y covers it. */
+async function overlapNote(
+  db: DbClient,
+  coachId: number,
+  starts: Date,
+  durationMin: number,
+  movingId: number | null,
+): Promise<string | null> {
+  const end = new Date(starts.getTime() + durationMin * 60_000);
+  const other = await db.query<{ name: string; starts_at_utc: string; tz: string }>(
+    `select st.name, s.starts_at_utc, s.tz
+     from session s join session_type st on st.id = s.session_type_id
+     where st.coach_id = $1 and s.status = 'scheduled' and s.id <> coalesce($4::int, -1)
+       and s.starts_at_utc < $2 and s.starts_at_utc + make_interval(mins => st.duration_min) > $3
+     order by s.starts_at_utc
+     limit 1`,
+    [coachId, end.toISOString(), starts.toISOString(), movingId],
+  );
+  const row = other.rows[0];
+  if (!row) return null;
+  const clock = formatConfirmWhen(iso(row.starts_at_utc), row.tz).split(', ').pop();
+  return ` Overlaps ${row.name} at ${clock}.`;
+}
+
+/** For an add or a move: a reply that refuses the new time, or the note
+ * the question carries about an overlap. */
+async function checkNewStart(
+  db: DbClient,
+  coach: CoachRow,
+  classified: ClassifiedIntent,
+  sessions: SessionBrief[],
+  types: Array<{ id: number; name: string; duration_min: number }>,
+  now: Date,
+): Promise<{ refuse: string | null; note: string | null }> {
+  if (classified.intent === 'session.add' && classified.when) {
+    const type = types.find((t) => t.id === classified.session_type_id);
+    if (!type) return { refuse: null, note: null };
+    const starts = new Date(classified.when);
+    const refuse = await startProblem(db, coach.id, type.id, starts, now, null);
+    return { refuse, note: refuse ? null : await overlapNote(db, coach.id, starts, type.duration_min, null) };
+  }
+  if (classified.intent === 'session.move' && classified.new_when) {
+    const session = sessionById(sessions, classified.session_id);
+    if (!session) return { refuse: null, note: null };
+    const starts = new Date(classified.new_when);
+    const refuse = await startProblem(db, coach.id, session.sessionTypeId, starts, now, session.id);
+    return { refuse, note: refuse ? null : await overlapNote(db, coach.id, starts, session.durationMin, session.id) };
+  }
+  return { refuse: null, note: null };
+}
+
+async function executeAdd(db: DbClient, coach: CoachRow, classified: ClassifiedIntent, now: Date): Promise<string> {
   if (classified.session_type_id == null || !classified.when) return catchThat().text;
   const type = await db.query<{ id: number; name: string }>(
     'select id, name from session_type where id = $1 and coach_id = $2 and active = true',
@@ -554,6 +647,9 @@ async function executeAdd(db: DbClient, coach: CoachRow, classified: ClassifiedI
   if (!type.rows[0]) return catchThat().text;
   const starts = new Date(classified.when);
   if (Number.isNaN(starts.getTime())) return catchThat().text;
+  // Checked again: the calendar may have changed while the question waited.
+  const problem = await startProblem(db, coach.id, type.rows[0].id, starts, now, null);
+  if (problem) return problem;
   await db.query(
     `insert into session (session_type_id, starts_at_utc, tz, location_text, status)
      values ($1, $2, $3, $4, 'scheduled')`,
@@ -568,11 +664,12 @@ async function executeMove(
   sessionId: number,
   newWhen: string,
   location: string | null,
+  now: Date,
 ): Promise<string> {
   const starts = new Date(newWhen);
   if (Number.isNaN(starts.getTime())) return catchThat().text;
-  const owned = await db.query<{ id: number; name: string; tz: string }>(
-    `select s.id, st.name, s.tz
+  const owned = await db.query<{ id: number; name: string; tz: string; session_type_id: number }>(
+    `select s.id, st.name, s.tz, st.id as session_type_id
      from session s
      join session_type st on st.id = s.session_type_id
      where s.id = $1 and st.coach_id = $2 and s.status = 'scheduled'`,
@@ -580,6 +677,8 @@ async function executeMove(
   );
   const row = owned.rows[0];
   if (!row) return 'That session is gone.';
+  const problem = await startProblem(db, coach.id, row.session_type_id, starts, now, row.id);
+  if (problem) return problem;
   await db.query(
     `update session set starts_at_utc = $1, location_text = coalesce($2, location_text) where id = $3`,
     [starts.toISOString(), location, sessionId],
@@ -688,7 +787,9 @@ async function applyClassified(
     const text = await renderRead(db, coach, classified, sessions, now);
     return { text, pendingId: null, kind: 'answer' };
   }
-  const confirmText = await renderConfirm(db, classified, sessions, types, coach.tz);
+  const start = await checkNewStart(db, coach, classified, sessions, types, now);
+  if (start.refuse) return { text: start.refuse, pendingId: null, kind: 'answer' };
+  const confirmText = await renderConfirm(db, classified, sessions, types, coach.tz, start.note);
   if (!confirmText) return catchThat();
   const pending = await createPending(db, coach.id, classified, confirmText, now);
   return { text: confirmText, pendingId: pending.id, kind: 'confirm' };
@@ -716,7 +817,7 @@ async function resolvePendingRow(
     });
     return { text: 'Dropped.', pendingId: null, kind: 'dropped' };
   }
-  const text = await executeWrite(db, coach, pending.payload);
+  const text = await executeWrite(db, coach, pending.payload, now);
   await logAssistant(db, {
     coachId: coach.id,
     phone: coach.phone,
