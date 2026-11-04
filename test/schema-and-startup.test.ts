@@ -1,11 +1,21 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { createServer, type Server } from 'node:http';
 import { readFileSync } from 'node:fs';
+import { promisify } from 'node:util';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { freshDb } from './helpers/db.js';
+import { listenLoopback } from './helpers/listen.js';
 import { seedCoachWithSession, seedRosterMember } from './helpers/fixtures.js';
+import { createPool } from '../src/db/client.js';
+import { gracefulShutdown } from '../src/server.js';
 
 /** What the database holds itself to, and how the process starts and
  * stops. */
+
+const execFileAsync = promisify(execFile);
+const root = fileURLToPath(new URL('..', import.meta.url));
 
 test('the database itself refuses a session type with no room, a negative price, or a negative credit balance', async () => {
   const db = await freshDb();
@@ -48,4 +58,104 @@ test('bookings are indexed by session and texts by provider id, and the schema f
   for (const statement of sql.split(';').map((s) => s.trim()).filter(Boolean)) {
     await db.query(statement);
   }
+});
+
+test('production refuses to start without DATABASE_URL, and says why', async () => {
+  const client = pathToFileURL(fileURLToPath(new URL('../src/db/client.ts', import.meta.url))).href;
+  const script = `
+    const { getDb } = await import(${JSON.stringify(client)});
+    try { getDb(); console.log(JSON.stringify({ started: true })); }
+    catch (err) { console.log(JSON.stringify({ started: false, message: err.message })); }
+    process.exit(0);
+  `;
+  const run = async (env: Record<string, string>) => {
+    const { stdout } = await execFileAsync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], {
+      cwd: root,
+      env: { ...process.env, DATABASE_URL: '', ...env },
+      timeout: 60_000,
+    });
+    return JSON.parse(stdout.trim().split('\n').pop() ?? '{}') as { started: boolean; message?: string };
+  };
+  const production = await run({ NODE_ENV: 'production' });
+  assert.equal(production.started, false);
+  assert.match(production.message ?? '', /DATABASE_URL is not set/);
+  assert.deepEqual(await run({ NODE_ENV: 'development' }), { started: true }, 'local development still uses the in-memory database');
+});
+
+test('the Postgres pool logs a lost idle connection and keeps the process running', async () => {
+  const pool = createPool('postgres://127.0.0.1:1/none');
+  const logged: unknown[][] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => logged.push(args);
+  try {
+    // With no listener, emitting "error" throws: the process would exit.
+    assert.doesNotThrow(() => pool.emit('error', new Error('terminating connection due to administrator command')));
+  } finally {
+    console.error = original;
+    await pool.end();
+  }
+  assert.match(String(logged[0]?.[0]), /idle connection was lost/);
+});
+
+/** Answers after delayMs (and calls answered), or never when delayMs is null. */
+function slowServer(delayMs: number | null, answered: () => void = () => undefined): Server {
+  return createServer((_req, res) => {
+    if (delayMs === null) return;
+    setTimeout(() => res.end('done', answered), delayMs);
+  });
+}
+
+test('on a stop signal, requests in flight finish, the tick and the database close, and new connections are refused', async () => {
+  const steps: string[] = [];
+  const server = slowServer(300, () => steps.push('request answered'));
+  const port = await listenLoopback(server);
+  let exitCode: number | null = null;
+  const shutdown = gracefulShutdown(server, {
+    stopTick: async () => {
+      await new Promise((r) => setTimeout(r, 50));
+      steps.push('tick stopped');
+    },
+    closeDb: async () => {
+      steps.push('db closed');
+    },
+    timeoutMs: 5_000,
+    exit: (code) => {
+      exitCode = code;
+    },
+  });
+  const inFlight = fetch(`http://127.0.0.1:${port}/`, { headers: { connection: 'close' } });
+  await new Promise((r) => setTimeout(r, 50));
+  const stopping = shutdown('SIGTERM');
+  void shutdown('SIGTERM'); // a second signal changes nothing
+  const res = await inFlight;
+  assert.equal(await res.text(), 'done', 'the request in flight was answered');
+  await stopping;
+  assert.deepEqual(steps, ['tick stopped', 'request answered', 'db closed']);
+  assert.equal(exitCode, 0);
+  await assert.rejects(fetch(`http://127.0.0.1:${port}/`), 'no new connections');
+});
+
+test('a request still running at the shutdown deadline is cut off and the process exits 1', async () => {
+  const server = slowServer(null);
+  const port = await listenLoopback(server);
+  let dbClosed = false;
+  let exitCode: number | null = null;
+  const shutdown = gracefulShutdown(server, {
+    stopTick: async () => undefined,
+    closeDb: async () => {
+      dbClosed = true;
+    },
+    timeoutMs: 200,
+    exit: (code) => {
+      exitCode = code;
+    },
+  });
+  const stuck = fetch(`http://127.0.0.1:${port}/`).catch(() => 'cut off');
+  await new Promise((r) => setTimeout(r, 50));
+  const started = Date.now();
+  await shutdown('SIGTERM');
+  assert.ok(Date.now() - started < 2_000, 'stopped at the deadline');
+  assert.equal(await stuck, 'cut off');
+  assert.equal(dbClosed, true);
+  assert.equal(exitCode, 1);
 });
