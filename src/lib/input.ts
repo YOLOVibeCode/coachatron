@@ -45,6 +45,13 @@ export function dollarsToCents(raw: string, range: Range): number | null {
   return cents >= range.min && cents <= range.max ? cents : null;
 }
 
+/** "18:30" (or "18:30:00", as a time field can send it) → "18:30" when it
+ * is a time on a 24-hour clock; "25:99", "6pm" and the rest → null. */
+export function clockTime(raw: string): string | null {
+  const match = /^([01]\d|2[0-3]):([0-5]\d)(?::[0-5]\d(?:\.\d{1,3})?)?$/.exec(raw.trim());
+  return match ? `${match[1]}:${match[2]}` : null;
+}
+
 /** A row id from a URL or a form field: a whole number from 1 up to what an
  * integer column holds. */
 export function rowId(raw: unknown): number | null {

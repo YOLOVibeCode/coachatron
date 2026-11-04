@@ -50,7 +50,7 @@ import { coachNav, html, oneTimeCodeNote, page, raw, smsConsentCheckbox } from '
 import { cancelReach, cancelScheduledSession, dropInCreditNote, previewSessionCancel, type CancelReach } from '../domain/cancelSession.js';
 import { DEFAULT_TZ, formatCoachDollars, formatLocal, formatTimeRange, isValidTimeZone } from '../lib/time.js';
 import { getPackagesForCoach, getPlansForCoach, createPackage, createPlan, takesSpotSql } from '../domain/pricing.js';
-import { dollarsToCents, LIMITS, rowId, wholeNumber } from '../lib/input.js';
+import { clockTime, dollarsToCents, LIMITS, rowId, wholeNumber } from '../lib/input.js';
 import {
   canWaive,
   CREDIT_WITHDRAWN_SQL,
@@ -856,17 +856,38 @@ coachRouter.post('/app/session-types/:id/generate-week', requireAuth, async (req
 
   const body = req.body as Record<string, unknown>;
   const locationText = field(body, 'location') || null;
+  const current = await listWeeklySlots(db, typeId);
+  const refuse = (message: string) => res.status(422).send(renderWeeklyTimes(typeRows.rows[0], current, 0, message));
   const slots: WeeklySlot[] = [];
   for (let i = 0; i < 7; i += 1) {
     const checked = field(body, `day_${i}`) === '1';
-    const timeLocal = field(body, `time_${i}`);
-    if (checked && /^\d{2}:\d{2}$/.test(timeLocal)) {
-      slots.push({ weekday: i, timeLocal, locationText });
+    const raw = field(body, `time_${i}`);
+    if (!checked || !raw) continue;
+    const timeLocal = clockTime(raw);
+    if (!timeLocal) {
+      refuse(`${WEEKDAY_LABELS[i]}: use a time from 00:00 to 23:59.`);
+      return;
     }
+    slots.push({ weekday: i, timeLocal, locationText });
   }
 
   if (slots.length === 0) {
-    res.status(422).send(renderWeeklyTimes(typeRows.rows[0], await listWeeklySlots(db, typeId), 0, 'Pick at least one day and time.'));
+    refuse('Pick at least one day and time.');
+    return;
+  }
+
+  // A weekday and time the type already has stays as it is, so a new place
+  // for it would not be saved: say so instead of adding the rest.
+  const elsewhere = slots.flatMap((slot) => {
+    const have = current.find((c) => c.weekday === slot.weekday && c.time_local === slot.timeLocal);
+    return have && locationText && (have.location_text ?? '') !== locationText ? [have] : [];
+  });
+  if (elsewhere.length > 0) {
+    const which = elsewhere
+      .map((c) => `${WEEKDAY_LABELS[c.weekday]} ${c.time_local}${c.location_text ? ` (at ${c.location_text})` : ''}`)
+      .join(', ');
+    const are = elsewhere.length === 1 ? 'is already a weekly time and keeps its place' : 'are already weekly times and keep their places';
+    refuse(`${which} ${are}, so nothing was added.`);
     return;
   }
 
@@ -1112,7 +1133,7 @@ function renderRunningCascades(cascades: RunningCascade[]) {
   return html`${cascades.map(
     (c) => html`<div class="card overflow-running">
       <p>Asking your roster for ${OVERFLOW_JOB[c.kind]} for <strong>${c.label}</strong>.
-        ${c.offeredTo ? `Offered to ${c.offeredTo.name} until ${clockTime(c.offeredTo.expiresAt, c.tz)}.` : ''}</p>
+        ${c.offeredTo ? `Offered to ${c.offeredTo.name} until ${clockInZone(c.offeredTo.expiresAt, c.tz)}.` : ''}</p>
       ${c.unreachable.length > 0
         ? html`<p class="muted">Not asked, because they can't get texts yet. Send each their link to opt in:</p>
             <ul class="unreachable">
@@ -1124,7 +1145,7 @@ function renderRunningCascades(cascades: RunningCascade[]) {
 }
 
 /** "6:20 PM" in the session's zone. */
-function clockTime(isoUtc: string, tz: string): string {
+function clockInZone(isoUtc: string, tz: string): string {
   return new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit' }).format(new Date(isoUtc));
 }
 
