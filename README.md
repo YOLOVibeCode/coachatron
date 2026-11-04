@@ -313,13 +313,13 @@ refuses numbers outside `+1` (US and Canada, the destinations priced
 near $0.0083 a segment); and stops at 300 texts per coach per local day,
 2,000 per coach per month, 400 per active coach per day for the product
 (never below 500), and 5 sign-in codes per number or email per day. Requests
-that send a code, opt in at `/sms`, join a waitlist, start a booking, or use
-the landing page's box are also limited per client address
+that send a code, opt in at `/sms`, join a waitlist, start or move a booking,
+or use the landing page's box are also limited per client address
 (`src/domain/requestLimits.ts`). Texts set off by people who are not signed
-in (sign-in codes, start links, opt-in confirmations, and booking and
-waitlist texts to a number never texted before) also share an app-wide
-ceiling, whatever address they come from: 30 an hour and 100 a UTC day, and
-none once fewer than 100 of the product's day are left, so reminders and
+in (sign-in codes, start links, opt-in confirmations, and booking, moved
+booking and waitlist texts to a number never texted before) also share an
+app-wide ceiling, whatever address they come from: 30 an hour and 100 a UTC
+day, and none once fewer than 100 of the product's day are left, so reminders and
 replies to people already texted still go (`SMS_VISITOR_HOURLY_CAP`,
 `SMS_VISITOR_DAILY_CAP`, `SMS_DAILY_RESERVE`). Each such text takes its
 place under the ceiling before it goes (its row is written `reserved`, under

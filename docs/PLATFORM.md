@@ -240,9 +240,11 @@ SPEC.md §8.1.
   refund of that payment locks them), and only then is the booking's state
   checked. Room is counted as a booking counts it (`countTakenSpots`,
   `countKeptForWaitlist`). Only `booking.session_id` changes: the manage
-  link, payment and credit stay, and no payment call goes to the relay. The
-  parent's confirmation (template `booking-moved`) and any waitlist offer
-  for the freed spot are the only messages. Moves are limited per address
+  link, payment, credit and recorded price (`price_cents`, which Money
+  counts in the new session's week) stay, and no payment call goes to the
+  relay. The parent's confirmation (template `booking-moved`, under the
+  booking confirmation's ceilings, the visitor ceiling included) and any
+  waitlist offer for the freed spot are the only messages. Moves are limited per address
   (`BOOKING_MOVE_LIMITS`: 10 an hour, 30 a day) and per booking from any
   address (5 a day), and the confirmation is capped at 10 a day per number
   and per email address (`MOVED_CONFIRMATIONS_DAILY_MAX_PER_CONTACT`), so
@@ -542,9 +544,9 @@ hourly limit only while it has a live code. The code a parent asks for at
 checkout to use session credits follows the same rules, but is a code of its
 own: it never signs anyone in, and asking for it leaves a sign-in code
 working. Texts set off by someone not signed in (sign-in codes, start links,
-opt-in confirmations, and booking and waitlist texts to a number never
-texted before) also count against an app-wide ceiling whatever address they
-come from (`SMS_VISITOR_HOURLY_CAP`, `SMS_VISITOR_DAILY_CAP`,
+opt-in confirmations, and booking, moved booking and waitlist texts to a
+number never texted before) also count against an app-wide ceiling whatever
+address they come from (`SMS_VISITOR_HOURLY_CAP`, `SMS_VISITOR_DAILY_CAP`,
 `SMS_DAILY_RESERVE`); past it they wait like a relay 429 (`busy`), and the
 form says to try later or to use email. Each takes its place before it goes
 (a `reserved` row in `message_log`, written under a transaction lock), so

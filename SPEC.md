@@ -216,10 +216,13 @@ one-field-per-screen.
    move once it is refunded or cancelled, while a refund of its payment is on
    its way, or when a child its payment also paid for is no longer booked.
    The parent gets the confirmation again with the new time (a text with
-   their consent, an email to an address they gave), the 24-hour reminder
-   follows the new time, and the coach sees the move on Session detail of
-   both sessions, where a parent's cancel shows too. One booking moves at
-   most 5 times a day and one address at most 10 times an hour (30 a day),
+   their consent, an email to an address they gave, under the same ceilings
+   as the first one: for a booking nobody paid for, a text to a number never
+   texted before counts against the app-wide visitor ceiling), the booking
+   keeps the price it recorded, the 24-hour reminder follows the new time,
+   and the coach sees the move on Session detail of both sessions, where a
+   parent's cancel shows too. One booking moves at most 5 times a day and
+   one address at most 10 times an hour (30 a day),
    and a number or email address gets at most 10 "moved" confirmations a
    day, so moving back and forth never uses up the coach's daily text
    ceiling (§10), which every family of the coach shares. Inside the window
