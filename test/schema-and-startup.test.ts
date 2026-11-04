@@ -55,7 +55,7 @@ test('bookings are indexed by session and texts by provider id, and the schema f
 });
 
 async function runChecksMigration(db: Awaited<ReturnType<typeof freshDb>>): Promise<void> {
-  const sql = readFileSync(new URL('../src/db/migrations/0019_checks_and_indexes.sql', import.meta.url), 'utf8')
+  const sql = readFileSync(new URL('../src/db/migrations/0026_checks_and_indexes.sql', import.meta.url), 'utf8')
     .split('\n')
     .filter((line) => !line.trim().startsWith('--'))
     .join('\n');
@@ -67,7 +67,7 @@ async function runChecksMigration(db: Awaited<ReturnType<typeof freshDb>>): Prom
 test('rows stored before the checks can still be changed: values the checks refuse are moved to the nearest one they take', async () => {
   const db = await freshDb();
   const seed = await seedCoachWithSession(db);
-  // As a database from before migration 0019 could hold them.
+  // As a database from before migration 0026 could hold them.
   for (const [table, constraint] of [
     ['package', 'package_expires_days_positive'],
     ['session', 'session_capacity_override_positive'],

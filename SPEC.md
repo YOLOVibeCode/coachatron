@@ -640,7 +640,7 @@ message_log(id, to_phone, template, body, provider_id, sent_at, status)
 `credit.contact_phone` is the join key for a buyer, by design (§9.2). Normalize
 to E.164 on write.
 
-Added since the sketch (migrations 0013–0025): `request_limit` (fixed-window
+Added since the sketch (migrations 0013–0026): `request_limit` (fixed-window
 counts per client address, phone, or email) and `otp_code.attempts`;
 `coach.email_verified_at`; `coach_payments` (whether the coach can take
 charges, and the payment texts owed) and `payments_link`;
@@ -656,13 +656,13 @@ booking's status can be `refunded`. Migration 0020 adds `credit.refund_id`
 `roster_member.optin_token`; `waitlist.contact_email`, `state`,
 `offer_booking_id`, `send_tries` and `retry_at`; `coach.cancel_window_hours`
 and `children_per_booking`, `booking.late_cancel` and `waived_at`; and
-`booking.pass_id` (the children of one booking pass).
-Migration 0019 adds CHECK constraints for what the forms
-already check (capacity and duration above zero, no negative price or
-credit balance, a package expiry above zero), after moving any stored value
-they refuse to the nearest one they take (a package expiry of 0 days, which
-already meant none, becomes null), and indexes on the columns the pages, the
-tick and the send path filter on, `booking.session_id` first.
+`booking.pass_id` (the children of one booking pass). Migration 0026 adds
+CHECK constraints for what the forms already check (capacity and duration
+above zero, no negative price or credit balance, a package expiry above
+zero), after moving any stored value they refuse to the nearest one they
+take (a package expiry of 0 days, which already meant none, becomes null),
+and indexes on the columns the pages, the tick and the send path filter on,
+`booking.session_id` first.
 
 Two column names predate the move to Stripe and were kept: `square_merchant_id`
 is unused (a coach reaches their Stripe account through

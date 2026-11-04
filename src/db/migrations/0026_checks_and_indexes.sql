@@ -67,7 +67,8 @@ alter table coach add constraint coach_fee_bps_range check (fee_bps between 0 an
 
 -- Indexes on the columns pages, the tick and the send path filter on. The
 -- public page, the capacity check, reminders and Money all read bookings by
--- session; a delivery report finds its text by provider id.
+-- session; a delivery report finds its text by provider id. The waitlist
+-- is read by session through waitlist_session_state (0022).
 create index if not exists booking_session_status on booking (session_id, status);
 create index if not exists booking_contact_phone on booking (contact_phone);
 create index if not exists session_type_starts on session (session_type_id, starts_at_utc);
@@ -81,7 +82,6 @@ create index if not exists roster_member_coach on roster_member (coach_id, prior
 create index if not exists roster_member_phone on roster_member (phone);
 create index if not exists offer_session on offer (session_id);
 create index if not exists offer_roster_member on offer (roster_member_id);
-create index if not exists waitlist_session on waitlist (session_id);
 create index if not exists weekly_slot_type on weekly_slot (session_type_id);
 create index if not exists overflow_ask_session on overflow_ask (session_id);
 create index if not exists assistant_pending_coach on assistant_pending (coach_id);
