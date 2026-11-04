@@ -193,14 +193,6 @@ function paidAt(event: StoreEvent): Date {
 }
 
 async function handlePaid(db: DbClient, event: StoreEvent, eventId: string): Promise<void> {
-  // A test-mode payment moved no real money. In production it books
-  // nothing and gives no credit, unless test payments are allowed there
-  // (ALLOW_TEST_PAYMENTS); nothing reached the coach, so nothing is kept
-  // for them to resolve. Elsewhere it is handled like any payment.
-  if (!testPaymentsAllowed() && relayMode(event.mode) !== 'live') {
-    console.warn(`store: ${relayMode(event.mode) ?? 'unknown'}-mode paid event ${eventId} not applied in ${appEnv()}`);
-    return;
-  }
   const parsed = parseBuyerRef(event.buyer?.userId);
   const paymentRef = event.refs?.paymentId || event.refs?.orderId || event.id || eventId;
   const amount = typeof event.money?.amountCents === 'number' ? event.money.amountCents : null;
@@ -345,6 +337,18 @@ async function onSellerEvent(event: StoreEvent): Promise<void> {
   else await refreshPaymentsStatus(db, coach);
 }
 
+/** A test-mode payment, refund or dispute moved no real money. In
+ * production it is not applied: nothing is booked, no credit is given, and
+ * nothing shows on Money, unless test payments are allowed there
+ * (ALLOW_TEST_PAYMENTS). It is logged and answered 2xx without being
+ * claimed, so a replay after that setting changes is handled. Elsewhere it
+ * is handled like any event. */
+function testMoneyRefused(event: StoreEvent, eventId: string): boolean {
+  if (testPaymentsAllowed() || relayMode(event.mode) === 'live') return false;
+  console.warn(`store: ${relayMode(event.mode) ?? 'unknown'}-mode ${String(event.type ?? 'event')} ${eventId} not applied in ${appEnv()}`);
+  return true;
+}
+
 /** Runs a store event's handler once: the event is claimed in the
  * database first (`store_event`), so a redelivery or a restart never
  * handles it twice. While another delivery is handling it, the app answers
@@ -357,6 +361,7 @@ function handledOnce(
   return async (event, context) => {
     const db = getDb();
     const eventId = event.id || headerValue(context.headers, 'x-relay-event-id') || fallbackId(event) || `unidentified:${randomUUID()}`;
+    if (testMoneyRefused(event, eventId)) return;
     const claim = await claimEvent(db, eventId, String(event.type ?? ''));
     if (claim === 'done') return;
     // Not a 2xx, so the relay delivers it again later: by then it is either

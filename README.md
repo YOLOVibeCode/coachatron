@@ -155,7 +155,7 @@ To exercise real Connect Hub, SMS, and email against Noctusoft `ns` (not used in
 | `STORE_WEBHOOK_URL` | Optional. The URL store events are signed for, checked on `/webhooks/store`; defaults to `APP_BASE_URL` + `/webhooks/store` |
 | `RELAY_APP_ENV` | Set to `dev` so relay email is captured (smtp4dev) instead of delivered |
 | `APP_ENV` | `development`, `uat` or `production`; Railway's environment name when unset. Shown on `/health` |
-| `ALLOW_TEST_PAYMENTS` | Production only, default off. Off: a test-mode paid event books nothing and gives no credit, and a coach whose payment account is a test one cannot take bookings. `1` or `true` lets production take test payments. Other environments always take them |
+| `ALLOW_TEST_PAYMENTS` | Production only, default off. Off: a test-mode payment, refund or dispute event is not applied (no booking, no credit), and a coach whose payment account is a test one cannot take bookings. `1` or `true` lets production take test payments. Other environments always take them |
 | `SMS_VISITOR_HOURLY_CAP` | Texts set off by people who are not signed in, across the app, per hour (default 30): see [Texting ceilings](#texting-ceilings) |
 | `SMS_VISITOR_DAILY_CAP` | The same per UTC day (default 100) |
 | `SMS_DAILY_RESERVE` | Texts kept back from the product's day for everything else (default 100): visitor texts stop once fewer than this are left |
@@ -213,7 +213,8 @@ public page does not ask the relay on every view.
 
 The relay marks each payment and each coach's payment account test or live.
 In production (`APP_ENV=production`) only live money counts: a test-mode
-paid event books nothing and gives no credit (it is logged), and a coach
+paid, refund or dispute event is not applied (it books nothing, gives no
+credit and shows nothing on Money; it is logged), and a coach
 whose account is a test one shows **Booking opens soon** and is told so on
 Money, until the account is live or `ALLOW_TEST_PAYMENTS` is set. The
 production relay row is test-only today, so production booking stays closed

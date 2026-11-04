@@ -137,6 +137,8 @@ export async function postPaymentEvent(
     disputeId?: string | null;
     eventId?: string;
     sellerKey?: string;
+    /** Test or live money; test by default. */
+    mode?: 'test' | 'live';
   },
 ): Promise<Response> {
   const callbackUrl = `${base}/webhooks/store`;
@@ -149,7 +151,7 @@ export async function postPaymentEvent(
     version: 1,
     store: `coachatron@${args.sellerKey ?? 'seller'}`,
     product: 'coachatron',
-    mode: 'test',
+    mode: args.mode ?? 'test',
     occurredAt: new Date().toISOString(),
     buyer: { userId: null, email: null },
     item: null,

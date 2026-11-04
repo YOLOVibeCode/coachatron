@@ -5,7 +5,7 @@ import { withServer } from './helpers/server.js';
 import { withRelay } from './helpers/relay.js';
 import { seedCoachWithSession } from './helpers/fixtures.js';
 import { bookOnline, postCheckout } from './helpers/booking.js';
-import { buyerFromLocation, postSellerEvent, postStorePaid } from './helpers/store-event.js';
+import { buyerFromLocation, postPaymentEvent, postSellerEvent, postStorePaid } from './helpers/store-event.js';
 import { zoneAt } from './helpers/clock.js';
 import { createCoachSession, getConnectRecipientKey } from '../src/domain/auth.js';
 import { sendDueReadyTexts } from '../src/domain/payments.js';
@@ -70,6 +70,16 @@ test('in production a test-mode payment books nothing and gives no credit; a liv
       assert.equal((await db.query('select id from payment_attention')).rows.length, 0, 'no money reached the coach, so nothing to resolve');
 
       await withEnv(PRODUCTION, async () => {
+        // Nor does a test-mode dispute or refund show on Money.
+        const dispute = await postPaymentEvent(base, {
+          type: 'marketplace.purchase.disputed',
+          paymentId: 'ch_test_1',
+          amountCents: 3500,
+          disputeId: 'dp_test_1',
+          sellerKey: getConnectRecipientKey(seed.coach),
+        });
+        assert.equal(dispute.status, 200);
+        assert.equal((await db.query('select id from payment_dispute')).rows.length, 0);
         assert.equal((await postStorePaid(base, { userId: dropInUser, amountCents: 3500, paymentId: 'ch_live_1', mode: 'live' })).status, 200);
       });
       const booked = await db.query<{ athlete_name: string }>("select athlete_name from booking where session_id = $1 and status = 'booked'", [
