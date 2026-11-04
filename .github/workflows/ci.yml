@@ -48,6 +48,44 @@ jobs:
       - name: Build
         run: npm run build
 
+  # Two transactions at once on real Postgres (test/pg/): row locks and lock
+  # waits, which PGlite cannot show because it runs one transaction at a
+  # time. npm test skips these without TEST_DATABASE_URL. Not a required
+  # check. The database is a throwaway service container with no password.
+  postgres:
+    name: Postgres
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      TEST_DATABASE_URL: postgres://postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Race tests
+        run: npm run test:pg
+
   # Early warning, never blocking: the newest LTS and the newest Current
   # release. When the next Node line becomes LTS, the lts/* job tests it
   # before anyone moves .nvmrc and engines.

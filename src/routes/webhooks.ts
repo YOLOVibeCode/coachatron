@@ -299,8 +299,10 @@ smsInboundRouter.post('/', async (req, res) => {
           body: `Got it. Tap to see your week and go live: ${APP_BASE_URL}/start/${token}`,
           coachId: null,
           template: 'auto-reply',
-          // A start link answers a number we do not know yet.
-          visitor: 'always',
+          // A start link answers a number we do not know yet. It goes only
+          // to the number that texted, so it has a budget of its own rather
+          // than the web forms' visitor ceiling.
+          visitor: 'inbound-reply',
         },
         now,
       );

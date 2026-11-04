@@ -44,12 +44,15 @@ export const SMS_COACH_DAILY_CAP = 300;
 export const SMS_COACH_MONTHLY_CAP = 2000;
 export const SMS_PRODUCT_DAILY_PER_COACH = 400;
 export const SMS_PRODUCT_DAILY_FLOOR = 500;
-/** Texts set off by someone who is not signed in (sign-in codes, start
- * links, opt-in confirmations, booking and waitlist texts to a number never
- * texted before), across the whole app: at most `hourly` in an hour and
- * `daily` in a UTC day, and none once fewer than `reserve` texts are left
- * in the product's day, so reminders and replies to people already texted
- * still go. SMS_VISITOR_HOURLY_CAP, SMS_VISITOR_DAILY_CAP and
+/** Texts set off by someone who is not signed in, across the whole app: at
+ * most `hourly` in an hour and `daily` in a UTC day, and none once fewer
+ * than `reserve` texts are left in the product's day, so reminders and
+ * replies to people already texted still go. Two budgets are counted
+ * apart, each with these limits: the web forms' (sign-in codes, opt-in
+ * confirmations, booking and waitlist texts to a number never texted
+ * before), and the start links that answer a text from a number we do not
+ * know, which go only to the number that texted, so web traffic cannot
+ * hold them back. SMS_VISITOR_HOURLY_CAP, SMS_VISITOR_DAILY_CAP and
  * SMS_DAILY_RESERVE change them. Read at call time so tests can set them. */
 export function visitorTextLimits(): { hourly: number; daily: number; reserve: number } {
   return {

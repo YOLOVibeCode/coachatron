@@ -55,6 +55,16 @@ text, book, checkout by its token, signed buy link, payment event, the
 confirmation with the manage link, manage page), against the fake relay and a
 fake model.
 
+Race tests: `test/pg/` runs two transactions at the same moment on real
+Postgres (two parents going for the last spot, a backup coach accepting
+while the tick expires the offer, a refund reported while a parent moves
+the booking), since PGlite runs one transaction at a time and cannot show
+a lock wait. They run only when `TEST_DATABASE_URL` names a Postgres server
+they may create a throwaway database on, and are skipped in `npm test`
+otherwise. `TEST_DATABASE_URL=postgres://postgres@localhost:5432/postgres
+npm run test:pg` runs just them; CI's `Postgres` job does that against a
+`postgres:16` service container.
+
 `npm run migrate` applies the SQL migrations in `src/db/migrations/` to
 `DATABASE_URL` if you've set one (Postgres in production); it's optional for
 local development, since `npm run dev` and `npm test` both work against
@@ -79,10 +89,11 @@ production (`APP_ENV` other than `production`) every response says
 `X-Robots-Tag: noindex` and `/robots.txt` turns every crawler away; in
 production it keeps crawlers off the coach's screens and every private link.
 An address nothing answers gets the app's Not found page, and a request the
-app cannot read (too large, a body that does not parse, a bad percent-escape)
-gets its branded error page with one warning line in the log. Any other
-error, the relay refusing a text included, logs its stack once at error level,
-and the visitor gets a branded 500 page that says nothing about it.
+app cannot read (too large, a body that does not parse, a bad percent-escape,
+a NUL character) gets its branded error page with one line on stdout, which
+Railway files at info level rather than error. Any other error, the relay
+refusing a text included, logs its stack once at error level, and the
+visitor gets a branded 500 page that says nothing about it.
 
 ## Status
 
@@ -156,7 +167,7 @@ To exercise real Connect Hub, SMS, and email against Noctusoft `ns` (not used in
 | `RELAY_APP_ENV` | Set to `dev` so relay email is captured (smtp4dev) instead of delivered |
 | `APP_ENV` | `development`, `uat` or `production`; Railway's environment name when unset. Shown on `/health` |
 | `ALLOW_TEST_PAYMENTS` | Production only, default off. Off: a test-mode payment, refund or dispute event is not applied (no booking, no credit), and a coach whose payment account is a test one cannot take bookings. `1` or `true` lets production take test payments. Other environments always take them |
-| `SMS_VISITOR_HOURLY_CAP` | Texts set off by people who are not signed in, across the app, per hour (default 30): see [Texting ceilings](#texting-ceilings) |
+| `SMS_VISITOR_HOURLY_CAP` | Texts set off by people who are not signed in, across the app, per hour (default 30), for each of two budgets counted apart: web forms, and start links that answer a text: see [Texting ceilings](#texting-ceilings) |
 | `SMS_VISITOR_DAILY_CAP` | The same per UTC day (default 100) |
 | `SMS_DAILY_RESERVE` | Texts kept back from the product's day for everything else (default 100): visitor texts stop once fewer than this are left |
 
@@ -316,13 +327,18 @@ near $0.0083 a segment); and stops at 300 texts per coach per local day,
 that send a code, opt in at `/sms`, join a waitlist, start or move a booking,
 or use the landing page's box are also limited per client address
 (`src/domain/requestLimits.ts`). Texts set off by people who are not signed
-in (sign-in codes, start links, opt-in confirmations, and booking, moved
+in on a web form (sign-in codes, opt-in confirmations, and booking, moved
 booking and waitlist texts to a number never texted before) also share an
 app-wide ceiling, whatever address they come from: 30 an hour and 100 a UTC
 day, and none once fewer than 100 of the product's day are left, so reminders and
 replies to people already texted still go (`SMS_VISITOR_HOURLY_CAP`,
-`SMS_VISITOR_DAILY_CAP`, `SMS_DAILY_RESERVE`). Each such text takes its
-place under the ceiling before it goes (its row is written `reserved`, under
+`SMS_VISITOR_DAILY_CAP`, `SMS_DAILY_RESERVE`). The start link that answers
+a text from a number we do not know has a budget of its own with the same
+limits, counted apart (`message_log.inbound_reply`): it goes only to the
+number that texted, and each number gets one reply a day, so web traffic
+cannot hold it back and it cannot use up the forms' texts. It stops at the
+same reserve, under the product's daily ceiling. Each such text takes its
+place under its ceiling before it goes (its row is written `reserved`, under
 a lock, then marked sent or failed), so requests that arrive together cannot
 all pass the same count. A form that hits it says to try again later, or to
 use email where it can; a waitlist offer goes by email or waits for a later

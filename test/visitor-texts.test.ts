@@ -17,12 +17,14 @@ import { offerOpenSpots } from '../src/domain/waitlist.js';
 import { visitorTextLimits } from '../src/config.js';
 import type { DbClient } from '../src/db/client.js';
 
-/** Texts set off by people who are not signed in (sign-in codes, start
- * links, opt-in confirmations, booking and waitlist texts to numbers never
+/** Texts set off by people who are not signed in from a web form (sign-in
+ * codes, opt-in confirmations, booking and waitlist texts to numbers never
  * texted before) share an app-wide hourly and daily ceiling, and stop while
  * a reserve of the product's day is left for reminders and replies. A form
  * that hits it says to try again later, or to use email where it can. A
- * signed-in coach's texts are not counted. */
+ * signed-in coach's texts are not counted. The start link that answers a
+ * text from a number we do not know has a budget of its own, with the same
+ * reserve, since it goes only to the number that texted. */
 
 async function withEnv(vars: Record<string, string | undefined>, fn: () => Promise<void>): Promise<void> {
   const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
@@ -73,9 +75,10 @@ test('at the hourly ceiling a sign-in by text is told to try later or use email;
 
         assert.equal((await form(base, '/signin/otp', { contact: 'pat@example.com' }, from('203.0.113.4'))).status, 303, 'email still works');
 
-        // A text from a number we do not know gets no start link now.
+        // A text from a number we do not know still gets its start link:
+        // that reply has a budget of its own.
         assert.equal((await postSignedSms(base, { From: '+12145550104', Body: 'Tuesdays at 6pm, an hour, $35' })).status, 200);
-        assert.deepEqual(await statuses(db, '+12145550104'), ['capped-visitor-hourly']);
+        assert.deepEqual(await statuses(db, '+12145550104'), ['sent']);
 
         // A signed-in coach adding a mobile is not a visitor.
         const added = await form(base, '/app/phone', { phone: '2145550105', sms_consent: '1' }, { cookie });
@@ -247,14 +250,17 @@ test('direct sends at the same moment take their places under the ceiling one at
   });
 });
 
-test('a new coach whose start link the ceiling held gets it when they text again after it clears', async () => {
+test('a new coach whose start link the inbound-reply ceiling held gets it when they text again after it clears', async () => {
   await withEnv({ SMS_VISITOR_HOURLY_CAP: '1' }, async () => {
     await withRelay(async (relay) => {
       const db = await freshDb();
       const links = () => relay.sms.filter((m) => m.to === '+12145550602' && /\/start\//.test(m.body)).length;
       await withServer(async (base) => {
-        // Someone else's sign-in code takes the hour's one visitor text.
-        assert.equal((await form(base, '/signin/otp', { contact: '2145550601' }, from('203.0.113.9'))).status, 303);
+        // A sign-in code takes the forms' one text of the hour, and has no
+        // say over replies; another new coach's start link takes the
+        // replies' one.
+        assert.equal((await form(base, '/signin/otp', { contact: '2145550600' }, from('203.0.113.9'))).status, 303);
+        await postSignedSms(base, { From: '+12145550601', Body: 'Mondays at 5pm, an hour, $30' });
         await postSignedSms(base, { From: '+12145550602', Body: 'Tuesdays at 6pm, an hour, $35' });
         assert.equal(links(), 0, 'held by the ceiling');
         // The hour clears (here: the ceiling goes up), and they text again.
@@ -265,7 +271,54 @@ test('a new coach whose start link the ceiling held gets it when they text again
         await postSignedSms(base, { From: '+12145550602', Body: 'Tuesdays at 6pm, an hour, $35' });
         assert.equal(links(), 1);
       });
-      assert.deepEqual(await statuses(db, '+12145550602'), ['capped-visitor-hourly', 'sent']);
+      assert.deepEqual(await statuses(db, '+12145550601'), ['sent']);
+      assert.deepEqual(await statuses(db, '+12145550602'), ['capped-inbound-reply-hourly', 'sent']);
+    });
+  });
+});
+
+test('web forms and inbound replies each keep their own budget, and both stop at the day\'s reserve', async () => {
+  await withEnv({ SMS_VISITOR_HOURLY_CAP: '1' }, async () => {
+    await withRelay(async (relay) => {
+      const db = await freshDb();
+      await withServer(async (base) => {
+        // The forms' one text of the hour, then the replies' one: neither
+        // holds the other back.
+        assert.equal((await form(base, '/signin/otp', { contact: '2145550801' }, from('203.0.113.81'))).status, 303);
+        await postSignedSms(base, { From: '+12145550802', Body: 'Tuesdays at 6pm, an hour, $35' });
+        assert.equal(relay.sms.filter((m) => m.to === '+12145550802' && /\/start\//.test(m.body)).length, 1);
+
+        // Each budget is now full on its own.
+        assert.equal((await form(base, '/signin/otp', { contact: '2145550803' }, from('203.0.113.83'))).status, 429);
+        await postSignedSms(base, { From: '+12145550804', Body: 'Tuesdays at 6pm, an hour, $35' });
+      });
+      const rows = await db.query<{ to_phone: string; status: string; visitor: boolean; inbound_reply: boolean }>(
+        'select to_phone, status, visitor, inbound_reply from message_log order by id',
+      );
+      assert.deepEqual(
+        rows.rows.map((r) => [r.to_phone, r.status, r.visitor, r.inbound_reply]),
+        [
+          ['+12145550801', 'sent', true, false],
+          ['+12145550802', 'sent', false, true],
+          ['+12145550803', 'capped-visitor-hourly', true, false],
+          ['+12145550804', 'capped-inbound-reply-hourly', false, true],
+        ],
+      );
+    });
+  });
+  // The product's day is 500 texts here; keep 499 back. One text to a coach
+  // leaves no room for a start link either.
+  await withEnv({ SMS_DAILY_RESERVE: '499' }, async () => {
+    await withRelay(async (relay) => {
+      const db = await freshDb();
+      const coach = await createCoach(db, { phone: '+12145550810', email: 'rae@example.com', name: 'Rae', tz: 'America/Chicago' });
+      await grantSmsConsent(db, '+12145550810');
+      assert.equal(await sendText(db, { to: '+12145550810', body: 'Coachatron: hello', coachId: coach.id, template: 'assistant' }), 'sent');
+      await withServer(async (base) => {
+        await postSignedSms(base, { From: '+12145550811', Body: 'Tuesdays at 6pm, an hour, $35' });
+      });
+      assert.equal(relay.sms.filter((m) => m.to === '+12145550811').length, 0);
+      assert.deepEqual(await statuses(db, '+12145550811'), ['capped-inbound-reply-reserve']);
     });
   });
 });

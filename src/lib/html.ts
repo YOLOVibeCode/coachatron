@@ -315,12 +315,16 @@ export function siteFooter(): SafeHtml {
   </footer>`;
 }
 
+/** In every page's head: the tab icon, served by src/routes/site.ts. */
+const FAVICON_LINK = '<link rel="icon" href="/favicon.svg" type="image/svg+xml">';
+
 export function page(title: string, body: SafeHtml): string {
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+${FAVICON_LINK}
 <title>${escapeHtml(title)} — Coachatron</title>
 <style>${POSTCARD_TOKENS_CSS}
   .site-footer { margin-top: 24px; font-size: 0.9rem; }
@@ -584,6 +588,7 @@ export function landingPage(title: string, description: string, body: SafeHtml):
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+${FAVICON_LINK}
 <title>${escapeHtml(title)}</title>
 <meta name="description" content="${escapeHtml(description)}">
 <meta property="og:title" content="${escapeHtml(title)}">

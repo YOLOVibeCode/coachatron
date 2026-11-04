@@ -670,7 +670,7 @@ message_log(id, to_phone, template, body, provider_id, sent_at, status)
 `credit.contact_phone` is the join key for a buyer, by design (§9.2). Normalize
 to E.164 on write.
 
-Added since the sketch (migrations 0013–0031): `request_limit` (fixed-window
+Added since the sketch (migrations 0013–0032): `request_limit` (fixed-window
 counts per client address, phone, or email) and `otp_code.attempts`;
 `coach.email_verified_at`; `coach_payments` (whether the coach can take
 charges, and the payment texts owed) and `payments_link`;
@@ -702,7 +702,10 @@ app-wide visitor ceiling; such a text is logged `reserved` before it goes,
 and counts from then on), and 0030 `coach_payments.test_mode` (whether the
 coach's payment account is a test one; production takes only live ones).
 Migration 0031 adds `booking_move` (each move a parent made from a manage
-link: the booking, the session it left and the one it joined).
+link: the booking, the session it left and the one it joined), and 0032
+`message_log.inbound_reply` (the start link that answers a text from a
+number we do not know, counted in its own app-wide budget, apart from the
+web forms' visitor ceiling).
 
 Two column names predate the move to Stripe and were kept: `square_merchant_id`
 is unused (a coach reaches their Stripe account through

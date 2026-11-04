@@ -26,6 +26,23 @@ export const ELSEWHERE_ROBOTS = `User-agent: *
 Disallow: /
 `;
 
+/** The tab icon: a cream "C" on the Postcard teal, small enough to send
+ * inline. Every page's head points to /favicon.svg; /favicon.ico answers
+ * the same picture for browsers and crawlers that ask for that name. */
+export const FAVICON_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">' +
+  '<rect width="64" height="64" rx="14" fill="#0e6b64"/>' +
+  '<path d="M44 22a14 14 0 1 0 0 20" fill="none" stroke="#f6e7d8" stroke-width="8" stroke-linecap="round"/>' +
+  '</svg>';
+
+/** A day: the icon rarely changes, and a new one shows by the next day. */
+const FAVICON_CACHE = 'public, max-age=86400';
+
+siteRouter.get(['/favicon.svg', '/favicon.ico'], (_req, res) => {
+  res.setHeader('Cache-Control', FAVICON_CACHE);
+  res.type('image/svg+xml').send(FAVICON_SVG);
+});
+
 siteRouter.get('/robots.txt', (_req, res) => {
   res.type('text/plain').send(isProductionSite() ? PRODUCTION_ROBOTS : ELSEWHERE_ROBOTS);
 });

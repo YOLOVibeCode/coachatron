@@ -253,6 +253,19 @@ export async function paymentsOpen(db: DbClient, coach: CoachRow, now: Date = ne
   return (await refreshPaymentsStatus(db, coach, now)) ?? false;
 }
 
+/** What a coach who cannot take payments yet has left to do, read from
+ * what is saved (no relay call): 'connect' before setup has started,
+ * 'finish' once the terms are accepted (setup started), and 'test-only'
+ * when charges work but on a test account, where only a live one takes
+ * payments. Schedule and Money word each state the same way. */
+export type PaymentsStep = 'connect' | 'finish' | 'test-only';
+
+export async function paymentsStep(db: DbClient, coachId: number): Promise<PaymentsStep> {
+  const row = await getPaymentsRow(db, coachId);
+  if (row?.charges_enabled === true && !chargesUsable(row)) return 'test-only';
+  return row?.started_at ? 'finish' : 'connect';
+}
+
 export async function markPaymentsStarted(db: DbClient, coachId: number, now: Date = new Date()): Promise<void> {
   await db.query(
     `insert into coach_payments (coach_id, started_at) values ($1, $2)
