@@ -8,6 +8,10 @@ export interface MoneySummary {
   outstandingCreditCount: number;
   nextWeekCount: number;
   nextWeekCents: number;
+  /** Payments refunded this week. A refunded booking is out of booked and
+   * collected, whichever week its session is in. */
+  refundedThisWeekCount: number;
+  refundedThisWeekCents: number;
 }
 
 const WEEKDAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -89,6 +93,20 @@ async function aggregateSessionSlots(db: DbClient, coachId: number, from: Date, 
   return { count: Number(result.rows[0]?.count ?? '0'), totalCents: Number(result.rows[0]?.total_cents ?? '0') };
 }
 
+/** A booking that was sold and not cancelled: still booked, or already
+ * marked attended or no-show. Marking attendance must not take a booking
+ * out of the coach's totals; a refund ('refunded') does. */
+export const EARNED_BOOKING_STATUSES = "('booked', 'attended', 'noshow')";
+
+/** A cancelled booking whose payment stayed with the coach: as session
+ * credit (the coach cancelled the session, before or after the payment
+ * came in, or the parent cancelled before the window), or used, because
+ * the parent cancelled inside the window (SPEC.md §9.5). The money reached
+ * the coach's account, so it counts as collected. `b` is the booking alias. */
+export function keptAsCreditSql(b: string): string {
+  return `(${b}.status = 'cancelled' and ${b}.gross_cents is not null and (${b}.credit_id is not null or ${b}.late_cancel))`;
+}
+
 /** Counts live bookings (not session slots) on sessions in a window - used
  * for "booked this week," which is about demand actually realized: three
  * athletes booked into one session slot is 3 booked, not 1. Cents is the
@@ -101,7 +119,7 @@ async function aggregateBookings(db: DbClient, coachId: number, from: Date, to: 
      join session s on s.id = b.session_id
      join session_type st on st.id = s.session_type_id
      where st.coach_id = $1
-       and b.status = 'booked'
+       and b.status in ${EARNED_BOOKING_STATUSES}
        and s.starts_at_utc >= $2
        and s.starts_at_utc < $3`,
     [coachId, from.toISOString(), to.toISOString()],
@@ -121,19 +139,20 @@ export async function summarizeMoney(db: DbClient, coachId: number, now: Date): 
   const nextWeekStart = addWeeksUtc(thisWeekStart, tz, 1);
   const weekAfterNextStart = addWeeksUtc(thisWeekStart, tz, 2);
 
-  const [booked, nextWeek, collected, outstanding] = await Promise.all([
+  const [booked, nextWeek, collected, outstanding, refunded] = await Promise.all([
     aggregateBookings(db, coachId, thisWeekStart, nextWeekStart),
     aggregateSessionSlots(db, coachId, nextWeekStart, weekAfterNextStart),
     // "Collected" is the actual gross amount charged (booking.gross_cents,
     // null/0 for a credit redemption that charged nothing new this time)
-    // for the same live bookings counted above.
+    // for the same live bookings counted above, plus payments the coach's
+    // cancel turned into credit.
     db.query<{ total_gross_cents: string }>(
       `select coalesce(sum(b.gross_cents), 0)::text as total_gross_cents
        from booking b
        join session s on s.id = b.session_id
        join session_type st on st.id = s.session_type_id
        where st.coach_id = $1
-         and b.status = 'booked'
+         and (b.status in ${EARNED_BOOKING_STATUSES} or ${keptAsCreditSql('b')})
          and s.starts_at_utc >= $2
          and s.starts_at_utc < $3`,
       [coachId, thisWeekStart.toISOString(), nextWeekStart.toISOString()],
@@ -145,6 +164,12 @@ export async function summarizeMoney(db: DbClient, coachId: number, now: Date): 
     db.query<{ total_remaining: string }>('select coalesce(sum(remaining), 0)::text as total_remaining from credit where coach_id = $1', [
       coachId,
     ]),
+    db.query<{ count: string; total_cents: string }>(
+      `select count(*)::text as count, coalesce(sum(amount_cents), 0)::text as total_cents
+       from refund
+       where coach_id = $1 and status = 'refunded' and refunded_at >= $2 and refunded_at < $3`,
+      [coachId, thisWeekStart.toISOString(), nextWeekStart.toISOString()],
+    ),
   ]);
 
   return {
@@ -154,5 +179,7 @@ export async function summarizeMoney(db: DbClient, coachId: number, now: Date): 
     outstandingCreditCount: Number(outstanding.rows[0]?.total_remaining ?? '0'),
     nextWeekCount: nextWeek.count,
     nextWeekCents: nextWeek.totalCents,
+    refundedThisWeekCount: Number(refunded.rows[0]?.count ?? '0'),
+    refundedThisWeekCents: Number(refunded.rows[0]?.total_cents ?? '0'),
   };
 }

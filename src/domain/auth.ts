@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import type { DbClient } from '../db/client.js';
 import { toE164 } from '../lib/phone.js';
+import { OTP_MAX_ATTEMPTS } from '../config.js';
 
 const OTP_TTL_MINUTES = 10;
 const SESSION_TTL_DAYS = 30;
@@ -9,10 +10,20 @@ export function normalizePhone(raw: string): string | null {
   return toE164(raw);
 }
 
-/** Lowercased and trimmed, or null when it does not look like an address. */
+const EMAIL_MAX_LENGTH = 254;
+
+/** Lowercased and trimmed, or null when it does not look like an address:
+ * something, one @, then a domain with a dot inside it. The length is
+ * checked first and the rest is plain string work, so a long or odd input
+ * costs one pass, never a backtracking regex. */
 export function normalizeEmail(raw: string): string | null {
   const email = raw.trim().toLowerCase();
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && email.length <= 254 ? email : null;
+  if (email.length === 0 || email.length > EMAIL_MAX_LENGTH) return null;
+  if (/\s/.test(email)) return null;
+  const at = email.indexOf('@');
+  if (at <= 0 || at !== email.lastIndexOf('@')) return null;
+  const domain = email.slice(at + 1);
+  return domain.slice(1, -1).includes('.') ? email : null;
 }
 
 /** Where a sign-in code goes. Text codes reach only +1 numbers, so email is
@@ -39,40 +50,111 @@ function asContact(target: string | Contact): Contact {
   return typeof target === 'string' ? { kind: 'phone', phone: target } : target;
 }
 
-export async function createOtp(db: DbClient, target: string | Contact): Promise<string> {
+/** A fresh 6-digit code. Nothing is stored until createOtp. */
+export function newOtpCode(): string {
+  return crypto.randomInt(100000, 1000000).toString();
+}
+
+function hashCode(code: string): string {
+  return crypto.createHash('sha256').update(code).digest('hex');
+}
+
+function otpColumn(contact: Contact): 'email' | 'phone' {
+  return contact.kind === 'email' ? 'email' : 'phone';
+}
+
+/** The key request limits count a phone or an email under. */
+export function contactKey(contact: Contact): string {
+  return `${contact.kind}:${contactValue(contact)}`;
+}
+
+/** Stores a sign-in code for this phone or email and ends every earlier
+ * code for it, so one code is live at a time. Call it once the code has
+ * gone out: a request the send limits refuse leaves no code behind.
+ * smsConsent keeps the texts box ticked with a text code, to be recorded
+ * when the code proves the number. */
+export async function createOtp(
+  db: DbClient,
+  target: string | Contact,
+  opts: { code?: string; smsConsent?: boolean } = {},
+): Promise<string> {
   const contact = asContact(target);
-  const code = crypto.randomInt(100000, 1000000).toString();
-  const codeHash = crypto.createHash('sha256').update(code).digest('hex');
+  const code = opts.code ?? newOtpCode();
   const expiresAt = new Date(Date.now() + OTP_TTL_MINUTES * 60 * 1000);
 
-  await db.query('insert into otp_code (phone, email, code_hash, expires_at) values ($1, $2, $3, $4)', [
+  await db.query(
+    `update otp_code set expires_at = now()
+     where ${otpColumn(contact)} = $1 and consumed_at is null and expires_at > now()`,
+    [contactValue(contact)],
+  );
+  await db.query('insert into otp_code (phone, email, code_hash, expires_at, sms_consent) values ($1, $2, $3, $4, $5)', [
     contact.kind === 'phone' ? contact.phone : null,
     contact.kind === 'email' ? contact.email : null,
-    codeHash,
+    hashCode(code),
     expiresAt.toISOString(),
+    contact.kind === 'phone' && opts.smsConsent === true,
   ]);
 
   return code;
 }
 
-/** Read-only check: does not consume the code. Callers must call consumeOtp
- * once the whole submission (including any first-time profile fields) is
- * known to be valid, so a profile validation failure does not burn a code. */
-export async function checkOtp(db: DbClient, target: string | Contact, code: string): Promise<number | null> {
+export type OtpCheck =
+  | { ok: true; id: number; smsConsent: boolean }
+  /** wrong: try again. used-up: too many wrong tries, ask for a new code.
+   * none: no live code (expired, used, or never sent). */
+  | { ok: false; reason: 'wrong' | 'used-up' | 'none' };
+
+/** Checks a code against the one live code for this phone or email. Does
+ * not consume it: callers call consumeOtp once the whole submission
+ * (including any first-time profile fields) is known to be valid, so a
+ * profile validation failure does not burn a code. Each wrong code counts
+ * against the live code, which stops working after OTP_MAX_ATTEMPTS. The
+ * try is counted before the comparison, so tries sent at once cannot get
+ * past the limit. */
+export async function checkOtp(db: DbClient, target: string | Contact, code: string): Promise<OtpCheck> {
   const contact = asContact(target);
-  const codeHash = crypto.createHash('sha256').update(code).digest('hex');
-  const column = contact.kind === 'email' ? 'email' : 'phone';
-  const result = await db.query<{ id: number }>(
-    `select id from otp_code
-     where ${column} = $1 and code_hash = $2 and expires_at > now() and consumed_at is null
-     order by id desc limit 1`,
-    [contactValue(contact), codeHash],
+  const column = otpColumn(contact);
+  const taken = await db.query<{ id: number; code_hash: string; sms_consent: boolean; attempts: number }>(
+    `update otp_code set attempts = attempts + 1
+     where id = (
+       select id from otp_code
+       where ${column} = $1 and consumed_at is null and expires_at > now()
+       order by id desc limit 1
+     ) and attempts < $2
+     returning id, code_hash, sms_consent, attempts`,
+    [contactValue(contact), OTP_MAX_ATTEMPTS],
   );
-  return result.rows.length > 0 ? result.rows[0].id : null;
+  const row = taken.rows[0];
+  if (!row) return { ok: false, reason: (await hasLiveOtp(db, contact)) ? 'used-up' : 'none' };
+  const given = Buffer.from(hashCode(code), 'hex');
+  const stored = Buffer.from(row.code_hash, 'hex');
+  if (given.length === stored.length && crypto.timingSafeEqual(given, stored)) {
+    // The right code is not a wrong try.
+    await db.query('update otp_code set attempts = attempts - 1 where id = $1', [row.id]);
+    return { ok: true, id: row.id, smsConsent: row.sms_consent };
+  }
+  return { ok: false, reason: row.attempts >= OTP_MAX_ATTEMPTS ? 'used-up' : 'wrong' };
 }
 
-export async function consumeOtp(db: DbClient, otpId: number): Promise<void> {
-  await db.query('update otp_code set consumed_at = now() where id = $1', [otpId]);
+/** Uses up a code checkOtp accepted. False when another request already
+ * used it, so the same code sent twice at once signs in only once. */
+export async function consumeOtp(db: DbClient, otpId: number): Promise<boolean> {
+  const result = await db.query<{ id: number }>(
+    'update otp_code set consumed_at = now() where id = $1 and consumed_at is null returning id',
+    [otpId],
+  );
+  return result.rows.length > 0;
+}
+
+/** True while this phone or email has a code that has not been used or
+ * expired, whether or not it still takes tries. */
+export async function hasLiveOtp(db: DbClient, target: string | Contact): Promise<boolean> {
+  const contact = asContact(target);
+  const live = await db.query<{ id: number }>(
+    `select id from otp_code where ${otpColumn(contact)} = $1 and consumed_at is null and expires_at > now() limit 1`,
+    [contactValue(contact)],
+  );
+  return live.rows.length > 0;
 }
 
 export async function createCoachSession(db: DbClient, coachId: number): Promise<string> {
@@ -88,6 +170,11 @@ export async function createCoachSession(db: DbClient, coachId: number): Promise
   return token;
 }
 
+/** Ends one signed-in session (one browser); others stay signed in. */
+export async function deleteCoachSession(db: DbClient, token: string): Promise<void> {
+  await db.query('delete from coach_session where token = $1', [token]);
+}
+
 export async function getCoachBySessionToken(db: DbClient, token: string): Promise<number | null> {
   const result = await db.query<{ coach_id: number }>(
     'select coach_id from coach_session where token = $1 and expires_at > now()',
@@ -101,35 +188,83 @@ export interface CoachRow {
   handle: string;
   name: string;
   email: string;
+  /** True once a code sent to the email was entered. Only a proved email
+   * signs in by email; one typed during a phone sign-up starts unproved. */
+  email_verified: boolean;
   /** Null for a coach who joined by email and has not added a mobile. */
   phone: string | null;
   tz: string;
   connect_recipient_key: string | null;
 }
 
+const COACH_COLUMNS =
+  'id, handle, name, email, email_verified_at is not null as email_verified, phone, tz, connect_recipient_key';
+
 export function getConnectRecipientKey(coach: Pick<CoachRow, 'handle' | 'connect_recipient_key'>): string {
   return coach.connect_recipient_key ?? coach.handle;
 }
 
 export async function findCoachByPhone(db: DbClient, phone: string): Promise<CoachRow | null> {
+  const result = await db.query<CoachRow>(`select ${COACH_COLUMNS} from coach where phone = $1`, [phone]);
+  return result.rows[0] ?? null;
+}
+
+/** The coach a relay seller event names: their Connect recipient key, which
+ * defaults to the handle. */
+export async function findCoachBySellerKey(db: DbClient, sellerKey: string): Promise<CoachRow | null> {
   const result = await db.query<CoachRow>(
-    'select id, handle, name, email, phone, tz, connect_recipient_key from coach where phone = $1',
-    [phone],
+    `select ${COACH_COLUMNS} from coach
+     where connect_recipient_key = $1 or (connect_recipient_key is null and handle = $1)
+     order by id limit 1`,
+    [sellerKey],
   );
   return result.rows[0] ?? null;
 }
 
+/** The coach who signs in with this email: only a proved address counts. */
 export async function findCoachByEmail(db: DbClient, email: string): Promise<CoachRow | null> {
   const result = await db.query<CoachRow>(
-    `select id, handle, name, email, phone, tz, connect_recipient_key from coach
-     where email <> '' and lower(email) = lower($1)`,
+    `select ${COACH_COLUMNS} from coach
+     where email <> '' and lower(email) = lower($1) and email_verified_at is not null`,
     [email],
   );
   return result.rows[0] ?? null;
 }
 
+/** Any coach with this email on their account, proved or not. An email
+ * belongs to one coach at a time. */
+export async function findCoachHoldingEmail(db: DbClient, email: string): Promise<CoachRow | null> {
+  const result = await db.query<CoachRow>(`select ${COACH_COLUMNS} from coach where email <> '' and lower(email) = lower($1)`, [
+    email,
+  ]);
+  return result.rows[0] ?? null;
+}
+
+/** What a sign-up form says when its optional email is on another account. */
+export function emailTakenNotice(holder: Pick<CoachRow, 'email_verified'>): string {
+  return holder.email_verified
+    ? 'That email already has an account. Sign in with it instead.'
+    : 'That email is already on another account. Leave it out, or use a different one.';
+}
+
 export async function findCoachByContact(db: DbClient, contact: Contact): Promise<CoachRow | null> {
   return contact.kind === 'email' ? findCoachByEmail(db, contact.email) : findCoachByPhone(db, contact.phone);
+}
+
+/** Someone just proved this email with a code. If it sits unproved on
+ * another account, it comes off that account (which keeps signing in by
+ * text), so the address can go to the person who proved it. */
+export async function releaseUnprovedEmail(db: DbClient, email: string): Promise<void> {
+  await db.query(`update coach set email = '' where email <> '' and lower(email) = lower($1) and email_verified_at is null`, [email]);
+}
+
+/** Marks a coach's email proved, if it is still the one the code went to. */
+export async function markEmailVerified(db: DbClient, coachId: number, email: string): Promise<boolean> {
+  const result = await db.query<{ id: number }>(
+    'update coach set email_verified_at = now() where id = $1 and lower(email) = lower($2) returning id',
+    [coachId, email],
+  );
+  return result.rows.length > 0;
 }
 
 /** Adds a verified mobile to a coach. 'taken' when another coach has it. */
@@ -141,10 +276,7 @@ export async function setCoachPhone(db: DbClient, coachId: number, phone: string
 }
 
 export async function findCoachByHandle(db: DbClient, handle: string): Promise<CoachRow | null> {
-  const result = await db.query<CoachRow>(
-    'select id, handle, name, email, phone, tz, connect_recipient_key from coach where handle = $1',
-    [handle],
-  );
+  const result = await db.query<CoachRow>(`select ${COACH_COLUMNS} from coach where handle = $1`, [handle]);
   return result.rows[0] ?? null;
 }
 
@@ -176,23 +308,28 @@ export interface NewCoachInput {
   name: string;
   email: string;
   tz: string;
+  /** Whether the email was proved with a code. Defaults to true only for a
+   * coach with no phone, who can only have joined with an emailed code. */
+  emailVerified?: boolean;
 }
 
 export async function createCoach(db: DbClient, input: NewCoachInput): Promise<CoachRow> {
   const email = normalizeEmail(input.email) ?? '';
   if (!input.phone && !email) throw new Error('a coach needs a phone or an email');
+  const emailVerified = email !== '' && (input.emailVerified ?? !input.phone);
   const handle = await reserveHandle(db, input.name);
   const result = await db.query<{ id: number }>(
-    `insert into coach (handle, name, email, phone, tz, fee_bps, connect_recipient_key)
-     values ($1, $2, $3, $4, $5, 500, $1)
+    `insert into coach (handle, name, email, phone, tz, fee_bps, connect_recipient_key, email_verified_at)
+     values ($1, $2, $3, $4, $5, 500, $1, case when $6::boolean then now() end)
      returning id`,
-    [handle, input.name, email, input.phone, input.tz],
+    [handle, input.name, email, input.phone, input.tz, emailVerified],
   );
   return {
     id: result.rows[0].id,
     handle,
     name: input.name,
     email,
+    email_verified: emailVerified,
     phone: input.phone,
     tz: input.tz,
     connect_recipient_key: handle,
@@ -200,9 +337,6 @@ export async function createCoach(db: DbClient, input: NewCoachInput): Promise<C
 }
 
 export async function findCoachById(db: DbClient, id: number): Promise<CoachRow | null> {
-  const result = await db.query<CoachRow>(
-    'select id, handle, name, email, phone, tz, connect_recipient_key from coach where id = $1',
-    [id],
-  );
+  const result = await db.query<CoachRow>(`select ${COACH_COLUMNS} from coach where id = $1`, [id]);
   return result.rows[0] ?? null;
 }

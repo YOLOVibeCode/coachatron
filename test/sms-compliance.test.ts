@@ -203,7 +203,7 @@ test('adding a roster member texts nobody; a YES to a request sent before still 
   });
 });
 
-test('a mobile sign-in code needs no box; the box records consent; adding a mobile still needs it', async () => {
+test('a mobile sign-in code needs no box; the box records consent once the code is entered; adding a mobile still needs it', async () => {
   await withRelay(async (relay) => {
     const db = await freshDb();
     const { hasActiveConsent } = await import('../src/domain/sms-consent.js');
@@ -233,7 +233,12 @@ test('a mobile sign-in code needs no box; the box records consent; adding a mobi
 
       const checked = await post('/signin/otp', { contact: '5550008889', sms_consent: '1' });
       assert.equal(checked.status, 303);
+      assert.equal(await hasActiveConsent(db, '+15550008889'), false, 'not until the code proves the number');
+      const code = /code is (\d{6})/.exec(relay.sms.at(-1)!.body)![1];
+      assert.equal((await post('/signin/verify', { to: '+15550008889', code, name: 'Box Ticked' })).status, 303);
       assert.equal(await hasActiveConsent(db, '+15550008889'), true);
+      const proof = await db.query<{ source: string }>("select source from sms_consent where phone = '+15550008889'");
+      assert.equal(proof.rows[0].source, '/signin/otp');
 
       const coach = await createCoach(db, { phone: null, email: 'add@example.com', name: 'Add', tz: 'America/Chicago' });
       const cookie = `cx_session=${await createCoachSession(db, coach.id)}`;

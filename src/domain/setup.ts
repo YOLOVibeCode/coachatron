@@ -223,7 +223,7 @@ export function setupSystemPrompt(
     'Each weekly entry names its session type by key. Give every session type a short unique key.',
     'backup_pay_cents is what a backup coach is paid to run one session, if the coach says so.',
     'coach_timezone is an IANA zone only if the coach names a city or zone; otherwise null.',
-    'Packages are prepaid session packs. Plans are monthly subscriptions.',
+    'Packages are prepaid session packs. Plans are one-time packs, charged once, even when the coach calls one monthly: credits_per_month is the number of sessions in it.',
     'Leave out phone numbers, emails, and card numbers.',
     `Today is ${localDateLine(now, coach.tz)} in ${coach.tz}.`,
     `Session types the coach already has: ${existing.map((e) => e.name).join(', ') || '(none)'}.`,
@@ -575,7 +575,7 @@ export function renderSetupPreview(plan: SetupPlan, coach: CoachRow, now: Date =
       (p) => html`<div class="meta"><span>${p.name}: ${p.credits} sessions for ${money(p.price_cents)}${p.expires_days ? `, use within ${p.expires_days} days` : ''}</span></div>`,
     )}
     ${plan.plans.map(
-      (p) => html`<div class="meta"><span>${p.name}: ${money(p.price_cents)}/mo, ${p.credits_per_month} sessions</span></div>`,
+      (p) => html`<div class="meta"><span>${p.name}: ${p.credits_per_month} sessions for ${money(p.price_cents)}, one-time</span></div>`,
     )}
     ${first ? html`<p class="muted">First session: ${first}. Times in ${zoneName(tz, now)}.</p>` : raw('')}
     <p class="muted">Your link: ${APP_BASE_URL.replace(/^https?:\/\//, '')}/c/${coach.handle}</p>
