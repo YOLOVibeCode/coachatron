@@ -218,8 +218,12 @@ one-field-per-screen.
    The parent gets the confirmation again with the new time (a text with
    their consent, an email to an address they gave), the 24-hour reminder
    follows the new time, and the coach sees the move on Session detail of
-   both sessions, where a parent's cancel shows too. Inside the window the
-   page says why the booking cannot move and keeps the cancel the policy
+   both sessions, where a parent's cancel shows too. One booking moves at
+   most 5 times a day and one address at most 10 times an hour (30 a day),
+   and a number or email address gets at most 10 "moved" confirmations a
+   day, so moving back and forth never uses up the coach's daily text
+   ceiling (§10), which every family of the coach shares. Inside the window
+   the page says why the booking cannot move and keeps the cancel the policy
    allows. These are states of screen 11, not a new screen.)*
 
 ### 7.3 Capacity overflow — the differentiating flow

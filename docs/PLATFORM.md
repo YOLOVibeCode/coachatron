@@ -238,14 +238,20 @@ SPEC.md §8.1.
   Both sessions are locked in id order (`lockSession`), then the booking
   rows, and room is counted as a booking counts it (`countTakenSpots`,
   `countKeptForWaitlist`). Only `booking.session_id` changes: the manage
-  link, payment and credit stay, and nothing goes to the relay but the
-  confirmation (template `booking-moved`). The bookings carrying one payment
-  in the session (`booking.charge_id`), the set a refund of it covers, move
-  together; a booking whose refund is `requested` or `pending`, or whose
-  payment's other bookings are not all booked, does not move. Each move is a
-  `booking_move` row (migration 0031), shown on Session detail of both
-  sessions; the booking's `reminder_sent` row is cleared so the new time
-  gets its 24-hour reminder, and the freed spot is offered to the waitlist.
+  link, payment and credit stay, and no payment call goes to the relay. The
+  parent's confirmation (template `booking-moved`) and any waitlist offer
+  for the freed spot are the only messages. Moves are limited per address
+  (`BOOKING_MOVE_LIMITS`: 10 an hour, 30 a day) and per booking from any
+  address (5 a day), and the confirmation is capped at 10 a day per number
+  and per email address (`MOVED_CONFIRMATIONS_DAILY_MAX_PER_CONTACT`), so
+  moving back and forth cannot use up the coach's daily text ceiling. The
+  bookings carrying one payment in the session (`booking.charge_id`), the
+  set a refund of it covers, move together; a booking whose refund is
+  `requested` or `pending`, or whose payment's other bookings are not all
+  booked, does not move. Each move is a `booking_move` row (migration 0031),
+  shown on Session detail of both sessions; the booking's `reminder_sent`
+  row is cleared so the new time gets its 24-hour reminder, and the freed
+  spot is offered to the waitlist.
 - **A coach's cancel** returns a credit for every paid booking, including a
   paid drop-in, which becomes one session credit with the coach with no
   expiry. Each step can run again, so a cancel that stopped part way
@@ -519,7 +525,8 @@ texted, since the relay does not report a per-destination price. "Active
 coach" means a coach with a scheduled session ahead. Sign-in codes are also
 capped at 5 per number or email per day, and requests that send a code, opt
 in at `/sms`, join a waitlist, start a booking (each holds a spot for 15
-minutes; 20 an hour and 60 a day), or use the landing page's box are limited
+minutes; 20 an hour and 60 a day), move a booking (10 an hour and 30 a day,
+and 5 a day for one booking), or use the landing page's box are limited
 per client address (`src/domain/requestLimits.ts`). A code stops working after 5
 wrong tries, works once, and checks for a number or email count against its
 hourly limit only while it has a live code. The code a parent asks for at

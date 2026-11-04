@@ -1,5 +1,5 @@
 import type { DbClient } from '../db/client.js';
-import { APP_BASE_URL } from '../config.js';
+import { APP_BASE_URL, MOVED_CONFIRMATIONS_DAILY_MAX_PER_CONTACT } from '../config.js';
 import { escapeHtml } from '../lib/html.js';
 import { formatCoachDollars, formatConfirmWhen } from '../lib/time.js';
 import { PLACEHOLDER_EMAIL_DOMAIN } from '../relay/buy-link.js';
@@ -111,10 +111,18 @@ async function textParent(
   body: string,
   template: string,
   visitor?: OutboundText['visitor'],
+  perRecipientDailyMax?: number,
 ): Promise<MessageOutcome> {
   if (!canText(d.contact_phone) || !(await hasActiveConsent(db, d.contact_phone))) return 'skipped';
   try {
-    return await sendText(db, { to: d.contact_phone, body, coachId: d.coach_id, template, ...(visitor ? { visitor } : {}) });
+    return await sendText(db, {
+      to: d.contact_phone,
+      body,
+      coachId: d.coach_id,
+      template,
+      ...(visitor ? { visitor } : {}),
+      ...(perRecipientDailyMax === undefined ? {} : { perRecipientDailyMax }),
+    });
   } catch (err) {
     console.error(`booking-message: ${template} text failed:`, err instanceof Error ? err.message : err);
     return 'failed';
@@ -126,11 +134,18 @@ async function emailParent(
   d: BookingDetails,
   message: { subject: string; text: string; html: string },
   template: string,
+  perRecipientDailyMax?: number,
 ): Promise<MessageOutcome> {
   const to = deliverableEmail(d.contact_email);
   if (!to) return 'skipped';
   try {
-    return await sendEmailMessage(db, { to, ...message, coachId: d.coach_id, template });
+    return await sendEmailMessage(db, {
+      to,
+      ...message,
+      coachId: d.coach_id,
+      template,
+      ...(perRecipientDailyMax === undefined ? {} : { perRecipientDailyMax }),
+    });
   } catch (err) {
     console.error(`booking-message: ${template} email failed:`, err instanceof Error ? err.message : err);
     return 'failed';
@@ -159,12 +174,16 @@ export async function sendBookingConfirmation(
   const link = manageUrl(d.manage_token);
   const moved = opts.movedFrom === undefined ? null : formatConfirmWhen(new Date(opts.movedFrom).toISOString(), d.tz);
   const template = moved ? 'booking-moved' : 'booking-confirmation';
+  // Moving back and forth is capped per number and address, so it never
+  // uses up the coach's daily text ceiling that every family shares.
+  const cap = moved ? MOVED_CONFIRMATIONS_DAILY_MAX_PER_CONTACT : undefined;
   const text = await textParent(
     db,
     d,
     textWithLink(`Coachatron: ${athlete} ${moved ? 'moved to' : 'is booked:'} ${d.session_name} ${shortWhen(when)}${place}.`, link),
     template,
     d.charge_id ? undefined : 'new-number',
+    cap,
   );
   const line = moved
     ? `${d.athlete_name}'s ${d.session_name} with ${d.coach_name} moved from ${moved} to ${when}${place}.`
@@ -178,6 +197,7 @@ export async function sendBookingConfirmation(
       html: emailHtml([line, 'See, move or cancel this booking here:'], link, 'Manage this booking'),
     },
     template,
+    cap,
   );
   return { text, email };
 }

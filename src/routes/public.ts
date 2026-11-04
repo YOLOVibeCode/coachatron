@@ -47,6 +47,9 @@ import { buyerEmail, cameBackFromPaying, connectBuyUrl } from '../relay/buy-link
 import { hasActiveConsent, isOptedOut, optedOutNotice, recordConsent } from '../domain/sms-consent.js';
 import {
   BOOKING_HOLD_LIMITS,
+  BOOKING_MOVE_LIMITS,
+  BOOKING_MOVE_PER_BOOKING_LIMITS,
+  bookingMoveKey,
   clientKey,
   CODE_CHECK_CONTACT_LIMITS,
   CODE_CHECK_IP_LIMITS,
@@ -1714,6 +1717,18 @@ publicRouter.post('/booking/:token/move', async (req, res) => {
   const sessionId = rowId(field(req.body, 'session_id'));
   if (sessionId === null) {
     res.status(422).send(renderCannotMove(token, 'Choose a session', 'Choose the session to move this booking to.'));
+    return;
+  }
+
+  // Each move texts the parent and frees a spot the waitlist is offered, so
+  // one address, and one booking from any address, can move only so many.
+  // Both counters take every request.
+  const byAddress = await takeRequest(db, BOOKING_MOVE_LIMITS, clientKey(req));
+  const byBooking = await takeRequest(db, BOOKING_MOVE_PER_BOOKING_LIMITS, bookingMoveKey(booking.id));
+  if (!byAddress || !byBooking) {
+    res
+      .status(429)
+      .send(renderCannotMove(token, 'Too many moves for now', 'This booking stays where it is. Please try again later.'));
     return;
   }
 

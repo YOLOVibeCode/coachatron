@@ -10,6 +10,7 @@ import { buyerFromLocation, postStorePaid } from './helpers/store-event.js';
 import { coachCookie, getPage, postForm, readable } from './helpers/refunds.js';
 import { grantSmsConsent, revokeConsent } from '../src/domain/sms-consent.js';
 import { newBookingToken } from '../src/domain/pricing.js';
+import { sendBookingConfirmation } from '../src/domain/bookingMessages.js';
 import type { DbClient } from '../src/db/client.js';
 
 /** A parent moves a booking from its manage page (SPEC.md §7.2) to another
@@ -88,10 +89,10 @@ async function remaining(db: DbClient, creditId: number): Promise<number> {
   return (await db.query<{ remaining: number }>('select remaining from credit where id = $1', [creditId])).rows[0].remaining;
 }
 
-function move(base: string, token: string, sessionId: number): Promise<Response> {
+function move(base: string, token: string, sessionId: number, address?: string): Promise<Response> {
   return fetch(`${base}/booking/${token}/move`, {
     method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    headers: { 'content-type': 'application/x-www-form-urlencoded', ...(address ? { 'x-forwarded-for': address } : {}) },
     body: new URLSearchParams({ session_id: String(sessionId) }),
     redirect: 'manual',
   });
@@ -398,5 +399,80 @@ test('two parents moving into the last spot at once: one of them gets it', async
     });
     assert.equal(await countSold(db, last), 1);
     assert.equal(await countSold(db, from), 1);
+  });
+});
+
+async function movesOf(db: DbClient, bookingId: number): Promise<number> {
+  return (await db.query<{ n: number }>('select count(*)::int as n from booking_move where booking_id = $1', [bookingId])).rows[0].n;
+}
+
+test('one booking moves at most five times a day, from any address', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const { from, to } = await twoSessions(db);
+    await grantSmsConsent(db, PHONE);
+    const b = await dropIn(db, from);
+    await withServer(async (base) => {
+      for (let i = 0; i < 5; i += 1) {
+        assert.equal((await move(base, b.token, i % 2 === 0 ? to : from, `203.0.113.${110 + i}`)).status, 303, `move ${i + 1}`);
+      }
+      const sixth = await move(base, b.token, from, '203.0.113.120');
+      assert.equal(sixth.status, 429);
+      assert.match(readable(await sixth.text()), /Too many moves for now/);
+    });
+    assert.equal((await payment(db, b.id)).session_id, to, 'the sixth move did not happen');
+    assert.equal(await movesOf(db, b.id), 5);
+    assert.equal(relay.sms.filter((m) => m.to === PHONE && / moved to /.test(m.body)).length, 5);
+  });
+});
+
+test('one address makes at most ten moves an hour; another address still can', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const { from, to } = await twoSessions(db, { capacity: 8 });
+    const here = '203.0.113.130';
+    const bookings = [];
+    for (const [i, name] of ['Mia', 'Leo', 'Ava'].entries()) bookings.push(await dropIn(db, from, name, `+1555000810${i}`));
+    const [mia, leo, ava] = bookings;
+    await withServer(async (base) => {
+      for (const b of [mia, leo]) {
+        for (let i = 0; i < 5; i += 1) assert.equal((await move(base, b.token, i % 2 === 0 ? to : from, here)).status, 303);
+      }
+      assert.equal((await move(base, ava.token, to, here)).status, 429, 'the eleventh move from one address');
+      assert.equal((await payment(db, ava.id)).session_id, from);
+      assert.equal((await move(base, ava.token, to, '203.0.113.131')).status, 303);
+    });
+    assert.equal((await payment(db, ava.id)).session_id, to);
+  });
+});
+
+test("moved confirmations to one number and address are capped, and other families' texts still go", async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const { from, to } = await twoSessions(db);
+    await grantSmsConsent(db, PHONE);
+    const b = await dropIn(db, from);
+    await db.query('update booking set session_id = $2 where id = $1', [b.id, to]);
+    const outcomes = [];
+    for (let i = 0; i < 11; i += 1) outcomes.push(await sendBookingConfirmation(db, b.id, { movedFrom: new Date() }));
+    assert.deepEqual(
+      outcomes.slice(0, 10).map((o) => [o.text, o.email]),
+      Array.from({ length: 10 }, () => ['sent', 'sent']),
+    );
+    assert.deepEqual(outcomes[10], { text: 'capped', email: 'capped' });
+    const capped = await db.query<{ channel: string; status: string }>(
+      "select channel, status from message_log where template = 'booking-moved' and status like 'capped%' order by channel",
+    );
+    assert.deepEqual(capped.rows, [
+      { channel: 'email', status: 'capped-recipient-daily' },
+      { channel: 'sms', status: 'capped-recipient-daily' },
+    ]);
+    assert.equal(relay.sms.filter((m) => m.to === PHONE).length, 10);
+
+    // Another family of the coach is booked and told as usual.
+    const other = '+15550008033';
+    await grantSmsConsent(db, other);
+    const ola = await dropIn(db, from, 'Ola', other);
+    assert.deepEqual(await sendBookingConfirmation(db, ola.id), { text: 'sent', email: 'sent' });
   });
 });

@@ -70,6 +70,12 @@ function envCount(name: string, fallback: number): number {
 export const OTP_DAILY_MAX_PER_CONTACT = 5;
 /** Wrong tries before a sign-in code stops working. */
 export const OTP_MAX_ATTEMPTS = 5;
+/** "Moved" confirmations (template booking-moved) to one phone or email
+ * address in 24 hours. A move of the largest pass a booking takes
+ * (MAX_CHILDREN_PER_BOOKING) still reaches every child's confirmation, and
+ * moving back and forth stops here instead of using up the coach's daily
+ * text ceiling, which every family of the coach shares. */
+export const MOVED_CONFIRMATIONS_DAILY_MAX_PER_CONTACT = 10;
 /** How long a pending booking holds its spot while the parent pays. */
 export const BOOKING_HOLD_MINUTES = 15;
 /** Empty: the relay's shared authenticated sender. Set to
