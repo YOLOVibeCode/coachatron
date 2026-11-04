@@ -1,6 +1,7 @@
 import type { DbClient } from '../db/client.js';
-import { sendSms } from '../relay/sms.js';
+import { sendSms, type SendSmsResult } from '../relay/sms.js';
 import { sendEmail } from '../relay/email.js';
+import { RelayHttpError } from '../relay/http.js';
 import { zonedParts, zonedTimeToUtc } from './scheduling.js';
 import {
   SMS_BRAND,
@@ -12,6 +13,7 @@ import {
 import { hasActiveConsent } from './sms-consent.js';
 import { isOptedOut } from './cascade.js';
 import { revokeConsent } from './sms-consent.js';
+import { isUsOrCanada } from '../lib/phone.js';
 
 /** The only way Coachatron sends a text. SPEC.md §10: "The stop is there
  * for a loop." Every send is one segment, domestic, logged, and counted
@@ -35,6 +37,35 @@ const TRANSLITERATE: Array<[RegExp, string]> = [
   [/[   ]/g, ' '],
 ];
 
+/** Letters with no accent-free form in Unicode that still have a plain
+ * spelling. */
+const PLAIN_LETTERS: Record<string, string> = { œ: 'oe', Œ: 'OE', ł: 'l', Ł: 'L', đ: 'd', Đ: 'D', ı: 'i' };
+
+/** "García" → "Garcia": a letter outside GSM-7 whose accent-free form is
+ * inside it is written that way, so one name does not turn the whole text
+ * into UCS-2 (70 characters a segment instead of 160). GSM-7 letters such
+ * as é, ñ and ü stay as they are. */
+export function toGsmLetters(text: string): string {
+  let out = '';
+  for (const ch of text) {
+    if (GSM_BASIC.has(ch) || GSM_EXTENDED.has(ch)) {
+      out += ch;
+      continue;
+    }
+    const plain = PLAIN_LETTERS[ch] ?? ch.normalize('NFD').replace(/\p{M}/gu, '');
+    out += plain && [...plain].every((c) => GSM_BASIC.has(c)) ? plain : ch;
+  }
+  return out;
+}
+
+/** Typographic characters and accented letters written in GSM-7 where
+ * they can be. */
+function plainText(text: string): string {
+  let out = text;
+  for (const [re, to] of TRANSLITERATE) out = out.replace(re, to);
+  return toGsmLetters(out);
+}
+
 function gsmLength(text: string): number | null {
   let n = 0;
   for (const ch of text) {
@@ -49,8 +80,7 @@ function gsmLength(text: string): number | null {
  * to 70. PLATFORM.md §4.5: "a second segment is never sent." `reserve`
  * leaves that many characters free for a GSM-7 line added after. */
 export function toOneSegment(body: string, reserve = 0): string {
-  let text = body.trim();
-  for (const [re, to] of TRANSLITERATE) text = text.replace(re, to);
+  const text = plainText(body.trim());
   const gsm = gsmLength(text);
   if (gsm !== null) {
     const max = GSM_SEGMENT - reserve;
@@ -81,11 +111,12 @@ export function segmentCount(body: string): number {
   return gsm !== null ? Math.max(1, Math.ceil(gsm / GSM_SEGMENT)) : Math.max(1, Math.ceil(body.length / UCS2_SEGMENT));
 }
 
-/** US and Canada only: the NANP is what Twilio prices near $0.0083 a
- * segment. Anything else can cost many times that, so it is refused
- * (PLATFORM.md §4.5: "above $0.02/segment is refused"). */
+/** US and Canada only: that is what Twilio prices near $0.0083 a
+ * segment. Anything else, the other +1 countries included, can cost many
+ * times that, so it is refused (PLATFORM.md §4.5: "above $0.02/segment is
+ * refused"). */
 export function isDomesticDestination(phone: string): boolean {
-  return /^\+1\d{10}$/.test(phone);
+  return isUsOrCanada(phone);
 }
 
 /** RELAY_APP_ENV=dev: the relay captures every text in the dev mail catcher
@@ -101,7 +132,8 @@ export function canText(phone: string): boolean {
   return isDomesticDestination(phone) || (textsAreCaptured() && /^\+\d{8,15}$/.test(phone));
 }
 
-export type SendOutcome = 'sent' | 'capped' | 'refused';
+/** busy: the relay's own limits (HTTP 429) refused it; try again later. */
+export type SendOutcome = 'sent' | 'capped' | 'refused' | 'busy';
 
 export interface OutboundText {
   to: string;
@@ -123,7 +155,7 @@ const ONE_TIME_TEMPLATES = new Set(['otp', 'auto-reply', 'assistant']);
  * carries it. */
 const NO_OPT_OUT_LINE_TEMPLATES = new Set(['assistant']);
 
-const OPT_OUT_LINE = 'Reply STOP to opt out.';
+export const OPT_OUT_LINE = 'Reply STOP to opt out.';
 
 function withBrand(body: string): string {
   const prefix = `${SMS_BRAND}:`;
@@ -139,12 +171,30 @@ export function composeText(body: string, template: string): string {
   return `${toOneSegment(branded, OPT_OUT_LINE.length + 1)} ${OPT_OUT_LINE}`;
 }
 
+/** True when this body goes out whole as one segment, with nothing cut to
+ * make room for the brand or the opt-out line. Texts that carry a link use
+ * it to pick a shorter wording instead of losing the end of the link, and
+ * the assistant's questions to keep their "Reply Y." */
+export function fitsOneSegment(body: string, template: string): boolean {
+  const branded = withBrand(body.trim());
+  const reserve = NO_OPT_OUT_LINE_TEMPLATES.has(template) || /\bSTOP\b/.test(branded) ? 0 : OPT_OUT_LINE.length + 1;
+  const text = plainText(branded);
+  const length = gsmLength(text);
+  if (length !== null) return length + reserve <= GSM_SEGMENT;
+  return text.length + reserve <= UCS2_SEGMENT;
+}
+
 type Channel = 'sms' | 'email';
+
+/** A text is logged 'sent'; Twilio's delivery reports (matched on the sid)
+ * then move it to queued, delivered, undelivered and so on. Every one of
+ * those left for the carrier, so every one still counts against a ceiling. */
+const SENT_STATUSES = "('sent', 'accepted', 'queued', 'sending', 'delivered', 'undelivered', 'read')";
 
 /** Counts sent rows on one channel; SMS ceilings never count emails. */
 async function countSent(db: DbClient, where: string, params: unknown[], channel: Channel = 'sms'): Promise<number> {
   const result = await db.query<{ n: string }>(
-    `select count(*)::text as n from message_log where status = 'sent' and channel = '${channel}' and ${where}`,
+    `select count(*)::text as n from message_log where status in ${SENT_STATUSES} and channel = '${channel}' and ${where}`,
     params,
   );
   return Number(result.rows[0]?.n ?? '0');
@@ -221,10 +271,23 @@ export async function sendText(db: DbClient, msg: OutboundText, now: Date = new 
     console.warn(`sms: ${hit} ceiling reached, not sending ${msg.template} (coach ${msg.coachId ?? '-'})`);
     return 'capped';
   }
-  const sent = await sendSms({ to: msg.to, body });
+  let sent: SendSmsResult;
+  try {
+    sent = await sendSms({ to: msg.to, body });
+  } catch (err) {
+    // The relay was not reached. Logged like any failed send, so a limit
+    // on failures (reminders) counts it.
+    await log(db, msg, body, 'failed', null, now);
+    throw err;
+  }
   if (sent.ok) {
     await log(db, msg, body, 'sent', sent.id, now);
     return 'sent';
+  }
+  if (sent.status === 429) {
+    await log(db, msg, body, 'capped-relay', null, now);
+    console.warn(`sms: the relay's limits refused ${msg.template} (coach ${msg.coachId ?? '-'}); try later`);
+    return 'busy';
   }
   if (sent.code === 21610) {
     await revokeConsent(db, msg.to);
@@ -233,7 +296,7 @@ export async function sendText(db: DbClient, msg: OutboundText, now: Date = new 
     return 'refused';
   }
   await log(db, msg, body, 'failed', null, now);
-  throw new Error(`relay sms send failed: ${sent.code} ${sent.message}`);
+  throw new RelayHttpError(`relay sms send failed: ${sent.code} ${sent.message}`, sent.status);
 }
 
 export interface OutboundEmail {
@@ -263,6 +326,11 @@ export async function sendEmailMessage(db: DbClient, msg: OutboundEmail, now: Da
     await log(db, msg, msg.subject, 'sent', sent.id || null, now, 'email');
     return 'sent';
   } catch (err) {
+    if (err instanceof RelayHttpError && err.status === 429) {
+      await log(db, msg, msg.subject, 'capped-relay', null, now, 'email');
+      console.warn(`email: the relay's limits refused ${msg.template} (coach ${msg.coachId ?? '-'}); try later`);
+      return 'busy';
+    }
     await log(db, msg, msg.subject, 'failed', null, now, 'email');
     throw err;
   }

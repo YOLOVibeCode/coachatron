@@ -217,7 +217,8 @@ export const POSTCARD_TOKENS_CSS = `
   .error { color: var(--alert); font-family: ui-sans-serif, system-ui, sans-serif; font-size: 0.9rem; margin-top: 8px; }
   .ask-reply p { margin: 0 0 8px; font-family: ui-sans-serif, system-ui, sans-serif; }
   .btn-row { display: flex; gap: 8px; }
-  .btn-row button { margin-top: 8px; flex: 1; }
+  .btn-row button, .btn-row .action { margin-top: 8px; flex: 1; }
+  .page-link label { margin-top: 0; }
   button.ghost { background: transparent; color: var(--teal); border: 1px solid var(--teal); }
   a.card { display: block; color: inherit; text-decoration: none; }
   textarea { min-height: 9rem; resize: vertical; line-height: 1.4; }

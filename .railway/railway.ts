@@ -42,6 +42,10 @@ export default defineRailway((ctx) => {
     start: "npm start",
     healthcheck: "/",
     healthcheckTimeout: 30,
+    // Seconds between SIGTERM and SIGKILL when a deploy replaces this one.
+    // The server needs up to 12 to stop cleanly (src/server.ts: 10 for
+    // requests and the tick, 2 for the database).
+    deploy: { drainingSeconds: 15 },
     replicas: { "us-east4-eqdc4a": 1 },
     domains: env.domains.map((domain) => ({ domain, port: 3000 })),
     // Values live in Railway, never in this file. preserve() keeps each one.

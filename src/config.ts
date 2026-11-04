@@ -1,6 +1,8 @@
 export const APP_FEE_BPS = 500;
 /** The marketplace terms the Money screen shows; must equal the relay Connect app's agreement_version. */
 export const SELLER_AGREEMENT_VERSION = 'v1';
+/** What a coach sells, for the payment provider's business profile. */
+export const SELLER_PRODUCT_DESCRIPTION = 'Private and group coaching sessions booked through Coachatron';
 export const PORT = Number(process.env.PORT ?? 3000);
 export const DATABASE_URL = process.env.DATABASE_URL ?? '';
 export const NODE_ENV = process.env.NODE_ENV ?? 'development';
@@ -32,6 +34,10 @@ export const SMS_PRODUCT_DAILY_PER_COACH = 400;
 export const SMS_PRODUCT_DAILY_FLOOR = 500;
 /** Sign-in codes per phone or email address in 24 hours. */
 export const OTP_DAILY_MAX_PER_CONTACT = 5;
+/** Wrong tries before a sign-in code stops working. */
+export const OTP_MAX_ATTEMPTS = 5;
+/** How long a pending booking holds its spot while the parent pays. */
+export const BOOKING_HOLD_MINUTES = 15;
 /** Empty: the relay's shared authenticated sender. Set to
  * no-reply@coachatron.com once coachatron.com is authenticated in SendGrid.
  * Read at call time so tests can set it. */
