@@ -9,10 +9,20 @@ export function normalizePhone(raw: string): string | null {
   return toE164(raw);
 }
 
-/** Lowercased and trimmed, or null when it does not look like an address. */
+const EMAIL_MAX_LENGTH = 254;
+
+/** Lowercased and trimmed, or null when it does not look like an address:
+ * something, one @, then a domain with a dot inside it. The length is
+ * checked first and the rest is plain string work, so a long or odd input
+ * costs one pass, never a backtracking regex. */
 export function normalizeEmail(raw: string): string | null {
   const email = raw.trim().toLowerCase();
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && email.length <= 254 ? email : null;
+  if (email.length === 0 || email.length > EMAIL_MAX_LENGTH) return null;
+  if (/\s/.test(email)) return null;
+  const at = email.indexOf('@');
+  if (at <= 0 || at !== email.lastIndexOf('@')) return null;
+  const domain = email.slice(at + 1);
+  return domain.slice(1, -1).includes('.') ? email : null;
 }
 
 /** Where a sign-in code goes. Text codes reach only +1 numbers, so email is

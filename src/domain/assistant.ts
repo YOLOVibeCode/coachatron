@@ -205,10 +205,22 @@ function withSession(base: ClassifiedIntent, session: SessionBrief): ClassifiedI
 
 type PatternResult = ClassifiedIntent | 'ambiguous' | null;
 
+const WIDE_CANCEL = /\b(?:everything|all sessions|whole week|next week)\b/g;
+
+/** "cancel" followed later by everything, all sessions, the whole week or
+ * next week. Searched from the first "cancel" on, so a long message costs
+ * one pass rather than a scan per "cancel" in it. */
+export function cancelsTooMuch(normalized: string): boolean {
+  const at = normalized.indexOf('cancel');
+  if (at === -1) return false;
+  WIDE_CANCEL.lastIndex = at + 'cancel'.length + 1;
+  return WIDE_CANCEL.test(normalized);
+}
+
 function patternClassify(text: string, sessions: SessionBrief[], tz: string, now: Date): PatternResult {
   const normalized = text.trim().toLowerCase().replace(/['’]/g, '').replace(/\s+/g, ' ');
 
-  if (/cancel.+\b(everything|all sessions|whole week|next week)\b/.test(normalized) || /^cancel everything\b/.test(normalized)) {
+  if (cancelsTooMuch(normalized) || /^cancel everything\b/.test(normalized)) {
     return 'ambiguous';
   }
 
