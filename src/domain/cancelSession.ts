@@ -2,7 +2,7 @@ import { inTransaction, type DbClient } from '../db/client.js';
 import { formatConfirmWhen, formatLocal } from '../lib/time.js';
 import { OPT_OUT_LINE, canText, sendText, toOneSegment } from './outbound.js';
 import { cancelledSessionCreditSource, createCredit, holdCreditForRefund, restoreCredit } from './pricing.js';
-import { plain } from './bookingMessages.js';
+import { deliverableEmail, plain, sendSessionCancelledEmail } from './bookingMessages.js';
 import { hasActiveConsent } from './sms-consent.js';
 import { endOverflowForSession } from './cascade.js';
 import { waiveBooking } from './policy.js';
@@ -12,17 +12,18 @@ import { waiveBooking } from './policy.js';
  * next try: the session closes first, then each booking is cancelled and
  * its credit returned together (a package or pack credit goes back, and a
  * paid drop-in becomes one session credit with the coach), then each
- * parent is texted, and a text that fails for one parent never stops the
+ * parent is texted, or emailed when the text does not reach them and they
+ * gave an email, and a send that fails for one parent never stops the
  * others. How each parent was reached is kept on the booking, so the coach
  * can see who still needs to be told. */
 
-export type CancelNotice = 'texted' | 'no-texts' | 'not-sent' | 'failed';
+export type CancelNotice = 'texted' | 'emailed' | 'no-texts' | 'not-sent' | 'failed';
 
 export interface UnreachedParent {
   bookingId: number;
   athleteName: string;
   contactPhone: string;
-  reason: Exclude<CancelNotice, 'texted'>;
+  reason: Exclude<CancelNotice, 'texted' | 'emailed'>;
 }
 
 export interface CancelReach {
@@ -30,6 +31,8 @@ export interface CancelReach {
   athletesTotal: number;
   /** Of those, how many were texted. */
   athletesNotified: number;
+  /** Of those, how many the text did not reach and were emailed instead. */
+  athletesEmailed: number;
   creditsReturned: number;
   /** Of those credits, how many are paid drop-ins that became a credit. */
   dropInCredits: number;
@@ -168,10 +171,18 @@ export async function cancelScheduledSession(
   );
   for (const booking of late.rows) await waiveBooking(db, coachId, sessionId, booking.id);
 
-  // 3. Tell each parent. Claiming the booking first keeps a second run from
-  // texting anyone twice; a failed send is recorded and the loop goes on.
-  const toTell = await db.query<{ id: number; athlete_name: string; contact_phone: string; payment_source: string | null; credit_back: boolean }>(
-    `select b.id, b.athlete_name, b.contact_phone, b.payment_source, ${CREDIT_BACK} as credit_back
+  // 3. Tell each parent: a text, or an email when the text does not reach
+  // them and they gave one. Claiming the booking first keeps a second run
+  // from telling anyone twice; a failed send is recorded and the loop goes on.
+  const toTell = await db.query<{
+    id: number;
+    athlete_name: string;
+    contact_phone: string;
+    contact_email: string | null;
+    payment_source: string | null;
+    credit_back: boolean;
+  }>(
+    `select b.id, b.athlete_name, b.contact_phone, b.contact_email, b.payment_source, ${CREDIT_BACK} as credit_back
      from booking b left join credit c on c.id = b.credit_id
      where b.session_id = $1 and b.cancel_notice = 'pending' order by b.id`,
     [sessionId],
@@ -194,6 +205,10 @@ export async function cancelScheduledSession(
     } catch (err) {
       notice = 'failed';
       console.error(`cancel: text for booking ${booking.id} failed:`, err instanceof Error ? err.message : err);
+    }
+    if (notice !== 'texted' && deliverableEmail(booking.contact_email)) {
+      const credit = !booking.credit_back ? null : booking.payment_source === 'DropIn' ? 'drop-in' : 'credit-back';
+      if ((await sendSessionCancelledEmail(db, booking.id, credit)) === 'sent') notice = 'emailed';
     }
     await db.query('update booking set cancel_notice = $2 where id = $1', [booking.id, notice]);
   }
@@ -227,6 +242,7 @@ export async function cancelReach(db: DbClient, sessionId: number): Promise<Canc
   );
   const unreached: UnreachedParent[] = [];
   let notified = 0;
+  let emailed = 0;
   let credits = 0;
   let dropInCredits = 0;
   for (const r of rows.rows) {
@@ -236,24 +252,34 @@ export async function cancelReach(db: DbClient, sessionId: number): Promise<Canc
       notified += 1;
       continue;
     }
+    if (r.cancel_notice === 'emailed') {
+      emailed += 1;
+      continue;
+    }
     const reason: UnreachedParent['reason'] =
       r.cancel_notice === 'no-texts' || r.cancel_notice === 'not-sent' ? r.cancel_notice : 'failed';
     unreached.push({ bookingId: r.id, athleteName: r.athlete_name, contactPhone: r.contact_phone, reason });
   }
-  return { athletesTotal: rows.rows.length, athletesNotified: notified, creditsReturned: credits, dropInCredits, unreached };
+  return { athletesTotal: rows.rows.length, athletesNotified: notified, athletesEmailed: emailed, creditsReturned: credits, dropInCredits, unreached };
 }
 
-/** Bookings that would be cancelled if the coach confirms now, and how many
- * of those parents can be texted. */
-export async function previewSessionCancel(db: DbClient, sessionId: number): Promise<{ total: number; textable: number }> {
-  const result = await db.query<{ contact_phone: string }>(`select contact_phone from booking where session_id = $1 and status in ${LIVE}`, [
-    sessionId,
-  ]);
+/** Bookings that would be cancelled if the coach confirms now, how many of
+ * those parents can be texted, and how many of the rest gave an email. */
+export async function previewSessionCancel(
+  db: DbClient,
+  sessionId: number,
+): Promise<{ total: number; textable: number; emailable: number }> {
+  const result = await db.query<{ contact_phone: string; contact_email: string | null }>(
+    `select contact_phone, contact_email from booking where session_id = $1 and status in ${LIVE}`,
+    [sessionId],
+  );
   let textable = 0;
+  let emailable = 0;
   for (const r of result.rows) {
     if (canText(r.contact_phone) && (await hasActiveConsent(db, r.contact_phone))) textable += 1;
+    else if (deliverableEmail(r.contact_email)) emailable += 1;
   }
-  return { total: result.rows.length, textable };
+  return { total: result.rows.length, textable, emailable };
 }
 
 /** Bookings that would be cancelled and texted if the coach confirms now. */

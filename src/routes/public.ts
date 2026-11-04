@@ -47,6 +47,9 @@ import { buyerEmail, cameBackFromPaying, connectBuyUrl } from '../relay/buy-link
 import { hasActiveConsent, isOptedOut, optedOutNotice, recordConsent } from '../domain/sms-consent.js';
 import {
   BOOKING_HOLD_LIMITS,
+  BOOKING_MOVE_LIMITS,
+  BOOKING_MOVE_PER_BOOKING_LIMITS,
+  bookingMoveKey,
   clientKey,
   CODE_CHECK_CONTACT_LIMITS,
   CODE_CHECK_IP_LIMITS,
@@ -69,6 +72,7 @@ import {
   MAX_CHILDREN_PER_BOOKING,
 } from '../domain/policy.js';
 import { hasPaymentHeldForCoach } from '../domain/paymentAttention.js';
+import { moveByParent, moveChoice, type MoveChoice, type MoveState } from '../domain/moveBooking.js';
 import {
   BOOKING_HOLD_MINUTES,
   OTP_DAILY_MAX_PER_CONTACT,
@@ -369,6 +373,7 @@ publicRouter.post('/sms', async (req, res) => {
         coachId: null,
         template: 'opt-in-confirmation',
         perRecipientDailyMax: 1,
+        visitor: 'always',
       })) === 'sent';
   } catch (err) {
     console.error('sms opt-in confirmation not sent:', err instanceof Error ? err.message : err);
@@ -777,7 +782,21 @@ async function loadCheckoutContext(db: DbClient, coach: CoachRow, token: string)
   if (!session) return null;
   // Every child in the pass is paid for here, through its first booking.
   const pass = await passBookings(db, booking);
-  return { booking, session, pass: pass.length > 0 ? pass : [booking] };
+  return { booking, session, pass: await withOwnTimes(db, pass.length > 0 ? pass : [booking]) };
+}
+
+/** A pass's bookings, each with its own session's time once they are not all
+ * in one session: children who each used their own credit move one at a
+ * time from their manage links (SPEC.md §7.2). */
+async function withOwnTimes(db: DbClient, pass: BookingRow[]): Promise<Array<BookingRow & { when?: string }>> {
+  const ids = [...new Set(pass.map((b) => b.session_id))];
+  if (ids.length <= 1) return pass;
+  const sessions = await db.query<{ id: number; starts_at_utc: string | Date; tz: string }>(
+    'select id, starts_at_utc, tz from session where id = any($1::int[])',
+    [ids],
+  );
+  const when = new Map(sessions.rows.map((s) => [s.id, formatLocal(new Date(s.starts_at_utc).toISOString(), s.tz)]));
+  return pass.map((b) => ({ ...b, when: when.get(b.session_id) }));
 }
 
 /** What the checkout screen says about session credits. Credits belong to a
@@ -792,7 +811,7 @@ type CreditState =
   | { kind: 'hidden' };
 
 type CheckoutOptions = {
-  packages: Array<{ id: number; name: string; credits: number; price_cents: number }>;
+  packages: Array<{ id: number; name: string; credits: number; price_cents: number; expires_days: number | null }>;
   plans: Array<{ id: number; name: string; price_cents: number; credits_per_month: number }>;
   credit: CreditState;
   /** False while the coach cannot take payments: only credits and free sessions are offered. */
@@ -886,18 +905,25 @@ function renderAlreadyBooked(
   coach: CoachRow,
   session: SessionForBooking,
   booking: Pick<BookingRow, 'manage_token' | 'status'>,
-  pass: Array<Pick<BookingRow, 'manage_token' | 'athlete_name'>> = [],
+  pass: Array<Pick<BookingRow, 'manage_token' | 'athlete_name'> & { when?: string }> = [],
 ) {
+  // Once the children are in different sessions, each link says its own
+  // time and the heading names none.
+  const apart = pass.some((b) => b.when !== undefined);
   const links =
     pass.length > 1
       ? html`<p>Keep these links to see or cancel each child's booking:</p>
-          ${pass.map((b) => html`<a class="action" href="/booking/${b.manage_token}">Manage ${b.athlete_name}'s booking</a>`)}`
+          ${pass.map(
+            (b) => html`${b.when ? html`<p class="muted">${b.athlete_name}: ${b.when}</p>` : raw('')}
+              <a class="action" href="/booking/${b.manage_token}">Manage ${b.athlete_name}'s booking</a>`,
+          )}`
       : manageLinkBlock(booking);
+  const what = apart ? session.name : `${session.name} — ${formatLocal(session.starts_at_utc, session.tz)}`;
   if (booking.status === 'refunded') {
     return page(
       'Refunded',
       html`<h1>This booking was refunded</h1>
-        <p class="muted">${session.name} — ${formatLocal(session.starts_at_utc, session.tz)}. The payment went back to your card.</p>
+        <p class="muted">${what}. The payment went back to your card.</p>
         ${links}
         <a class="action ghost" href="/c/${coach.handle}">Back to ${coach.name}'s sessions</a>`,
     );
@@ -906,7 +932,7 @@ function renderAlreadyBooked(
     return page(
       'Cancelled',
       html`<h1>This booking was cancelled</h1>
-        <p class="muted">${session.name} — ${formatLocal(session.starts_at_utc, session.tz)}</p>
+        <p class="muted">${what}</p>
         ${links}
         <a class="action ghost" href="/c/${coach.handle}">Back to ${coach.name}'s sessions</a>`,
     );
@@ -914,7 +940,7 @@ function renderAlreadyBooked(
   return page(
     'Booked',
     html`<h1>You're booked</h1>
-      <p class="muted">${session.name} — ${formatLocal(session.starts_at_utc, session.tz)}</p>
+      <p class="muted">${what}</p>
       ${links}
       <a class="action ghost" href="/c/${coach.handle}">Back to ${coach.name}'s sessions</a>`,
   );
@@ -1013,7 +1039,9 @@ function renderCheckout(
         (p) => html`<form method="post" action="${action}">
           <input type="hidden" name="mode" value="package" />
           <input type="hidden" name="package_id" value="${p.id}" />
-          <button type="submit">Buy ${p.name} — ${p.credits} sessions for $${(p.price_cents / 100).toFixed(2)}</button>
+          <button type="submit">Buy ${p.name} — ${p.credits} sessions for $${(p.price_cents / 100).toFixed(2)}${p.expires_days
+            ? `, use within ${p.expires_days} days`
+            : ''}</button>
         </form>`,
       )}
 
@@ -1030,7 +1058,7 @@ function renderCheckout(
 
 const CODE_NOT_SENT: Record<Exclude<SendOutcome, 'sent'> | 'failed', [number, string]> = {
   capped: [429, 'Too many codes for this number today. Try again tomorrow.'],
-  busy: [429, "We can't send codes right now. Try again in a few minutes."],
+  busy: [429, "We can't send codes right now. Try again later."],
   failed: [502, "We couldn't send a code just now. Try again in a minute."],
   refused: [422, "We can't text that number."],
 };
@@ -1052,12 +1080,13 @@ async function sendCreditCode(db: DbClient, phone: string): Promise<SendOutcome 
       coachId: null,
       template: 'otp',
       perRecipientDailyMax: OTP_DAILY_MAX_PER_CONTACT,
+      visitor: 'always',
     });
   } catch (err) {
     console.error('checkout code not sent:', err instanceof Error ? err.message : err);
     return 'failed';
   }
-  if (outcome === 'sent') await createOtp(db, { kind: 'phone', phone }, { code });
+  if (outcome === 'sent') await createOtp(db, { kind: 'phone', phone }, { code, purpose: 'credits' });
   return outcome;
 }
 
@@ -1097,7 +1126,7 @@ publicRouter.post('/c/:handle/checkout/:token', async (req, res) => {
   const phone = ctx.booking.contact_phone;
   const recipientKey = getConnectRecipientKey(coach);
   const bookingId = ctx.booking.id;
-  const email = buyerEmail(phone, ctx.booking.contact_email, bookingId);
+  const email = buyerEmail(ctx.booking.contact_email, checkoutToken);
 
   // Every mode but a credit (or a free drop-in) goes to the payment page.
   const paying = mode === 'package' || mode === 'plan' || (mode === 'dropin' && needsPayment(ctx.session));
@@ -1116,8 +1145,9 @@ publicRouter.post('/c/:handle/checkout/:token', async (req, res) => {
   };
 
   try {
-    // Proving the phone, so its credits can be used: the same one-time codes,
-    // limits and wrong-try count as signing in.
+    // Proving the phone, so its credits can be used: one-time codes with the
+    // same limits and wrong-try count as signing in, kept apart from sign-in
+    // codes, so one never works as the other.
     if (mode === 'send_code') {
       if (ctx.booking.phone_verified_at) {
         res.redirect(303, `/c/${coach.handle}/checkout/${checkoutToken}`);
@@ -1161,12 +1191,14 @@ publicRouter.post('/c/:handle/checkout/:token', async (req, res) => {
       // Counted per address, and per number while it has a live code. Each
       // code also stops working after a few wrong tries.
       const byAddress = await takeRequest(db, CODE_CHECK_IP_LIMITS, clientKey(req));
-      const byNumber = (await hasLiveOtp(db, contact)) ? await takeRequest(db, CODE_CHECK_CONTACT_LIMITS, contactKey(contact)) : true;
+      const byNumber = (await hasLiveOtp(db, contact, 'credits'))
+        ? await takeRequest(db, CODE_CHECK_CONTACT_LIMITS, contactKey(contact))
+        : true;
       if (!byAddress || !byNumber) {
         await showCheckout(429, 'Too many tries. Try again in an hour.', { codeSent: true });
         return;
       }
-      const check = await checkOtp(db, contact, field(req.body, 'code'));
+      const check = await checkOtp(db, contact, field(req.body, 'code'), 'credits');
       if (!check.ok) {
         // A wrong code can be tried again; a code that is used up or gone
         // needs a new one, so the page offers to text one.
@@ -1400,6 +1432,7 @@ async function rosterOptIn(req: Request, res: Response, db: DbClient, member: Ro
       coachId: null,
       template: 'opt-in-confirmation',
       perRecipientDailyMax: 1,
+      visitor: 'always',
     });
   } catch (err) {
     console.error('roster opt-in confirmation not sent:', err instanceof Error ? err.message : err);
@@ -1558,6 +1591,55 @@ function cancelledNote(booking: BookingWithSession) {
   return raw('');
 }
 
+/** Why a booking cannot move, in the parent's words. */
+function cannotMoveNote(booking: BookingWithSession, state: Exclude<MoveState, 'open'>, together: string[]): string {
+  switch (state) {
+    case 'too-late':
+      return !cancellationAllowed(booking) || booking.cancel_window_hours === 0
+        ? "This session has already started, so this booking can't move."
+        : `Bookings can move until ${hoursWord(booking.cancel_window_hours)} before the session, so this one can't move now.`;
+    case 'refund-pending':
+      return "A refund of this booking's payment is on its way, so it can't move.";
+    case 'paid-together': {
+      const others = together.filter((name) => name !== booking.athlete_name);
+      return `This booking was paid for together with ${namesList(others.length > 0 ? others : together)}'s, and not all of them are still booked for this session, so it can't move.`;
+    }
+    default:
+      return booking.status === 'refunded'
+        ? "This booking was refunded, so it can't move."
+        : booking.status === 'cancelled'
+          ? "This booking was cancelled, so it can't move."
+          : "Only a confirmed booking for a session still to come can move.";
+  }
+}
+
+/** Screen 11's move state (SPEC.md §7.2): the other sessions of the same
+ * kind with room, each a button, or why this booking cannot move now. */
+function moveSection(token: string, booking: BookingWithSession, move: MoveChoice | null) {
+  if (!move || move.state === 'not-booked') return raw('');
+  if (move.state !== 'open') return html`<p class="muted move-terms">${cannotMoveNote(booking, move.state, move.together)}</p>`;
+  const cutoff = formatLocal(cancelCutoff(booking.starts_at_utc, booking.cancel_window_hours).toISOString(), booking.tz);
+  const until = booking.cancel_window_hours === 0 ? 'until it starts' : `until ${cutoff}`;
+  const keeps =
+    booking.credit_id !== null
+      ? ' The session credit it used moves with it.'
+      : (booking.gross_cents ?? 0) > 0
+        ? ' Your payment moves with it: nothing more is charged or refunded.'
+        : '';
+  return html`<p class="muted move-terms">You can move this booking to another ${booking.session_type_name} session ${until}.${keeps}</p>
+    ${move.together.length > 1
+      ? html`<p class="muted">${namesList(move.together)} were paid for together, so they move together.</p>`
+      : raw('')}
+    ${move.sessions.length === 0
+      ? html`<p class="muted">No other ${booking.session_type_name} session has room right now.</p>`
+      : move.sessions.map(
+          (s) => html`<form method="post" action="/booking/${token}/move">
+            <input type="hidden" name="session_id" value="${s.id}" />
+            <button type="submit" class="ghost">Move to ${formatLocal(s.starts_at_utc, s.tz)}${s.location_text ? ` · ${s.location_text}` : ''}</button>
+          </form>`,
+        )}`;
+}
+
 publicRouter.get('/booking/:token', async (req, res) => {
   const db = getDb();
   const booking = await loadBookingByToken(db, req.params.token);
@@ -1566,12 +1648,15 @@ publicRouter.get('/booking/:token', async (req, res) => {
     return;
   }
   const held = booking.status === 'pending' && (await hasPaymentHeldForCoach(db, booking.id));
+  const move = booking.status === 'booked' && cancellationAllowed(booking) ? await moveChoice(db, req.params.token) : null;
+  const moved = req.query.moved === '1' && booking.status === 'booked';
 
   res.status(200).send(
     page(
       'Manage booking',
       html`<h1>${booking.session_type_name}</h1>
         <p class="muted">${formatLocal(booking.starts_at_utc, booking.tz)}${booking.location_text ? ` · ${booking.location_text}` : ''}</p>
+        ${moved ? html`<p class="good">Moved. This is ${booking.athlete_name}'s session now.</p>` : raw('')}
 
         <p class="card">
           <strong>Athlete:</strong> ${booking.athlete_name}<br />
@@ -1590,6 +1675,7 @@ publicRouter.get('/booking/:token', async (req, res) => {
         </p>
 
         <h2>Action</h2>
+        ${moveSection(req.params.token, booking, move)}
         ${booking.status === 'booked' && cancellationAllowed(booking)
           ? html`${cancelTermsNote(booking)}
             <form method="post" action="/booking/${req.params.token}/cancel">
@@ -1629,4 +1715,72 @@ publicRouter.post('/booking/:token/cancel', async (req, res) => {
   if (result.kind === 'cancelled') await offerOpenSpots(db, result.sessionId);
 
   res.redirect(303, `/booking/${req.params.token}`);
+});
+
+/** A move the booking could not make, on screen 11 in its move state. */
+function renderCannotMove(token: string, heading: string, text: string) {
+  return page(
+    'Cannot move',
+    html`<h1>${heading}</h1>
+      <p class="error">${text}</p>
+      <a class="action" href="/booking/${token}">Back to booking detail</a>`,
+  );
+}
+
+publicRouter.post('/booking/:token/move', async (req, res) => {
+  const db = getDb();
+  const token = req.params.token;
+  const booking = await loadBookingByToken(db, token);
+  if (!booking) {
+    res.status(404).send(notFound());
+    return;
+  }
+  const sessionId = rowId(field(req.body, 'session_id'));
+  if (sessionId === null) {
+    res.status(422).send(renderCannotMove(token, 'Choose a session', 'Choose the session to move this booking to.'));
+    return;
+  }
+
+  // Each move texts the parent and frees a spot the waitlist is offered, so
+  // one address, and one booking from any address, can move only so many.
+  // Both counters take every request.
+  const byAddress = await takeRequest(db, BOOKING_MOVE_LIMITS, clientKey(req));
+  const byBooking = await takeRequest(db, BOOKING_MOVE_PER_BOOKING_LIMITS, bookingMoveKey(booking.id));
+  if (!byAddress || !byBooking) {
+    res
+      .status(429)
+      .send(renderCannotMove(token, 'Too many moves for now', 'This booking stays where it is. Please try again later.'));
+    return;
+  }
+
+  // The move is decided under both sessions' locks, by the coach's window
+  // (SPEC.md §9.5) and the room left after the waitlist's first claim.
+  const result = await moveByParent(db, token, sessionId);
+  switch (result.kind) {
+    case 'moved':
+      // Each child moved gets the usual confirmation, with the new time.
+      for (const id of result.bookingIds) await sendBookingConfirmation(db, id, { movedFrom: booking.starts_at_utc });
+      // The freed spot goes to the waitlist, in order, as after a cancel.
+      await offerOpenSpots(db, result.fromSessionId);
+      void checkOverflow(db, result.toSessionId);
+      res.redirect(303, `/booking/${token}?moved=1`);
+      return;
+    case 'already':
+      res.redirect(303, `/booking/${token}`);
+      return;
+    case 'not-found':
+      res.status(404).send(notFound());
+      return;
+    case 'full':
+      res
+        .status(409)
+        .send(renderCannotMove(token, 'That session is full', 'Someone took the last spot first. Pick another time from your booking.'));
+      return;
+    case 'no-session':
+      res.status(409).send(renderCannotMove(token, 'That session is not open', 'Pick another time from your booking.'));
+      return;
+    case 'cannot':
+      res.status(409).send(renderCannotMove(token, 'Cannot move', cannotMoveNote(booking, result.state, result.together)));
+      return;
+  }
 });

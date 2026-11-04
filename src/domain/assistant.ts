@@ -499,7 +499,7 @@ async function renderConfirm(
         ? 'Nobody is booked.'
         : preview.textable === preview.total
           ? `${athletes}, all will be texted.`
-          : `${athletes}, ${preview.textable} can be texted.`;
+          : `${athletes}, ${preview.textable} can be texted${preview.emailable > 0 ? `, ${preview.emailable} emailed` : ''}.`;
     return confirmQuestion(`Cancel ${when}, ${session.durationMin}-min ${session.name}? ${who}`);
   }
   if (classified.intent === 'session.add') {
@@ -563,7 +563,7 @@ async function executeCancel(db: DbClient, coach: CoachRow, sessionId: number): 
   if (result.kind === 'already_cancelled') return 'That session is already cancelled.';
   const notReached = result.unreached.length > 0 ? ` Not reached: ${result.unreached.map((u) => u.athleteName).join(', ')}.` : '';
   return clipSms(
-    `Cancelled. ${result.athletesNotified} of ${result.athletesTotal} athletes texted, ${result.creditsReturned} credits returned${dropInCreditNote(result)}.${notReached}`,
+    `Cancelled. ${result.athletesNotified} of ${result.athletesTotal} athletes texted${result.athletesEmailed > 0 ? `, ${result.athletesEmailed} emailed` : ''}, ${result.creditsReturned} credits returned${dropInCreditNote(result)}.${notReached}`,
   );
 }
 

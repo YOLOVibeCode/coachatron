@@ -1,17 +1,17 @@
 import type { DbClient } from '../db/client.js';
-import { APP_BASE_URL } from '../config.js';
+import { APP_BASE_URL, MOVED_CONFIRMATIONS_DAILY_MAX_PER_CONTACT } from '../config.js';
 import { escapeHtml } from '../lib/html.js';
 import { formatCoachDollars, formatConfirmWhen } from '../lib/time.js';
 import { PLACEHOLDER_EMAIL_DOMAIN } from '../relay/buy-link.js';
 import { normalizeEmail } from './auth.js';
-import { OPT_OUT_LINE, canText, sendEmailMessage, sendText, toOneSegment, type SendOutcome } from './outbound.js';
+import { OPT_OUT_LINE, canText, sendEmailMessage, sendText, toOneSegment, type OutboundText, type SendOutcome } from './outbound.js';
 import { hasActiveConsent } from './sms-consent.js';
 
-/** What a parent is told about their own booking: that it is booked, that
- * a payment for a cancelled session became credit, or that a payment was
- * refunded. Texts go only to a phone with SMS consent, and email only to an
- * address the parent typed. A failed send is logged and never undoes the
- * booking. */
+/** What a parent is told about their own booking: that it is booked or
+ * moved, that a payment for a cancelled session became credit, or that a
+ * payment was refunded. Texts go only to a phone with SMS consent, and email
+ * only to an address the parent typed. A failed send is logged and never
+ * undoes the booking. */
 
 export type MessageOutcome = SendOutcome | 'skipped' | 'failed';
 
@@ -69,6 +69,8 @@ function shortWhen(when: string): string {
 }
 
 interface BookingDetails {
+  /** Set when the booking was paid for: a payment ref. */
+  charge_id: string | null;
   athlete_name: string;
   contact_phone: string;
   contact_email: string | null;
@@ -83,7 +85,7 @@ interface BookingDetails {
 
 async function loadDetails(db: DbClient, bookingId: number): Promise<BookingDetails | null> {
   const result = await db.query<BookingDetails>(
-    `select b.athlete_name, b.contact_phone, b.contact_email, b.manage_token, s.starts_at_utc, s.tz, s.location_text,
+    `select b.charge_id, b.athlete_name, b.contact_phone, b.contact_email, b.manage_token, s.starts_at_utc, s.tz, s.location_text,
             st.name as session_name, c.id as coach_id, c.name as coach_name
      from booking b
      join session s on s.id = b.session_id
@@ -103,10 +105,24 @@ function describe(d: BookingDetails): { when: string; place: string; athlete: st
   };
 }
 
-async function textParent(db: DbClient, d: BookingDetails, body: string, template: string): Promise<MessageOutcome> {
+async function textParent(
+  db: DbClient,
+  d: BookingDetails,
+  body: string,
+  template: string,
+  visitor?: OutboundText['visitor'],
+  perRecipientDailyMax?: number,
+): Promise<MessageOutcome> {
   if (!canText(d.contact_phone) || !(await hasActiveConsent(db, d.contact_phone))) return 'skipped';
   try {
-    return await sendText(db, { to: d.contact_phone, body, coachId: d.coach_id, template });
+    return await sendText(db, {
+      to: d.contact_phone,
+      body,
+      coachId: d.coach_id,
+      template,
+      ...(visitor ? { visitor } : {}),
+      ...(perRecipientDailyMax === undefined ? {} : { perRecipientDailyMax }),
+    });
   } catch (err) {
     console.error(`booking-message: ${template} text failed:`, err instanceof Error ? err.message : err);
     return 'failed';
@@ -118,11 +134,18 @@ async function emailParent(
   d: BookingDetails,
   message: { subject: string; text: string; html: string },
   template: string,
+  perRecipientDailyMax?: number,
 ): Promise<MessageOutcome> {
   const to = deliverableEmail(d.contact_email);
   if (!to) return 'skipped';
   try {
-    return await sendEmailMessage(db, { to, ...message, coachId: d.coach_id, template });
+    return await sendEmailMessage(db, {
+      to,
+      ...message,
+      coachId: d.coach_id,
+      template,
+      ...(perRecipientDailyMax === undefined ? {} : { perRecipientDailyMax }),
+    });
   } catch (err) {
     console.error(`booking-message: ${template} email failed:`, err instanceof Error ? err.message : err);
     return 'failed';
@@ -135,31 +158,76 @@ function emailHtml(paragraphs: string[], link: string, linkLabel: string): strin
 <p style="font-family:system-ui,sans-serif;font-size:16px"><a href="${escapeHtml(link)}">${escapeHtml(linkLabel)}</a></p>`;
 }
 
-/** Sent when a booking becomes booked, by any way of paying: what, when,
- * where, and the manage link. */
-export async function sendBookingConfirmation(db: DbClient, bookingId: number): Promise<ParentMessageResult> {
+/** Sent when a booking becomes booked, by any way of paying, or when the
+ * parent moves it to another session (`movedFrom`, the time it left): what,
+ * when, where, and the manage link. A booking nobody paid for (a free
+ * session) was set off by a form anyone can fill in, so its text to a
+ * number never texted before counts against the app-wide visitor ceiling. */
+export async function sendBookingConfirmation(
+  db: DbClient,
+  bookingId: number,
+  opts: { movedFrom?: string | Date } = {},
+): Promise<ParentMessageResult> {
   const d = await loadDetails(db, bookingId);
   if (!d) return { text: 'skipped', email: 'skipped' };
   const { when, place, athlete } = describe(d);
   const link = manageUrl(d.manage_token);
+  const moved = opts.movedFrom === undefined ? null : formatConfirmWhen(new Date(opts.movedFrom).toISOString(), d.tz);
+  const template = moved ? 'booking-moved' : 'booking-confirmation';
+  // Moving back and forth is capped per number and address, so it never
+  // uses up the coach's daily text ceiling that every family shares.
+  const cap = moved ? MOVED_CONFIRMATIONS_DAILY_MAX_PER_CONTACT : undefined;
   const text = await textParent(
     db,
     d,
-    textWithLink(`Coachatron: ${athlete} is booked: ${d.session_name} ${shortWhen(when)}${place}.`, link),
-    'booking-confirmation',
+    textWithLink(`Coachatron: ${athlete} ${moved ? 'moved to' : 'is booked:'} ${d.session_name} ${shortWhen(when)}${place}.`, link),
+    template,
+    d.charge_id ? undefined : 'new-number',
+    cap,
   );
-  const line = `${d.athlete_name} is booked for ${d.session_name} with ${d.coach_name}: ${when}${place}.`;
+  const line = moved
+    ? `${d.athlete_name}'s ${d.session_name} with ${d.coach_name} moved from ${moved} to ${when}${place}.`
+    : `${d.athlete_name} is booked for ${d.session_name} with ${d.coach_name}: ${when}${place}.`;
   const email = await emailParent(
     db,
     d,
     {
-      subject: `Booked: ${d.session_name}, ${when}`,
-      text: `${line}\n\nSee or cancel this booking: ${link}\n\nCoachatron`,
-      html: emailHtml([line, 'See or cancel this booking here:'], link, 'Manage this booking'),
+      subject: `${moved ? 'Moved' : 'Booked'}: ${d.session_name}, ${when}`,
+      text: `${line}\n\nSee, move or cancel this booking: ${link}\n\nCoachatron`,
+      html: emailHtml([line, 'See, move or cancel this booking here:'], link, 'Manage this booking'),
     },
-    'booking-confirmation',
+    template,
+    cap,
   );
   return { text, email };
+}
+
+/** Sent when the coach cancels a session, to a parent the cancel's text did
+ * not reach (they chose no texts, opted out, or the text did not go out)
+ * who gave an email: what was cancelled and, when there is one, the session
+ * credit they now hold. 'skipped' when there is no address to send to. */
+export async function sendSessionCancelledEmail(
+  db: DbClient,
+  bookingId: number,
+  credit: 'drop-in' | 'credit-back' | null,
+): Promise<MessageOutcome> {
+  const d = await loadDetails(db, bookingId);
+  if (!d) return 'skipped';
+  const { when } = describe(d);
+  const lines = [`${d.coach_name} cancelled ${d.athlete_name}'s ${d.session_name} on ${when}.`];
+  if (credit === 'drop-in') lines.push(`Your payment is now 1 session credit with ${d.coach_name}, for another session.`);
+  if (credit === 'credit-back') lines.push(`Your session credit with ${d.coach_name} is back, for another session.`);
+  const link = manageUrl(d.manage_token);
+  return emailParent(
+    db,
+    d,
+    {
+      subject: `Cancelled: ${d.session_name}, ${when}`,
+      text: `${lines.join(' ')}\n\nYour booking: ${link}\n\nCoachatron`,
+      html: emailHtml(lines, link, 'See your booking'),
+    },
+    'session-cancelled',
+  );
 }
 
 function refundAmount(cents: number | null): string {

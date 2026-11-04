@@ -183,14 +183,6 @@ export async function createCredit(
   return result.rows[0].id;
 }
 
-export async function createSubscriptionRecord(db: DbClient, planId: number, contactPhone: string, squareSubscriptionId: string): Promise<number> {
-  const result = await db.query<{ id: number }>(
-    "insert into subscription (plan_id, contact_phone, square_subscription_id, status) values ($1, $2, $3, 'active') returning id",
-    [planId, contactPhone, squareSubscriptionId],
-  );
-  return result.rows[0].id;
-}
-
 /** A token for a booking's manage link or checkout page: 128 random bits,
  * URL-safe, and short enough to leave room in a one-segment text. */
 export function newBookingToken(): string {
@@ -223,7 +215,7 @@ export async function countTakenSpots(db: DbClient, sessionId: number, exceptBoo
  * the full session it was opened for) who have not been offered one yet,
  * other than `exceptPhone`'s own children. They have first claim on a spot
  * that opens, so a new or lapsed hold takes only what is left after them. */
-async function countKeptForWaitlist(db: DbClient, sessionId: number, exceptPhone: string): Promise<number> {
+export async function countKeptForWaitlist(db: DbClient, sessionId: number, exceptPhone: string): Promise<number> {
   const kept = await db.query<{ count: string }>(
     `select count(*)::text as count from waitlist w
      where w.state = 'waiting' and w.contact_phone <> $2
@@ -407,7 +399,11 @@ export interface PassRowPayment {
  * been offered yet.
  *
  * Booking a child also takes that child, under the same phone, off the
- * session's waitlist, so the next spot that opens is not offered to them. */
+ * session's waitlist, so the next spot that opens is not offered to them.
+ *
+ * Each booking keeps the session's price as it is at this moment
+ * (price_cents), which is what Money counts it as, whatever the price is
+ * changed to later. */
 export async function bookPendingBooking(
   db: DbClient,
   booking: Pick<BookingRow, 'id' | 'session_id'>,
@@ -441,8 +437,9 @@ export async function bookPendingBooking(
     for (const [i, row] of pass.rows.entries()) {
       const pay = rows?.[i] ?? { creditId: fields.creditId, grossCents: i === 0 ? fields.grossCents : null };
       await tx.query(
-        `update booking set status = 'booked', payment_source = $2, credit_id = $3, charge_id = $4, gross_cents = $5
-         where id = $1 and status = 'pending'`,
+        `update booking b set status = 'booked', payment_source = $2, credit_id = $3, charge_id = $4, gross_cents = $5,
+                price_cents = (select st.price_cents from session s join session_type st on st.id = s.session_type_id where s.id = b.session_id)
+         where b.id = $1 and b.status = 'pending'`,
         [row.id, fields.paymentSource, pay.creditId, fields.chargeId, pay.grossCents],
       );
     }
@@ -524,16 +521,6 @@ export async function creditCancelledBooking(
     );
     return creditId;
   });
-}
-
-/** Records a pack purchase once per payment. */
-export async function ensureSubscriptionRecord(db: DbClient, planId: number, contactPhone: string, paymentRef: string): Promise<void> {
-  await db.query(
-    `insert into subscription (plan_id, contact_phone, square_subscription_id, status)
-     select $1::int, $2::text, $3::text, 'active'
-     where not exists (select 1 from subscription where plan_id = $1 and contact_phone = $2 and square_subscription_id = $3)`,
-    [planId, contactPhone, paymentRef],
-  );
 }
 
 /** A package by id for a paid event: a payment made before the coach

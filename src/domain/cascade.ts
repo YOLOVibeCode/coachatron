@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { inTransaction, type DbClient } from '../db/client.js';
-import { OPT_OUT_LINE, sendEmailMessage, sendText, toOneSegment } from './outbound.js';
+import { OPT_OUT_LINE, fitsOneSegment, segmentRoom, sendEmailMessage, sendText, shortenTo, toOneSegment } from './outbound.js';
 import { APP_BASE_URL } from '../config.js';
 import { expireLivePendingForCoach } from './assistantPending.js';
 import { formatConfirmWhen } from '../lib/time.js';
@@ -781,6 +781,61 @@ async function tellCoachClaimed(db: DbClient, claimed: Claimed, spots: SpotOffer
     subject: claimed.kind === 'second_group' ? `${who} took the second group` : `${who} is your backup coach`,
     email: `${info.label}: ${job}.${offered}`,
   });
+}
+
+const CLAIMED_TEMPLATE = 'offer-claimed';
+/** A place cut shorter than this says too little, so it is left out. */
+const MIN_PLACE_CHARS = 12;
+
+/** "Coachatron: it's yours. Backup coach for Skills Group Tue Oct 7 6pm,
+ * Field 3, 4 athletes, pays $80." The job and the session's details, as in
+ * the offer it answers. "it's yours", the time, the group size and the pay
+ * always stay whole. Names and places have no length limit, so when the
+ * text is too long the place is shortened first, or left out when too
+ * little of it would be left, and then the session's name. */
+export function claimedText(info: SessionOverflowInfo, kind: OverflowKind, booked: number): string {
+  const when = compactWhen(info);
+  const pay = info.backupPayCents ? `, pays ${formatPay(info.backupPayCents)}` : '';
+  const head = `Coachatron: it's yours. ${kind === 'second_group' ? 'Coach a second ' : 'Backup coach for '}`;
+  const after = kind === 'second_group' ? ` group ${when}` : ` ${when}`;
+  const end = `, ${kind === 'second_group' ? `up to ${athletes(info.capacity)}` : athletes(booked)}${pay}.`;
+  const text = (name: string, place: string) => `${head}${name}${after}${place ? `, ${place}` : ''}${end}`;
+  const name = plain(info.name);
+  const place = plain(info.locationText ?? '');
+  const whole = text(name, place);
+  if (fitsOneSegment(whole, CLAIMED_TEMPLATE)) return whole;
+  const placeRoom = segmentRoom(text(name, ''), CLAIMED_TEMPLATE) - ', '.length;
+  if (place && placeRoom >= MIN_PLACE_CHARS) return text(name, shortenTo(place, placeRoom));
+  if (fitsOneSegment(text(name, ''), CLAIMED_TEMPLATE)) return text(name, '');
+  return text(shortenTo(name, segmentRoom(text('', ''), CLAIMED_TEMPLATE)), '');
+}
+
+/** A roster member who took a job by replying Y hears it is theirs, with
+ * when, where and what it pays (SPEC.md §7.3 step 4). The text goes
+ * through the single send path, so their consent and every ceiling apply.
+ * The offer page shows the same to someone who accepts there. A failed send
+ * is logged and never undoes the accept. */
+export async function tellMemberClaimed(db: DbClient, offerId: number): Promise<void> {
+  const found = await db.query<{ session_id: number; kind: OverflowKind | null; phone: string }>(
+    `select o.session_id, o.kind, rm.phone
+     from offer o join roster_member rm on rm.id = o.roster_member_id
+     where o.id = $1 and o.state = 'accepted'`,
+    [offerId],
+  );
+  const offer = found.rows[0];
+  if (!offer) return;
+  const info = await loadSessionOverflowInfo(db, offer.session_id);
+  if (!info) return;
+  try {
+    await sendText(db, {
+      to: offer.phone,
+      body: claimedText(info, offer.kind ?? 'backup', await countBooked(db, info.sessionId)),
+      coachId: info.coachId,
+      template: CLAIMED_TEMPLATE,
+    });
+  } catch (err) {
+    console.error('overflow: claimed text to the roster member failed:', err instanceof Error ? err.message : err);
+  }
 }
 
 export async function getOfferByToken(
