@@ -11,6 +11,8 @@ import { coachCookie, getPage, postForm, readable } from './helpers/refunds.js';
 import { grantSmsConsent, revokeConsent } from '../src/domain/sms-consent.js';
 import { newBookingToken } from '../src/domain/pricing.js';
 import { sendBookingConfirmation } from '../src/domain/bookingMessages.js';
+import { moveByParent } from '../src/domain/moveBooking.js';
+import { applyRefunded } from '../src/domain/refunds.js';
 import type { DbClient } from '../src/db/client.js';
 
 /** A parent moves a booking from its manage page (SPEC.md §7.2) to another
@@ -474,5 +476,53 @@ test("moved confirmations to one number and address are capped, and other famili
     await grantSmsConsent(db, other);
     const ola = await dropIn(db, from, 'Ola', other);
     assert.deepEqual(await sendBookingConfirmation(db, ola.id), { text: 'sent', email: 'sent' });
+  });
+});
+
+/** The booking rows `db`'s callers lock, in the order each is first locked.
+ * PGlite runs one transaction at a time, so two that lock the same rows in
+ * opposite orders cannot be shown waiting on each other here; on Postgres
+ * they can stop each other, so the order is checked instead. */
+function bookingLockOrder(db: DbClient): { db: DbClient; order: number[] } {
+  const order: number[] = [];
+  const watch = (inner: DbClient): DbClient => ({
+    async query<T>(sql: string, params?: unknown[]) {
+      const result = await inner.query<T>(sql, params);
+      if (/\bfor update\b/.test(sql) && /\bfrom booking\b/.test(sql)) {
+        for (const row of result.rows as Array<{ id?: number }>) {
+          if (typeof row.id === 'number' && !order.includes(row.id)) order.push(row.id);
+        }
+      }
+      return result;
+    },
+    transaction: <T>(fn: (tx: DbClient) => Promise<T>) => inner.transaction!((tx) => fn(watch(tx))),
+  });
+  return { db: watch(db), order };
+}
+
+test("a move from either child's link locks the payment's bookings in the order a refund of it does", async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const { seed, from, to } = await twoSessions(db);
+    await withServer(async (base) => {
+      await payForTwo(base, seed.coach.handle, from, 'ch_two');
+    });
+    const [mia, leo] = await passChildren(db);
+
+    const moving = bookingLockOrder(db);
+    assert.equal((await moveByParent(moving.db, leo.manage_token, to)).kind, 'moved');
+    const back = bookingLockOrder(db);
+    assert.equal((await moveByParent(back.db, mia.manage_token, from)).kind, 'moved');
+
+    await db.query(
+      "insert into refund (coach_id, payment_ref, booking_id, amount_cents, status) values ($1, 'ch_two', $2, 7000, 'pending')",
+      [seed.coach.id, mia.id],
+    );
+    const refunding = bookingLockOrder(db);
+    assert.equal(await applyRefunded(refunding.db, { paymentRef: 'ch_two', refundRef: 're_two', amountCents: 7000, sellerKey: null }), 'refunded');
+
+    assert.deepEqual(refunding.order, [mia.id, leo.id]);
+    assert.deepEqual(moving.order, refunding.order, "from Leo's link");
+    assert.deepEqual(back.order, refunding.order, "from Mia's link");
   });
 });

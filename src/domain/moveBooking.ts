@@ -50,14 +50,22 @@ interface Together {
 }
 
 /** The bookings that move with this one: those carrying its payment in its
- * session (the same set a refund of that payment covers), or it alone. */
+ * session (the same set a refund of that payment covers), or it alone.
+ * `lock` locks them in id order, the order a refund of the payment takes
+ * them (refunds.ts locks the payment's first booking, then the set), so a
+ * move and a refund of one payment wait for each other instead of each
+ * holding a row the other needs. */
 async function paidTogether(db: DbClient, b: MovingBooking, lock: boolean): Promise<Together[]> {
-  if (b.charge_id === null) return [b];
+  const forUpdate = lock ? ' for update' : '';
+  if (b.charge_id === null) {
+    if (!lock) return [b];
+    return (await db.query<Together>(`select id, status, athlete_name from booking where id = $1${forUpdate}`, [b.id])).rows;
+  }
   const result = await db.query<Together>(
-    `select id, status, athlete_name from booking where charge_id = $1 and session_id = $2 order by id${lock ? ' for update' : ''}`,
+    `select id, status, athlete_name from booking where charge_id = $1 and session_id = $2 order by id${forUpdate}`,
     [b.charge_id, b.session_id],
   );
-  return result.rows.length > 0 ? result.rows : [b];
+  return result.rows.length > 0 || lock ? result.rows : [b];
 }
 
 function moveState(b: MovingBooking, together: Together[], now: Date): MoveState {
@@ -129,7 +137,9 @@ export type MoveResult =
 /** Moves the booking behind this manage link, with any booking its payment
  * also bought, to another session. Both sessions are locked first, as a
  * booking locks its session, and in id order, so two moves between the
- * same sessions cannot wait on each other; then the bookings' rows. The
+ * same sessions cannot wait on each other; then every booking the payment
+ * bought, in id order whichever child's link this is, as a refund of that
+ * payment locks them, and only then is the booking's state checked. The
  * room is counted and taken under those locks, so two parents moving (or
  * booking) into the last spot cannot both have it. Nothing about the
  * payment changes. The 24-hour reminder is due again, for the new time,
@@ -142,10 +152,16 @@ export async function moveByParent(db: DbClient, manageToken: string, toSessionI
   return inTransaction(db, async (tx): Promise<MoveResult> => {
     const status = new Map<number, string | null>();
     for (const id of [fromSessionId, toSessionId].sort((x, y) => x - y)) status.set(id, await lockSession(tx, id));
-    const b = (await tx.query<MovingBooking>(`${MOVING_SQL} for update of b`, [manageToken])).rows[0];
+    // Read without a row lock: the rows are locked next, in id order.
+    const seen = (await tx.query<MovingBooking>(MOVING_SQL, [manageToken])).rows[0];
+    if (!seen) return { kind: 'not-found' };
+    if (seen.session_id !== fromSessionId) return { kind: 'already' };
+    const together = await paidTogether(tx, seen, true);
+    // Read again now that its row is locked: a refund or cancel that held
+    // the rows first has finished, and what it changed shows here.
+    const b = (await tx.query<MovingBooking>(MOVING_SQL, [manageToken])).rows[0];
     if (!b) return { kind: 'not-found' };
-    if (b.session_id !== fromSessionId) return { kind: 'already' };
-    const together = await paidTogether(tx, b, true);
+    if (b.session_id !== fromSessionId || !together.some((x) => x.id === b.id)) return { kind: 'already' };
     const state = moveState(b, together, now);
     if (state !== 'open') return { kind: 'cannot', state, together: together.map((x) => x.athlete_name) };
 

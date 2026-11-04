@@ -235,8 +235,10 @@ SPEC.md §8.1.
   `src/domain/moveBooking.ts`)*. Until the coach's cancellation window
   closes, `/booking/:token` lists the other upcoming sessions of the same
   session type with room, and `POST /booking/:token/move` moves the booking.
-  Both sessions are locked in id order (`lockSession`), then the booking
-  rows, and room is counted as a booking counts it (`countTakenSpots`,
+  Both sessions are locked in id order (`lockSession`), then every booking
+  the payment bought, in id order from either child's link (the order a
+  refund of that payment locks them), and only then is the booking's state
+  checked. Room is counted as a booking counts it (`countTakenSpots`,
   `countKeptForWaitlist`). Only `booking.session_id` changes: the manage
   link, payment and credit stay, and no payment call goes to the relay. The
   parent's confirmation (template `booking-moved`) and any waitlist offer
