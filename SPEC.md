@@ -640,7 +640,7 @@ message_log(id, to_phone, template, body, provider_id, sent_at, status)
 `credit.contact_phone` is the join key for a buyer, by design (§9.2). Normalize
 to E.164 on write.
 
-Added since the sketch (migrations 0013–0026): `request_limit` (fixed-window
+Added since the sketch (migrations 0013–0030): `request_limit` (fixed-window
 counts per client address, phone, or email) and `otp_code.attempts`;
 `coach.email_verified_at`; `coach_payments` (whether the coach can take
 charges, and the payment texts owed) and `payments_link`;
@@ -662,13 +662,20 @@ above zero, no negative price or credit balance, a package expiry above
 zero), after moving any stored value they refuse to the nearest one they
 take (a package expiry of 0 days, which already meant none, becomes null),
 and indexes on the columns the pages, the tick and the send path filter on,
-`booking.session_id` first.
+`booking.session_id` first. Migration 0027 adds `booking.price_cents` (the
+session's price when the booking was made, which Money's "booked" total
+reads), and records a plan purchase as payment source `Pack` with no
+`subscription` row (rows from before read `one-time`). Migration 0028 adds
+`otp_code.purpose` (`signin` or `credits`: a code works only for its own),
+0029 `message_log.visitor` (a text set off by someone not signed in, for the
+app-wide visitor ceiling), and 0030 `coach_payments.test_mode` (whether the
+coach's payment account is a test one; production takes only live ones).
 
 Two column names predate the move to Stripe and were kept: `square_merchant_id`
 is unused (a coach reaches their Stripe account through
 `coach.connect_recipient_key`, the relay's seller key), and
 `square_subscription_id` holds the relay's opaque payment reference for a plan
-purchase. `booking.charge_id` holds the same kind of reference. Coachatron
+purchase made before migration 0027; nothing writes `subscription` now. `booking.charge_id` holds the same kind of reference. Coachatron
 stores no Stripe id. `coach.fee_bps` (default 500) is stored but not sent to
 the relay; the Connect row sets the fee (§9.3).
 

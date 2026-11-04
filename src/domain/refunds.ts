@@ -181,7 +181,7 @@ async function purchaseCredits(db: DbClient, b: PurchaseBooking): Promise<Purcha
             [creditIds],
           )
         ).rows;
-  const kind: PurchaseKind = b.payment_source === 'Subscription' ? 'pack' : b.payment_source === 'PackageCredit' ? 'package' : 'drop-in';
+  const kind: PurchaseKind = b.payment_source === 'Pack' ? 'pack' : b.payment_source === 'PackageCredit' ? 'package' : 'drop-in';
   const own = bought.filter(usesOwnSession).length;
   const unused = credits.reduce((n, c) => n + Math.max(0, c.remaining), 0);
   if (kind === 'drop-in') {
@@ -1007,7 +1007,7 @@ export async function listRecentPayments(db: DbClient, coachId: number, limit = 
 
 /** What a payment bought, for a label. */
 export function purchaseLabel(paymentSource: string | null): string {
-  return paymentSource === 'Subscription' ? 'One-time pack' : paymentSource === 'PackageCredit' ? 'Package' : 'Drop-in';
+  return paymentSource === 'Pack' ? 'One-time pack' : paymentSource === 'PackageCredit' ? 'Package' : 'Drop-in';
 }
 
 /** A short state for a refund next to its booking or payment. */

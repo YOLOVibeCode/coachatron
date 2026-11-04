@@ -8,6 +8,7 @@ import { seedBookedSession, seedCoachWithSession, seedRosterMember, seedWaitlist
 import { acceptOffer, answerAsk, checkOverflow, startCascade } from '../src/domain/cascade.js';
 import { cancelScheduledSession } from '../src/domain/cancelSession.js';
 import { createCoachSession } from '../src/domain/auth.js';
+import { revokeConsent } from '../src/domain/sms-consent.js';
 import { runTick } from '../src/jobs/tick.js';
 import { setComplete, resetComplete } from '../src/llm/complete.js';
 import { fakeComplete } from './fakes/llm.js';
@@ -529,5 +530,76 @@ test('the offer page names the job', async () => {
       ).text();
       assert.match(accepted, /no longer open \(accepted\)/);
     });
+  });
+});
+
+test('a member who takes a backup job by replying Y is texted that it is theirs, with when, where and the pay', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await fullSession(db, { capacity: 2, location: 'Field 3' });
+    await db.query('update session_type set backup_pay_cents = 8000 where id = $1', [seed.sessionTypeId]);
+    const member = await seedRosterMember(db, seed.coach.id, 'Bailey Backup', 0);
+    await checkOverflow(db, seed.sessionId);
+    await answerAsk(db, seed.coach.id, 'backup');
+    await withServer(async (base) => {
+      await smsTo(base, member.phone, 'Y');
+    });
+    const toMember = relay.sms.filter((m) => m.to === member.phone);
+    assert.equal(toMember.length, 2, 'the offer, then the confirmation');
+    assert.match(toMember[1].body, /^Coachatron: it's yours\. Backup coach for Goalkeeper Group \w{3} \w{3} \d{1,2} \d{1,2}(:\d\d)?[ap]m, Field 3, 2 athletes, pays \$80\. Reply STOP to opt out\.$/);
+    const logged = await db.query<{ template: string; coach_id: number }>("select template, coach_id from message_log where to_phone = $1 and status = 'sent' order by id", [
+      member.phone,
+    ]);
+    assert.deepEqual(logged.rows.map((r) => r.template), ['offer', 'offer-claimed']);
+    assert.equal(logged.rows[1].coach_id, seed.coach.id, 'counted against the coach like the offer');
+  });
+});
+
+test('a member who takes a second group by replying Y is texted its time, place and size; the page accept is not texted', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await fullSession(db, { capacity: 2, location: 'Field 3' });
+    const member = await seedRosterMember(db, seed.coach.id, 'Sam Second', 0);
+    await checkOverflow(db, seed.sessionId);
+    await answerAsk(db, seed.coach.id, 'second_group');
+    await withServer(async (base) => {
+      await smsTo(base, member.phone, 'Y');
+    });
+    const confirmation = relay.sms.filter((m) => m.to === member.phone).at(-1);
+    assert.match(confirmation?.body ?? '', /^Coachatron: it's yours\. Coach a second Goalkeeper Group group .*, Field 3, up to 2 athletes\./);
+
+    // On the offer page instead: the page says so, and no text follows.
+    const other = await fullSession(db, { capacity: 1 });
+    const viaPage = await seedRosterMember(db, other.coach.id, 'Page Person', 0);
+    await checkOverflow(db, other.sessionId);
+    await answerAsk(db, other.coach.id, 'backup');
+    const [offer] = await offers(db, other.sessionId);
+    await withServer(async (base) => {
+      const res = await fetch(`${base}/offer/${offer.token}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: 'action=accept',
+      });
+      assert.equal(res.status, 200);
+    });
+    assert.equal(relay.sms.filter((m) => m.to === viaPage.phone).length, 1, 'only the offer');
+  });
+});
+
+test('a member who opted out after the offer is not texted when their Y takes the job', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await fullSession(db);
+    const member = await seedRosterMember(db, seed.coach.id, 'Quiet Quinn', 0);
+    await checkOverflow(db, seed.sessionId);
+    await answerAsk(db, seed.coach.id, 'backup');
+    await revokeConsent(db, member.phone);
+    await withServer(async (base) => {
+      await smsTo(base, member.phone, 'Y');
+    });
+    assert.deepEqual((await offers(db, seed.sessionId)).map((o) => o.state), ['accepted']);
+    assert.equal(relay.sms.filter((m) => m.to === member.phone).length, 1, 'only the offer');
+    const refused = await db.query<{ status: string }>("select status from message_log where to_phone = $1 and template = 'offer-claimed'", [member.phone]);
+    assert.deepEqual(refused.rows.map((r) => r.status), ['refused-opt-out']);
   });
 });

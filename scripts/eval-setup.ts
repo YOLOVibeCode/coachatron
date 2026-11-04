@@ -9,7 +9,9 @@
  *
  * Cases live in eval/setup-utterances.json. Each case runs the same prompt,
  * schema, and validation as production (src/domain/setup.ts), then checks
- * the facts the case expects. Exit code 1 if any case misses.
+ * the facts the case expects. Exit code 1 if any case misses. `npm test`
+ * checks check() itself and that every case asks only what it reads
+ * (test/setup-eval.test.ts), with no model.
  */
 import { readFileSync } from 'node:fs';
 import { productionComplete } from '../src/llm/complete.js';
@@ -35,7 +37,7 @@ interface ExpectSlot {
   weekday: number;
   time_local: string;
 }
-interface Case {
+export interface Case {
   id: string;
   text: string;
   draft_text?: string;
@@ -43,6 +45,8 @@ interface Case {
     coach_timezone?: string;
     types?: ExpectType[];
     weekly?: ExpectSlot[];
+    /** At least this many weekly times, whichever they are. */
+    weekly_min?: number;
     forbid_weekly?: ExpectSlot[];
     packages?: Array<{ credits: number; price_cents: number }>;
     plans?: Array<{ price_cents: number; credits_per_month: number }>;
@@ -50,6 +54,20 @@ interface Case {
     forbid_in_output?: string[];
   };
 }
+
+/** Every key check() reads in a case's expect. A key outside this list
+ * would be skipped without a word, so the test refuses one. */
+export const EXPECT_KEYS = [
+  'coach_timezone',
+  'types',
+  'weekly',
+  'weekly_min',
+  'forbid_weekly',
+  'packages',
+  'plans',
+  'questions_include',
+  'forbid_in_output',
+] as const satisfies ReadonlyArray<keyof Case['expect']>;
 
 const COACH: CoachRow = {
   id: 0,
@@ -91,7 +109,7 @@ function slotMatches(plan: SetupPlan, e: ExpectSlot): boolean {
   });
 }
 
-function check(c: Case, raw: unknown, plan: SetupPlan, questions: string[]): string[] {
+export function check(c: Case, raw: unknown, plan: SetupPlan, questions: string[]): string[] {
   const misses: string[] = [];
   const x = c.expect;
   if (x.coach_timezone !== undefined && plan.coach_timezone !== x.coach_timezone) {
@@ -102,6 +120,9 @@ function check(c: Case, raw: unknown, plan: SetupPlan, questions: string[]): str
   }
   for (const e of x.weekly ?? []) {
     if (!slotMatches(plan, e)) misses.push(`no weekly ${JSON.stringify(e)}`);
+  }
+  if (x.weekly_min !== undefined && plan.weekly.length < x.weekly_min) {
+    misses.push(`${plan.weekly.length} weekly times, expected at least ${x.weekly_min}`);
   }
   for (const e of x.forbid_weekly ?? []) {
     if (slotMatches(plan, e)) misses.push(`unexpected weekly ${JSON.stringify(e)}`);
@@ -164,4 +185,5 @@ async function main(): Promise<void> {
   process.exit(passed === cases.length ? 0 : 1);
 }
 
-await main();
+// Run only when called as a script, so the test can import check().
+if (import.meta.url === `file://${process.argv[1]}`) await main();

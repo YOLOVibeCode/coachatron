@@ -31,8 +31,10 @@ export const landingRouter = Router();
 const TITLE = 'Say your week. Start taking bookings.';
 const DESCRIPTION =
   'Type it or talk it — what you coach, how long, how many, the price, your days. Get a link parents book and pay on. About five minutes, on your phone.';
+// Every time says am or pm: a bare hour is read as pm (src/domain/setup.ts),
+// so "Saturday at 9" would mean 9pm.
 const WEEK_EXAMPLE =
-  'Tuesdays and Thursdays at 6, an hour, 8 athletes, $35. Privates Saturday at 9, 45 minutes, $70. 10-pack for $300.';
+  'Tuesdays and Thursdays at 6pm, an hour, 8 athletes, $35. Privates Saturday at 9am, 45 minutes, $70. 10-pack for $300.';
 
 function field(body: unknown, key: string): string {
   const value = (body as Record<string, unknown> | undefined)?.[key];

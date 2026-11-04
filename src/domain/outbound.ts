@@ -9,6 +9,7 @@ import {
   SMS_COACH_MONTHLY_CAP,
   SMS_PRODUCT_DAILY_FLOOR,
   SMS_PRODUCT_DAILY_PER_COACH,
+  visitorTextLimits,
 } from '../config.js';
 import { hasActiveConsent } from './sms-consent.js';
 import { isOptedOut } from './cascade.js';
@@ -132,7 +133,8 @@ export function canText(phone: string): boolean {
   return isDomesticDestination(phone) || (textsAreCaptured() && /^\+\d{8,15}$/.test(phone));
 }
 
-/** busy: the relay's own limits (HTTP 429) refused it; try again later. */
+/** busy: try again later. The relay's own limits (HTTP 429) refused it, or
+ * it is a visitor's text and the app-wide visitor ceiling is reached. */
 export type SendOutcome = 'sent' | 'capped' | 'refused' | 'busy';
 
 export interface OutboundText {
@@ -144,6 +146,11 @@ export interface OutboundText {
   template: string;
   /** Optional ceiling on this template to this number in 24 hours. */
   perRecipientDailyMax?: number;
+  /** Set off by someone who is not signed in, so it counts against the
+   * app-wide visitor ceiling (visitorTextLimits): 'always' (a sign-in code,
+   * a start link, an opt-in confirmation), or 'new-number' only when no
+   * text has been sent to this number before (a booking or waitlist text). */
+  visitor?: 'always' | 'new-number';
 }
 
 /** Texts that answer the person this moment and need no standing consent:
@@ -200,6 +207,30 @@ async function countSent(db: DbClient, where: string, params: unknown[], channel
   return Number(result.rows[0]?.n ?? '0');
 }
 
+/** Whether a text has ever gone out to this number. */
+async function textedBefore(db: DbClient, phone: string): Promise<boolean> {
+  return (await countSent(db, 'to_phone = $1', [phone])) > 0;
+}
+
+/** Whether this text counts against the visitor ceiling. */
+async function countsAsVisitor(db: DbClient, msg: OutboundText): Promise<boolean> {
+  if (msg.visitor === 'always') return true;
+  return msg.visitor === 'new-number' && !(await textedBefore(db, msg.to));
+}
+
+/** Which visitor ceiling, if any, this visitor's text would cross: the
+ * hour's or the day's, or the reserve kept from the product's day for
+ * everyone else's texts. */
+async function visitorCeilingHit(db: DbClient, now: Date): Promise<string | null> {
+  const limits = visitorTextLimits();
+  const hourAgo = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
+  if ((await countSent(db, 'visitor and sent_at > $1', [hourAgo])) >= limits.hourly) return 'visitor-hourly';
+  const utcDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
+  if ((await countSent(db, 'visitor and sent_at >= $1', [utcDay])) >= limits.daily) return 'visitor-daily';
+  if ((await countSent(db, 'sent_at >= $1', [utcDay])) + limits.reserve >= (await productDailyCeiling(db, now))) return 'visitor-reserve';
+  return null;
+}
+
 async function productDailyCeiling(db: DbClient, now: Date): Promise<number> {
   const active = await db.query<{ n: string }>(
     `select count(distinct st.coach_id)::text as n
@@ -243,11 +274,12 @@ async function log(
   providerId: string | null,
   now: Date,
   channel: Channel = 'sms',
+  visitor = false,
 ) {
   await db.query(
-    `insert into message_log (to_phone, template, body, provider_id, sent_at, status, coach_id, channel)
-     values ($1, $2, $3, $4, $5, $6, $7, $8)`,
-    [msg.to, msg.template, body, providerId, now.toISOString(), status, msg.coachId, channel],
+    `insert into message_log (to_phone, template, body, provider_id, sent_at, status, coach_id, channel, visitor)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [msg.to, msg.template, body, providerId, now.toISOString(), status, msg.coachId, channel, visitor],
   );
 }
 
@@ -271,17 +303,26 @@ export async function sendText(db: DbClient, msg: OutboundText, now: Date = new 
     console.warn(`sms: ${hit} ceiling reached, not sending ${msg.template} (coach ${msg.coachId ?? '-'})`);
     return 'capped';
   }
+  // A visitor's text past the app-wide visitor ceiling waits: 'busy', so
+  // the form says to try again later (or use email where there is one).
+  const visitor = await countsAsVisitor(db, msg);
+  const visitorHit = visitor ? await visitorCeilingHit(db, now) : null;
+  if (visitorHit) {
+    await log(db, msg, body, `capped-${visitorHit}`, null, now, 'sms', true);
+    console.warn(`sms: ${visitorHit} ceiling reached, not sending ${msg.template} (coach ${msg.coachId ?? '-'})`);
+    return 'busy';
+  }
   let sent: SendSmsResult;
   try {
     sent = await sendSms({ to: msg.to, body });
   } catch (err) {
     // The relay was not reached. Logged like any failed send, so a limit
     // on failures (reminders) counts it.
-    await log(db, msg, body, 'failed', null, now);
+    await log(db, msg, body, 'failed', null, now, 'sms', visitor);
     throw err;
   }
   if (sent.ok) {
-    await log(db, msg, body, 'sent', sent.id, now);
+    await log(db, msg, body, 'sent', sent.id, now, 'sms', visitor);
     return 'sent';
   }
   if (sent.status === 429) {

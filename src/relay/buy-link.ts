@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { APP_BASE_URL } from '../config.js';
 import { signConnectBuyLink } from '../lib/store-client.js';
 import { connectProduct } from './seller.js';
@@ -75,8 +76,13 @@ export function cameBackFromPaying(url: string): boolean {
  * ever sent to it. */
 export const PLACEHOLDER_EMAIL_DOMAIN = 'book.coachatron.test';
 
-export function buyerEmail(phone: string, email: string | null, bookingId: number): string {
+/** The email a buy link carries: the one the parent typed, or for a parent
+ * who gave none a stand-in made from the checkout token by a one-way hash.
+ * It is the same for every try at one checkout and says nothing about the
+ * parent: no phone digits, and not the token, which opens the checkout
+ * page, since the payment provider shows this address to the coach. */
+export function buyerEmail(email: string | null, checkoutToken: string): string {
   if (email && email.includes('@')) return email;
-  const digits = phone.replace(/\D/g, '') || String(bookingId);
-  return `${digits}@${PLACEHOLDER_EMAIL_DOMAIN}`;
+  const id = createHash('sha256').update(`buyer:${checkoutToken}`).digest('hex').slice(0, 20);
+  return `b-${id}@${PLACEHOLDER_EMAIL_DOMAIN}`;
 }

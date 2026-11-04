@@ -31,8 +31,9 @@ export function createApp() {
   app.use(express.json());
   app.use(refuseNulCharacters);
 
+  // /health is the Railway healthcheck and checks the database; GET / never
+  // touches it.
   app.use(healthRouter);
-  // GET / is also the Railway healthcheck, so it never touches the database.
   app.use(landingRouter);
   app.use(coachRouter);
   app.use(publicRouter);

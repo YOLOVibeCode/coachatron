@@ -308,3 +308,60 @@ test('checkout code requests from one address are limited like sign-in code requ
     });
   });
 });
+
+function form(base: string, path: string, body: Record<string, string>): Promise<Response> {
+  return fetch(`${base}${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(body),
+    redirect: 'manual',
+  });
+}
+
+test('a checkout code is not a sign-in code, and asking for one leaves a live sign-in code working', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 3 });
+    await createCredit(db, seed.coach.id, PHONE, null, 'test', 3, null);
+    await withServer(async (base) => {
+      // A sign-in code for the number, then a checkout code for the same number.
+      assert.equal((await form(base, '/signin/otp', { contact: '5551112222' })).status, 303);
+      const signInCode = lastCode(relay.sms, PHONE);
+      const b = await bookOnline(base, seed.coach.handle, seed.sessionId, 'Alex', '5551112222');
+      assert.ok(b.key);
+      assert.equal((await postCheckout(base, seed.coach.handle, b.key, { mode: 'send_code' })).status, 200);
+      const creditCode = lastCode(relay.sms, PHONE);
+      assert.notEqual(creditCode, signInCode);
+
+      const withCreditCode = await form(base, '/signin/verify', { to: PHONE, code: creditCode, name: 'Pat' });
+      assert.equal(withCreditCode.status, 401, 'the checkout code does not sign in');
+      const withSignInCode = await postCheckout(base, seed.coach.handle, b.key, { mode: 'verify_code', code: signInCode });
+      assert.equal(withSignInCode.status, 401, 'the sign-in code does not unlock credits');
+
+      const signedIn = await form(base, '/signin/verify', { to: PHONE, code: signInCode, name: 'Pat' });
+      assert.equal(signedIn.status, 303, 'the sign-in code still works');
+      assert.match(signedIn.headers.get('set-cookie') ?? '', /cx_session=/);
+      assert.equal((await postCheckout(base, seed.coach.handle, b.key, { mode: 'verify_code', code: creditCode })).status, 303);
+    });
+  });
+});
+
+test('the stand-in email on a buy link carries no phone digits and stays the same for one checkout', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 3 });
+    await withServer(async (base) => {
+      const b = await bookOnline(base, seed.coach.handle, seed.sessionId, 'Alex', '5551112222');
+      assert.ok(b.key);
+      const emails: string[] = [];
+      for (let i = 0; i < 2; i += 1) {
+        const pay = await postCheckout(base, seed.coach.handle, b.key, { mode: 'dropin' });
+        assert.equal(pay.status, 303);
+        emails.push(new URL(pay.headers.get('location') ?? '', 'http://relay.test').searchParams.get('email') ?? '');
+      }
+      assert.match(emails[0], /^b-[0-9a-f]{20}@book\.coachatron\.test$/);
+      assert.equal(emails[1], emails[0]);
+      for (const leak of ['5551112222', b.key]) assert.ok(!emails[0].includes(leak), leak);
+    });
+  });
+});

@@ -33,6 +33,7 @@ import {
   OTP_DAILY_MAX_PER_CONTACT,
   SELLER_AGREEMENT_VERSION,
   SELLER_PRODUCT_DESCRIPTION,
+  testPaymentsAllowed,
 } from '../config.js';
 import { acceptSellerAgreement, getSellerStatus, startSellerOnboarding } from '../relay/seller.js';
 import {
@@ -218,6 +219,9 @@ const TOO_MANY_TRIES = 'Too many tries. Try again in an hour.';
 /** Code requests from one address: the longest window is a day. */
 const TOO_MANY_CODE_REQUESTS = 'Too many codes asked for from here. Try again later.';
 const RELAY_BUSY = "We can't send codes right now. Try again in a few minutes.";
+/** Text codes held back (the relay's limits, or the app-wide ceiling on
+ * texts to people not signed in): email still works. */
+const TEXTS_BUSY = "We can't text codes right now. Try again later, or use your email instead.";
 const SEND_FAILED = "We couldn't send a code just now. Try again in a minute.";
 const CODE_ERRORS: Record<Exclude<OtpCheck, { ok: true }>['reason'], string> = {
   wrong: 'Invalid or expired code.',
@@ -236,11 +240,13 @@ function signInCodeText(code: string): string {
 }
 
 /** Sends a sign-in code and stores it only once it has gone out, so a
- * request the send limits refuse leaves no code behind. */
+ * request the send limits refuse leaves no code behind. `visitor`: asked
+ * for by someone not signed in, so a text code counts against the
+ * app-wide visitor ceiling; a signed-in coach's codes do not. */
 async function sendCode(
   db: DbClient,
   contact: Contact,
-  opts: { coachId: number | null; smsConsent: boolean; text?: (code: string) => string },
+  opts: { coachId: number | null; smsConsent: boolean; text?: (code: string) => string; visitor?: boolean },
 ): Promise<CodeOutcome> {
   const code = newOtpCode();
   let outcome: SendOutcome;
@@ -260,6 +266,7 @@ async function sendCode(
             coachId: opts.coachId,
             template: 'otp',
             perRecipientDailyMax: OTP_DAILY_MAX_PER_CONTACT,
+            ...(opts.visitor ? { visitor: 'always' as const } : {}),
           });
   } catch (err) {
     console.error('sign-in code not sent:', err instanceof Error ? err.message : err);
@@ -335,6 +342,7 @@ coachRouter.post('/signin/otp', async (req, res) => {
   const outcome = await sendCode(db, contact, {
     coachId: null,
     smsConsent: contact.kind === 'phone' && smsConsentChecked(req.body),
+    visitor: true,
   });
   if (outcome === 'sent') {
     res.redirect(303, `/signin/verify?to=${encodeURIComponent(contactValue(contact))}`);
@@ -343,7 +351,7 @@ coachRouter.post('/signin/otp', async (req, res) => {
   if (outcome === 'capped') {
     again(429, `Too many codes for ${contact.kind === 'email' ? 'this email' : 'this number'} today. Try again tomorrow.`);
   } else if (outcome === 'busy') {
-    again(429, RELAY_BUSY);
+    again(429, contact.kind === 'phone' ? TEXTS_BUSY : RELAY_BUSY);
   } else if (outcome === 'failed') {
     again(502, SEND_FAILED);
   } else {
@@ -920,8 +928,9 @@ const SETUP_NOTICES: Record<string, string> = {
   stale: 'That setup already went live or was cleared.',
 };
 
+// Every time says am or pm: a bare hour is read as pm (src/domain/setup.ts).
 const SETUP_EXAMPLE =
-  'Keeper group Tuesdays and Thursdays at 6 at Field 3, an hour, 8 kids, $35. Backup coach gets $80. Privates Saturday at 9, 10 and 11, 45 minutes, $70. 10-pack for $300.';
+  'Keeper group Tuesdays and Thursdays at 6pm at Field 3, an hour, 8 kids, $35. Backup coach gets $80. Privates Saturday at 9am, 10am and 11am, 45 minutes, $70. 10-pack for $300.';
 
 function renderSetupScreen(
   coach: CoachRow,
@@ -1700,14 +1709,14 @@ const UNREACHED_REASON: Record<CancelReach['unreached'][number]['reason'], strin
   failed: 'text failed to send',
 };
 
-/** The cancel's confirmation on screen 3: how many parents were texted, and
- * who still needs to be told by the coach. */
+/** The cancel's confirmation on screen 3: how many parents were texted or
+ * emailed, and who still needs to be told by the coach. */
 function renderCancelReach(reach: CancelReach) {
   const parents = reach.athletesTotal === 1 ? 'parent' : 'parents';
   const credits = reach.creditsReturned === 1 ? 'credit' : 'credits';
   if (reach.athletesTotal === 0) return html`<div class="card cancel-reach"><p><strong>Cancelled.</strong></p></div>`;
   return html`<div class="card cancel-reach">
-    <p><strong>Cancelled.</strong> Texted ${reach.athletesNotified} of ${reach.athletesTotal} ${parents}. ${reach.creditsReturned} ${credits} returned${dropInCreditNote(reach)}.</p>
+    <p><strong>Cancelled.</strong> Texted ${reach.athletesNotified}${reach.athletesEmailed > 0 ? ` and emailed ${reach.athletesEmailed}` : ''} of ${reach.athletesTotal} ${parents}. ${reach.creditsReturned} ${credits} returned${dropInCreditNote(reach)}.</p>
     ${reach.unreached.length > 0
       ? html`<p class="error">Not reached — please contact them yourself:</p>
           <ul class="unreached">
@@ -1815,7 +1824,9 @@ coachRouter.get('/app/sessions/:id/cancel', requireAuth, async (req, res) => {
         <h1>Cancel session</h1>
         <p>Cancel ${when}? ${preview.textable} ${preview.textable === 1 ? 'athlete' : 'athletes'} will get a text.</p>
         ${untextable > 0
-          ? html`<p class="muted">${untextable} ${untextable === 1 ? 'parent has' : 'parents have'} not opted in to texts. You'll see who to contact after you cancel.</p>`
+          ? html`<p class="muted">${untextable} ${untextable === 1 ? 'parent has' : 'parents have'} not opted in to texts${preview.emailable > 0
+              ? `; ${preview.emailable} will get an email instead`
+              : ''}. You'll see who to contact after you cancel.</p>`
           : raw('')}
         <form method="post" action="/app/sessions/${sessionId}/cancel">
           <div class="btn-row">
@@ -2112,7 +2123,8 @@ coachRouter.post('/app/roster/:id/priority', requireAuth, async (req, res) => {
 // ---- Screen 7: money (read-only summary + connecting payments) ----
 
 type PaymentsState =
-  | { kind: 'connected'; payoutsEnabled: boolean }
+  /** testOnly: a test account where only a live one takes payments (production). */
+  | { kind: 'connected'; payoutsEnabled: boolean; testOnly: boolean }
   | { kind: 'finish' }
   | { kind: 'start' }
   | { kind: 'unavailable' };
@@ -2123,7 +2135,9 @@ async function loadPaymentsState(db: DbClient, coach: CoachRow): Promise<Payment
   try {
     const status = await getSellerStatus(getConnectRecipientKey(coach));
     await recordSellerStatus(db, coach, status);
-    if (status?.chargesEnabled) return { kind: 'connected', payoutsEnabled: status.payoutsEnabled };
+    if (status?.chargesEnabled) {
+      return { kind: 'connected', payoutsEnabled: status.payoutsEnabled, testOnly: !testPaymentsAllowed() && status.mode !== 'live' };
+    }
     if (status?.agreementVersion === SELLER_AGREEMENT_VERSION) return { kind: 'finish' };
     return { kind: 'start' };
   } catch {
@@ -2142,6 +2156,9 @@ function renderPaymentsCard(state: PaymentsState, notice: string | null, error: 
   const body =
     state.kind === 'connected'
       ? html`<p><strong>Payments connected.</strong></p>
+          ${state.testOnly
+            ? html`<p class="error">This payment account takes test payments only, so parents cannot book paid sessions yet.</p>`
+            : raw('')}
           <p class="muted">Athletes pay you directly. Coachatron keeps ${feePercent} of each payment.</p>
           <p class="muted">
             ${state.payoutsEnabled

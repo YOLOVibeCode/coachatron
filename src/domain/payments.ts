@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { DbClient } from '../db/client.js';
-import { APP_BASE_URL } from '../config.js';
+import { APP_BASE_URL, testPaymentsAllowed } from '../config.js';
 import { getSellerStatus, type SellerStatus } from '../relay/seller.js';
 import { findCoachById, getConnectRecipientKey, type CoachRow } from './auth.js';
 import { fitsOneSegment, sendText } from './outbound.js';
@@ -41,6 +41,16 @@ export interface PaymentsRow {
   last_reminder_at: string | null;
   ready_due_at: string | null;
   ready_texted_at: string | null;
+  /** The payment account is a test one (true), a live one (false), or not
+   * known yet (null). */
+  test_mode: boolean | null;
+}
+
+/** Whether a parent can pay through this account here: charges are on,
+ * and in production the account is a live one, unless ALLOW_TEST_PAYMENTS
+ * is set. Outside production a test account works as a live one. */
+export function chargesUsable(row: Pick<PaymentsRow, 'charges_enabled' | 'test_mode'>): boolean {
+  return row.charges_enabled === true && (testPaymentsAllowed() || row.test_mode === false);
 }
 
 // ---- Links ----
@@ -182,6 +192,18 @@ export async function recordChargesEnabled(db: DbClient, coach: CoachRow, enable
   if (turnedOn) await sendReadyTextIfDue(db, coach, now);
 }
 
+/** Saves whether the coach's payment account is a test one, as the relay
+ * reports it in a seller's status or event. A mode the relay did not give
+ * leaves what was known. */
+export async function recordSellerMode(db: DbClient, coachId: number, mode: 'test' | 'live' | null): Promise<void> {
+  if (mode === null) return;
+  await db.query(
+    `insert into coach_payments (coach_id, test_mode) values ($1, $2)
+     on conflict (coach_id) do update set test_mode = excluded.test_mode`,
+    [coachId, mode === 'test'],
+  );
+}
+
 /** Saves what the relay said about the coach's seller (null: never started). */
 export async function recordSellerStatus(
   db: DbClient,
@@ -191,12 +213,15 @@ export async function recordSellerStatus(
 ): Promise<void> {
   // Accepting the terms is the first step of setup, wherever it happened.
   if (status?.agreementVersion) await markPaymentsStarted(db, coach.id, now);
+  // The mode first, so a ready text owed by the charges below knows it.
+  await recordSellerMode(db, coach.id, status?.mode ?? null);
   await recordChargesEnabled(db, coach, status?.chargesEnabled === true, now);
 }
 
-/** Asks the relay and saves the answer. null when the relay did not answer.
- * The ask itself is saved either way, so a relay that is down is not asked
- * again on every page view and every tick. */
+/** Asks the relay and saves the answer: whether a parent can pay this coach
+ * here (chargesUsable), or null when the relay did not answer. The ask
+ * itself is saved either way, so a relay that is down is not asked again on
+ * every page view and every tick. */
 export async function refreshPaymentsStatus(db: DbClient, coach: CoachRow, now: Date = new Date()): Promise<boolean | null> {
   await db.query(
     `insert into coach_payments (coach_id, attempted_at) values ($1, $2)
@@ -210,16 +235,20 @@ export async function refreshPaymentsStatus(db: DbClient, coach: CoachRow, now: 
     return null;
   }
   await recordSellerStatus(db, coach, status, now);
-  return status?.chargesEnabled === true;
+  const row = await getPaymentsRow(db, coach.id);
+  return row ? chargesUsable(row) : false;
 }
 
 /** Whether a parent can pay this coach now. The saved answer when there is
  * one; otherwise the relay is asked, at most once a minute. Until it answers,
  * paying stays closed (session credits still work), since the payment page
- * is on the same relay; the tick keeps asking and opens it when it can. */
+ * is on the same relay; the tick keeps asking and opens it when it can. In
+ * production, an account whose mode is not known yet counts as not known. */
 export async function paymentsOpen(db: DbClient, coach: CoachRow, now: Date = new Date()): Promise<boolean> {
   const row = await getPaymentsRow(db, coach.id);
-  if (row?.charges_enabled != null) return row.charges_enabled;
+  if (row && row.charges_enabled != null && (row.charges_enabled === false || row.test_mode !== null || testPaymentsAllowed())) {
+    return chargesUsable(row);
+  }
   if (row?.attempted_at && now.getTime() - new Date(row.attempted_at).getTime() < PAYMENTS_RETRY_MS) return false;
   return (await refreshPaymentsStatus(db, coach, now)) ?? false;
 }
@@ -233,13 +262,16 @@ export async function markPaymentsStarted(db: DbClient, coachId: number, now: Da
 }
 
 /** The "you can take payments" text, once, outside quiet hours. A coach who
- * cannot be texted is not owed it any more. */
+ * cannot be texted is not owed it any more. A test account in production
+ * cannot take payments yet, so the text waits until it can. */
 export async function sendReadyTextIfDue(db: DbClient, coach: CoachRow, now: Date = new Date()): Promise<boolean> {
   if (!(await canTextCoach(db, coach))) {
     await db.query('update coach_payments set ready_due_at = null where coach_id = $1 and ready_texted_at is null', [coach.id]);
     return false;
   }
   if (inQuietHours(now, coach.tz)) return false;
+  const row = await getPaymentsRow(db, coach.id);
+  if (!row || !chargesUsable(row)) return false;
   const claimed = await db.query(
     `update coach_payments set ready_texted_at = $2
      where coach_id = $1 and charges_enabled = true and ready_due_at is not null and ready_texted_at is null
@@ -292,13 +324,15 @@ async function eachCoach(db: DbClient, coachIds: number[], fn: (coach: CoachRow)
 /** Asks the relay about coaches who started payment setup and cannot take
  * charges yet, at most every 15 minutes each, in case an event was missed.
  * A coach never checked is asked until the relay answers, which also learns
- * whether they started. An ask that went unanswered counts, so coaches the
- * relay cannot answer for take their turn and do not hold up the rest. */
+ * whether they started. Where only a live account can take payments
+ * (production), so is a coach whose account's mode is not known yet. An ask
+ * that went unanswered counts, so coaches the relay cannot answer for take
+ * their turn and do not hold up the rest. */
 export async function pollPaymentAccounts(db: DbClient, now: Date): Promise<number> {
+  const modeUnknown = testPaymentsAllowed() ? '' : 'or (charges_enabled and test_mode is null)';
   const due = await db.query<{ coach_id: number }>(
     `select coach_id from coach_payments
-     where charges_enabled is distinct from true
-       and (charges_enabled is null or started_at > $1)
+     where ((charges_enabled is distinct from true and (charges_enabled is null or started_at > $1)) ${modeUnknown})
        and (greatest(checked_at, attempted_at) is null or greatest(checked_at, attempted_at) <= $2)
      order by greatest(checked_at, attempted_at) nulls first, coach_id
      limit ${PAYMENTS_POLL_BATCH}`,

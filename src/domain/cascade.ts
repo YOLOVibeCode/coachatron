@@ -783,6 +783,48 @@ async function tellCoachClaimed(db: DbClient, claimed: Claimed, spots: SpotOffer
   });
 }
 
+/** "Coachatron: it's yours. Backup coach for Skills Group Tue Oct 7 6pm,
+ * Field 3, 4 athletes, pays $80." The job and the session's details, as in
+ * the offer it answers; the words before the details are what get
+ * shortened. */
+export function claimedText(info: SessionOverflowInfo, kind: OverflowKind, booked: number): string {
+  const pay = info.backupPayCents ? `, pays ${formatPay(info.backupPayCents)}` : '';
+  const place = info.locationText ? `, ${info.locationText}` : '';
+  const details =
+    kind === 'second_group'
+      ? `Coach a second ${info.name} group ${compactWhen(info)}${place}, up to ${athletes(info.capacity)}${pay}.`
+      : `Backup coach for ${info.name} ${compactWhen(info)}${place}, ${athletes(booked)}${pay}.`;
+  return keepTail("Coachatron: it's yours.", ` ${plain(details)}`);
+}
+
+/** A roster member who took a job by replying Y hears it is theirs, with
+ * when, where and what it pays (SPEC.md §7.3 step 4). The text goes
+ * through the single send path, so their consent and every ceiling apply.
+ * The offer page shows the same to someone who accepts there. A failed send
+ * is logged and never undoes the accept. */
+export async function tellMemberClaimed(db: DbClient, offerId: number): Promise<void> {
+  const found = await db.query<{ session_id: number; kind: OverflowKind | null; phone: string }>(
+    `select o.session_id, o.kind, rm.phone
+     from offer o join roster_member rm on rm.id = o.roster_member_id
+     where o.id = $1 and o.state = 'accepted'`,
+    [offerId],
+  );
+  const offer = found.rows[0];
+  if (!offer) return;
+  const info = await loadSessionOverflowInfo(db, offer.session_id);
+  if (!info) return;
+  try {
+    await sendText(db, {
+      to: offer.phone,
+      body: claimedText(info, offer.kind ?? 'backup', await countBooked(db, info.sessionId)),
+      coachId: info.coachId,
+      template: 'offer-claimed',
+    });
+  } catch (err) {
+    console.error('overflow: claimed text to the roster member failed:', err instanceof Error ? err.message : err);
+  }
+}
+
 export async function getOfferByToken(
   db: DbClient,
   token: string,

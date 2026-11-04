@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { freshDb } from './helpers/db.js';
 import { withServer } from './helpers/server.js';
 import { createCoach } from '../src/domain/auth.js';
@@ -55,8 +56,8 @@ test('money screen shows correct summaries after various bookings', async () => 
   // Book 2 drop-in sessions this week
   for (let i = 1; i <= 2; i++) {
     await db.query(
-      `insert into booking (session_id, athlete_name, contact_phone, status, payment_source, gross_cents)
-       values ($1, 'Athlete ${i}', '+1555000${String(i).padStart(4, '0')}', 'booked', 'DropIn', $2)`,
+      `insert into booking (session_id, athlete_name, contact_phone, status, payment_source, gross_cents, price_cents)
+       values ($1, 'Athlete ${i}', '+1555000${String(i).padStart(4, '0')}', 'booked', 'DropIn', $2, $2)`,
       [sessionId, sessionType.price_cents],
     );
   }
@@ -79,8 +80,8 @@ test('money screen shows correct summaries after various bookings', async () => 
 
   // Book one session with the credit
   await db.query(
-    `insert into booking (session_id, athlete_name, contact_phone, status, payment_source, gross_cents, credit_id)
-     values ($1, 'Package User', '+15551112222', 'booked', 'PackageCredit', $2, currval('credit_id_seq'))`,
+    `insert into booking (session_id, athlete_name, contact_phone, status, payment_source, gross_cents, credit_id, price_cents)
+     values ($1, 'Package User', '+15551112222', 'booked', 'PackageCredit', $2, currval('credit_id_seq'), $2)`,
     [sessionId, sessionType.price_cents],
   );
 
@@ -216,8 +217,8 @@ test('money screen correctly excludes cancelled bookings from collected this wee
 
   //Book a confirmed booking
   await db.query(
-    `insert into booking (session_id, athlete_name, contact_phone, status, payment_source, gross_cents)
-     values ($1, 'Attended Athlete', '+15557779999', 'booked', 'DropIn', $2)`,
+    `insert into booking (session_id, athlete_name, contact_phone, status, payment_source, gross_cents, price_cents)
+     values ($1, 'Attended Athlete', '+15557779999', 'booked', 'DropIn', $2, $2)`,
     [sessionId, sessionType.price_cents],
   );
 
@@ -324,4 +325,60 @@ test('a cancelled booking whose payment was not kept as credit stays out of coll
   );
   const summary = await summarizeMoney(db, seed.coach.id, new Date(start.starts_at_utc));
   assert.equal(summary.collectedThisWeekCents, 0);
+});
+
+test('a price change on the session type does not reprice bookings already made', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 4, priceCents: 3500 });
+    const start = (await db.query<{ starts_at_utc: string }>('select starts_at_utc from session where id = $1', [seed.sessionId])).rows[0];
+    const now = new Date(start.starts_at_utc);
+    await withServer(async (base) => {
+      const b = await bookOnline(base, seed.coach.handle, seed.sessionId, 'Alex', '5551112222');
+      assert.ok(b.key);
+      const pay = await postCheckout(base, seed.coach.handle, b.key, { mode: 'dropin' });
+      const userId = buyerFromLocation(pay.headers.get('location'));
+      assert.equal((await postStorePaid(base, { userId, amountCents: 3500, paymentId: 'ch_before_price_change' })).status, 200);
+    });
+    const before = await summarizeMoney(db, seed.coach.id, now);
+    assert.deepEqual([before.bookedThisWeekCount, before.bookedThisWeekCents], [1, 3500]);
+
+    await db.query('update session_type set price_cents = 5000 where id = $1', [seed.sessionTypeId]);
+    const after = await summarizeMoney(db, seed.coach.id, now);
+    assert.deepEqual([after.bookedThisWeekCount, after.bookedThisWeekCents, after.collectedThisWeekCents], [1, 3500, 3500]);
+  });
+});
+
+test('bookings from before prices were recorded take their own charge, or the price when the change ran', async () => {
+  const db = await freshDb();
+  const seed = await seedCoachWithSession(db, { capacity: 4, priceCents: 5000 });
+  const insert = (name: string, source: string, gross: number | null) =>
+    db.query(
+      `insert into booking (session_id, athlete_name, contact_phone, status, payment_source, gross_cents, manage_token)
+       values ($1, $2, '+15550001111', 'booked', $3, $4, $2)`,
+      [seed.sessionId, name, source, gross],
+    );
+  await insert('drop-in at the old price', 'DropIn', 3500);
+  await insert('from a package', 'PackageCredit', null);
+  await insert('from a pack', 'Subscription', 12000);
+  const sql = readFileSync(new URL('../src/db/migrations/0027_booking_price.sql', import.meta.url), 'utf8')
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('--'))
+    .join('\n');
+  // Twice: the second run changes nothing.
+  for (let run = 0; run < 2; run += 1) {
+    for (const statement of sql.split(';').map((s) => s.trim()).filter(Boolean)) await db.query(statement);
+  }
+  const rows = await db.query<{ athlete_name: string; price_cents: number; payment_source: string }>(
+    'select athlete_name, price_cents, payment_source from booking where session_id = $1 order by id',
+    [seed.sessionId],
+  );
+  assert.deepEqual(
+    rows.rows.map((r) => [r.athlete_name, r.price_cents, r.payment_source]),
+    [
+      ['drop-in at the old price', 3500, 'DropIn'],
+      ['from a package', 5000, 'PackageCredit'],
+      ['from a pack', 5000, 'Pack'],
+    ],
+  );
 });

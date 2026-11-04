@@ -42,7 +42,8 @@ export default defineRailway((ctx) => {
     // node itself, not "npm start": Railway's stop signal then reaches the
     // server, which finishes its requests and exits 0 (src/server.ts).
     start: "node dist/server.js",
-    healthcheck: "/",
+    // /health answers 503 when the database does not answer within 2 s.
+    healthcheck: "/health",
     healthcheckTimeout: 30,
     // Seconds between SIGTERM and SIGKILL when a deploy replaces this one.
     // The server needs up to 12 to stop cleanly (src/server.ts: 10 for

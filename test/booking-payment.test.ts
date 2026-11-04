@@ -123,7 +123,7 @@ test('package payment: buy link + paid event creates a credit ledger row', async
   });
 });
 
-test('plan payment: buy link + paid event creates a subscription and credits', async () => {
+test('plan payment: buy link + paid event records a one-time pack and its credits, and nothing that renews', async () => {
   await withRelay(async () => {
     const db = await freshDb();
     const seed = await seedCoachWithSession(db, { capacity: 5, priceCents: 3500 });
@@ -138,25 +138,22 @@ test('plan payment: buy link + paid event creates a subscription and credits', a
       const hook = await postStorePaid(base, { userId, amountCents: 12000, paymentId: 'ch_plan' });
       assert.equal(hook.status, 200);
 
-      const subRows = await db.query<{ status: string }>(
-        "select status from subscription where plan_id = $1 and contact_phone = '+15555556666'",
-        [planId],
-      );
-      assert.equal(subRows.rows.length, 1);
-      assert.equal(subRows.rows[0].status, 'active');
+      const subRows = await db.query<{ status: string }>('select status from subscription where plan_id = $1', [planId]);
+      assert.equal(subRows.rows.length, 0, 'a one-time pack writes no subscription');
 
-      const creditRows = await db.query<{ remaining: number }>(
-        "select remaining from credit where coach_id = $1 and contact_phone = '+15555556666'",
+      // The checkout says "one-time" and promises no period, so the credits keep no expiry.
+      const creditRows = await db.query<{ remaining: number; source: string; expires_at: string | null }>(
+        "select remaining, source, expires_at from credit where coach_id = $1 and contact_phone = '+15555556666'",
         [seed.coach.id],
       );
-      assert.equal(creditRows.rows[0].remaining, 3);
+      assert.deepEqual(creditRows.rows, [{ remaining: 3, source: `plan:${planId}`, expires_at: null }]);
 
       const bookingRows = await db.query<{ status: string; payment_source: string; gross_cents: number }>(
         'select status, payment_source, gross_cents from booking where checkout_token = $1',
         [checkoutKey],
       );
       assert.equal(bookingRows.rows[0].status, 'booked');
-      assert.equal(bookingRows.rows[0].payment_source, 'Subscription');
+      assert.equal(bookingRows.rows[0].payment_source, 'Pack');
       assert.equal(bookingRows.rows[0].gross_cents, 12000);
     });
   });

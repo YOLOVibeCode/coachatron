@@ -1,7 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createApp } from '../src/server.js';
+import { closeDb, setDb, type DbClient } from '../src/db/client.js';
+import { HEALTH_DB_TIMEOUT_MS } from '../src/routes/health.js';
 import { listenLoopback } from './helpers/listen.js';
 
 const COMMIT_KEYS = ['RAILWAY_GIT_COMMIT_SHA', 'VERCEL_GIT_COMMIT_SHA', 'GIT_COMMIT'] as const;
@@ -89,5 +92,62 @@ test('GET /health commit is unknown when commit env vars are unset', async () =>
   } finally {
     server.close();
     restoreCommitEnv(saved);
+  }
+});
+
+test('GET /health says the database answers, and keeps its version fields', async () => {
+  const server = createServer(createApp());
+  const port = await listenLoopback(server);
+  try {
+    const { res, body } = await fetchHealth(port);
+    assert.equal(res.status, 200);
+    assert.deepEqual(Object.keys(body).sort(), ['commit', 'db', 'env', 'ok', 'service', 'utc']);
+    assert.equal(body.db, 'ok');
+  } finally {
+    server.close();
+  }
+});
+
+test('GET /health answers 503 with no detail when the database fails or does not answer in time', async () => {
+  const failing: DbClient = {
+    query: async () => {
+      throw new Error('connect ECONNREFUSED 10.1.2.3:5432 password authentication failed for user "app"');
+    },
+  };
+  const stuck: DbClient = { query: () => new Promise(() => undefined) };
+  const server = createServer(createApp());
+  const port = await listenLoopback(server);
+  try {
+    for (const [what, db] of [
+      ['an error', failing],
+      ['no answer', stuck],
+    ] as const) {
+      setDb(db);
+      const started = Date.now();
+      const res = await fetch(`http://127.0.0.1:${port}/health`);
+      const text = await res.text();
+      assert.equal(res.status, 503, what);
+      assert.ok(Date.now() - started < HEALTH_DB_TIMEOUT_MS + 1000, `${what}: answered within the timeout`);
+      const body = JSON.parse(text) as Record<string, unknown>;
+      assert.equal(body.ok, false);
+      assert.equal(body.db, 'down');
+      assert.equal(body.service, 'coachatron');
+      assert.equal(typeof body.commit, 'string', 'the version fields stay');
+      assert.doesNotMatch(text, /ECONNREFUSED|10\.1\.2\.3|password|timeout/i, `${what}: no detail`);
+    }
+  } finally {
+    server.close();
+    await closeDb();
+  }
+});
+
+test('Railway checks /health in every environment', async () => {
+  const iac = (await import(pathToFileURL(fileURLToPath(new URL('../.railway/railway.ts', import.meta.url))).href)) as {
+    default: (ctx: unknown) => { resources: Array<{ name: string; deploy?: { healthcheckPath?: string } }> };
+  };
+  const { createRailwayContext } = await import('railway/iac');
+  for (const environment of ['development', 'uat', 'production']) {
+    const web = iac.default(createRailwayContext({ environment })).resources.find((r) => r.name === 'web');
+    assert.equal(web?.deploy?.healthcheckPath, '/health', environment);
   }
 });
