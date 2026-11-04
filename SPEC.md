@@ -610,7 +610,9 @@ Decisions that can be made cheaply now; anything not listed is deliberately open
   name is configuration on that VM, so swapping the small model does not change
   Coachatron code. Detail in `docs/PLATFORM.md` §4.4.
 - **Time:** every session stores an explicit IANA timezone. Never store a naive
-  local time. Half of all scheduling bugs live here.
+  local time. Half of all scheduling bugs live here. *(2026-11-04: a weekly
+  time keeps its clock time on the days the clocks change, read the way
+  Postgres reads a repeated or skipped hour.)*
 - **Money:** integer minor units (cents). Never floats.
 - **Idempotency:** every payment and every SMS send carries an idempotency key.
   Webhook handlers must be safe to replay — the relay will replay them.
@@ -655,6 +657,10 @@ booking's status can be `refunded`. Migration 0020 adds `credit.refund_id`
 `offer_booking_id`, `send_tries` and `retry_at`; `coach.cancel_window_hours`
 and `children_per_booking`, `booking.late_cancel` and `waived_at`; and
 `booking.pass_id` (the children of one booking pass).
+Migration 0019 adds CHECK constraints for what the forms
+already check (capacity and duration above zero, no negative price or
+credit balance, a package expiry above zero) and indexes on the columns the
+pages, the tick and the send path filter on, `booking.session_id` first.
 
 Two column names predate the move to Stripe and were kept: `square_merchant_id`
 is unused (a coach reaches their Stripe account through

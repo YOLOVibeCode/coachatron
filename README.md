@@ -58,7 +58,11 @@ fake model.
 `npm run migrate` applies the SQL migrations in `src/db/migrations/` to
 `DATABASE_URL` if you've set one (Postgres in production); it's optional for
 local development, since `npm run dev` and `npm test` both work against
-PGlite with no `DATABASE_URL` at all.
+PGlite with no `DATABASE_URL` at all. With `NODE_ENV=production` the server
+refuses to start without `DATABASE_URL`, rather than keep its data in memory.
+On SIGTERM or SIGINT it stops taking connections, lets requests in flight and
+a running tick finish, closes the database, and exits; anything still running
+after 10 seconds is cut off.
 
 ## Status
 
@@ -252,9 +256,10 @@ send.
 
 Every outbound text goes through `sendText()` in `src/domain/outbound.ts`
 (a test fails if anything calls the relay directly). Before it sends, it:
-fits the text into one segment (flattening curly quotes, dashes, and the
-narrow space `Intl` puts before "PM", so a text never silently becomes
-UCS-2); refuses numbers outside `+1` (US and Canada, the destinations priced
+fits the text into one segment (flattening curly quotes, dashes, the
+narrow space `Intl` puts before "PM", and accented letters outside GSM-7
+such as the "í" in "García", so a text never silently becomes UCS-2);
+refuses numbers outside `+1` (US and Canada, the destinations priced
 near $0.0083 a segment); and stops at 300 texts per coach per local day,
 2,000 per coach per month, 400 per active coach per day for the product
 (never below 500), and 5 sign-in codes per number or email per day. Requests
@@ -277,7 +282,8 @@ trusting the number.
 The running server ticks once a minute (`src/jobs/tick.ts`). Each tick keeps
 every weekly time 8 weeks ahead on the calendar, passes an expired overflow
 offer to the next backup coach, and sends 24-hour reminders outside quiet
-hours (9pm–8am in the coach's timezone). It also asks the relay about coaches
+hours (9pm–8am in the coach's timezone); a reminder the relay could not send
+is tried again on the next ticks. It also asks the relay about coaches
 still setting up payments (at most every 15 minutes each, in case an event
 was missed), sends payments-ready texts that waited out quiet hours, and sends
 the payment set-up reminders. Tests call `runTick()` directly

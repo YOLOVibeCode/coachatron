@@ -421,6 +421,12 @@ These are the whole design. Without them this feature is a liability.
   *what the system will actually do*, not a model's description of it.
 - **R3 — Fail closed.** `confidence < 0.75`, ambiguous time, or `unknown` →
   "I didn't catch that" plus a deep link. Never guess a destructive action.
+  *(Implemented 2026-11-04: a time from the model that is not a date gets
+  the same reply. An add or a move to a time in the past, more than 8 weeks
+  out, or at the same moment as a session of the same type is answered with
+  the reason and asks nothing; one that overlaps another session says so in
+  the question. The time is checked again on `Y`. The model is told the
+  current date and time.)*
 - **R4 — Coach-only.** NL control is authorized by the coach's verified phone
   number. Athlete and roster numbers reach only the keyword layer. An unknown
   number never reaches the model: a stranger gets one sign-up link a day, and a
@@ -503,7 +509,12 @@ wrong tries, works once, and checks for a number or email count against its
 hourly limit only while it has a live code. The code a parent asks for at
 checkout to use session credits follows the same rules.
 When the relay's own caps answer 429, the send path returns `busy` and the
-page asks to try again later.
+page asks to try again later. *(Added 2026-11-04: a letter outside GSM-7
+whose plain form is inside it, as in "García", is written plain, so a name
+never turns a text into UCS-2 and cuts it to 70 characters; the HELP reply
+is one segment too. A reminder the relay fails or turns away as busy is
+tried again on later ticks, up to 5 failures a number a day, and never
+holds up the other reminders.)*
 
 The full assistant fits inside those ceilings. Scheduling by text, setting a
 session up, asking before a change, confirmations, reminders, and the overflow
