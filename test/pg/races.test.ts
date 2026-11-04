@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import { pauseAfter, raceDb, settle, skipWithoutPostgres, untilWaitingOrDone, type RaceDb } from './helpers.js';
 import { withRelay } from '../helpers/relay.js';
 import { seedBookedSession, seedCoachWithSession, seedRosterMember, seedWaitlistEntry } from '../helpers/fixtures.js';
-import { createPendingBooking } from '../../src/domain/pricing.js';
+import { createPendingBooking, newBookingToken } from '../../src/domain/pricing.js';
 import { acceptOffer, advanceCascade, checkOverflow, startCascade } from '../../src/domain/cascade.js';
+import { moveByParent } from '../../src/domain/moveBooking.js';
+import { applyRefunded } from '../../src/domain/refunds.js';
 import type { DbClient } from '../../src/db/client.js';
 
 /** Two transactions at the same moment, on real Postgres (TEST_DATABASE_URL;
@@ -29,6 +31,15 @@ before(async () => {
 after(async () => {
   await race?.close();
 });
+
+async function sessionAt(typeId: number, hours: number, capacity: number | null = null): Promise<number> {
+  const r = await db().query<{ id: number }>(
+    `insert into session (session_type_id, starts_at_utc, tz, status, capacity_override)
+     values ($1, now() + make_interval(mins => $2::int), 'America/Chicago', 'scheduled', $3) returning id`,
+    [typeId, Math.round(hours * 60), capacity],
+  );
+  return r.rows[0].id;
+}
 
 test('two parents going for the last spot at once: one holds it, the other is told it is full', RACE, async () => {
   await withRelay(async () => {
@@ -124,5 +135,48 @@ test('a roster member accepting while the tick expires their offer: one outcome,
       assert.equal(session.rows[0].assigned_roster_member_id, null, 'nobody joined the session');
       assert.equal(relay.sms.filter((m) => m.to === second.phone).length, 1, 'the next member was texted once');
     }
+  });
+});
+
+test('a refund reported while a parent moves the booking is applied to the booking where it is now', RACE, async () => {
+  await withRelay(async () => {
+    const seed = await seedCoachWithSession(db(), { capacity: 4 });
+    await db().query("update session set starts_at_utc = now() + interval '72 hours' where id = $1", [seed.sessionId]);
+    const to = await sessionAt(seed.sessionTypeId, 96);
+    const bookingId = await seedBookedSession(db(), seed.sessionId, 'Cleo Park', '+15550009201');
+    const token = newBookingToken();
+    const charge = `ch_race_${Date.now()}`;
+    await db().query('update booking set gross_cents = 3500, charge_id = $2, manage_token = $3 where id = $1', [bookingId, charge, token]);
+    // The coach's refund from the app did not go through, which leaves the
+    // booking free to move. The payment is then refunded another way (the
+    // payment provider's dashboard, say) and the relay reports it.
+    await db().query("insert into refund (coach_id, payment_ref, booking_id, amount_cents, status) values ($1, $2, $3, 3500, 'failed')", [
+      seed.coach.id,
+      charge,
+      bookingId,
+    ]);
+
+    // The move has changed the booking's session and not yet committed when
+    // the report arrives.
+    const moving = pauseAfter(db(), (sql) => sql.startsWith('update booking set session_id'));
+    const moved = settle(moveByParent(moving.db, token, to));
+    await moving.reached;
+    const refund = settle(applyRefunded(db(), { paymentRef: charge, refundRef: 're_race_1', amountCents: 3500, sellerKey: null }));
+    const refunding = await untilWaitingOrDone(db(), refund).finally(moving.release);
+    const [rm, rr] = await Promise.all([moved, refund]);
+    assert.equal(refunding, 'waiting', 'the refund waited for the booking the move held');
+    assert.ok(rm.ok && rr.ok, 'neither failed');
+    assert.equal(rm.value.kind, 'moved');
+    assert.equal(rr.value, 'refunded');
+
+    const booking = await db().query<{ session_id: number; status: string }>('select session_id, status from booking where id = $1', [
+      bookingId,
+    ]);
+    assert.deepEqual(booking.rows[0], { session_id: to, status: 'refunded' }, 'refunded in the session it moved to');
+    const row = await db().query<{ status: string; booking_id: number; spot_released: boolean }>(
+      'select status, booking_id, spot_released from refund where payment_ref = $1',
+      [charge],
+    );
+    assert.deepEqual(row.rows[0], { status: 'refunded', booking_id: bookingId, spot_released: true });
   });
 });
