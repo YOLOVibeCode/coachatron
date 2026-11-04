@@ -1009,7 +1009,7 @@ milestone Notes above where they happened:
   was never asked to automate reversing a package credit on a partial refund
   in Slice 1, and the "I will judge it by" / acceptance criteria across all
   seven milestones never required it). *(Corrected 2026-11-03: this first
-  said refunds go through the coach's own Square dashboard.)*
+  sent refunds to a Square dashboard.)*
 
 ### Release verification (post-M7)
 
