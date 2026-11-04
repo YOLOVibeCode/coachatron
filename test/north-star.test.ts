@@ -4,10 +4,12 @@ import { freshDb } from './helpers/db.js';
 import { withServer } from './helpers/server.js';
 import { withRelay } from './helpers/relay.js';
 import { postSignedSms } from './helpers/sms-webhook.js';
-import { postStorePaid, TEST_STORE_SECRET } from './helpers/store-event.js';
+import { postSellerEvent, postStorePaid, TEST_STORE_SECRET } from './helpers/store-event.js';
 import { fakeComplete } from './fakes/llm.js';
-import { APP_BASE_URL } from '../src/config.js';
+import { APP_BASE_URL, SELLER_PRODUCT_DESCRIPTION } from '../src/config.js';
 import { segmentCount } from '../src/domain/outbound.js';
+import { zonedParts } from '../src/domain/scheduling.js';
+import { hasActiveConsent } from '../src/domain/sms-consent.js';
 import { signConnectBuyLink } from '../src/lib/store-client.js';
 import { resetComplete, setComplete } from '../src/llm/complete.js';
 import type { CompleteRequest } from '../src/llm/schema.js';
@@ -23,11 +25,17 @@ import type { CompleteRequest } from '../src/llm/schema.js';
  *
  *   1. The coach texts their week; one branded, one-segment text comes back
  *      with a /start/<token> link.
- *   2. The link takes a name; the model reads the week; the preview shows it.
- *   3. Publish; the coach page /c/<handle> lists the sessions.
- *   4. The coach accepts the marketplace terms on /app/money and onboards
- *      with the relay; the seller becomes charges-enabled.
- *   5. A parent books, follows the signed buy link, the relay reports the
+ *   2. The link takes a name and the texts box; the model reads the week;
+ *      the preview shows it.
+ *   3. Publish; the coach page /c/<handle> lists the sessions, and the coach
+ *      gets one text with the page link and a /p/<token> payments link.
+ *   4. Until payments work, the coach page shows "Booking opens soon" in
+ *      place of Book, and nothing leads a parent to a payment page.
+ *   5. The payments link from the text signs the coach in on /app/money,
+ *      where they accept the marketplace terms and onboard with the relay.
+ *   6. The seller becomes charges-enabled; the relay's seller.updated event
+ *      says so, and the coach gets one "You can take payments now" text.
+ *   7. A parent books, follows the signed buy link, the relay reports the
  *      payment at /webhooks/store, and /booking/:token shows the booking.
  *
  * Later work (paying by text, booking confirmations) can add its assertions
@@ -69,6 +77,19 @@ function fakeModel(req: CompleteRequest): unknown {
   throw new Error(`unexpected model call (${req.schemaName ?? 'intent'}): ${said}`);
 }
 
+/** The coach's time zone: Chicago, unless it is night there as the test
+ * runs. The "payments ready" text waits out 9pm to 8am where the coach is,
+ * so the run uses a zone where it is day and the text goes out at once. */
+function daytimeZone(now = new Date()): string {
+  const zones = ['America/Chicago', 'America/Los_Angeles', 'Pacific/Honolulu', 'Europe/London', 'Asia/Kolkata', 'Asia/Tokyo', 'Pacific/Auckland'];
+  const zone = zones.find((tz) => {
+    const hour = zonedParts(now, tz).hour;
+    return hour >= 9 && hour <= 18;
+  });
+  assert.ok(zone, 'some zone is in the daytime');
+  return zone;
+}
+
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -94,6 +115,8 @@ interface SessionCard {
   name: string;
   detail: string;
   book: string | null;
+  /** "Booking opens soon" in place of Book. */
+  opensSoon: boolean;
 }
 
 /** The session cards on a coach's public page, as a parent sees them. */
@@ -108,6 +131,7 @@ function sessionCards(html: string): SessionCard[] {
         name: spans[0] ?? '',
         detail: spans[1] ?? '',
         book: /href="([^"]+\/book)"/.exec(chunk)?.[1] ?? null,
+        opensSoon: /Booking opens soon/.test(visible(chunk)),
       };
     });
 }
@@ -127,6 +151,9 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
     try {
       await withServer(async (base) => {
         const appBase = process.env.APP_BASE_URL ?? APP_BASE_URL;
+        const appHost = appBase.replace(/^https?:\/\//, '');
+        const coachTz = daytimeZone();
+        const textsToCoach = () => relay.sms.filter((m) => m.to === COACH_PHONE).map((m) => m.body);
 
         const get = (path: string, cookie?: string) =>
           fetch(`${base}${path}`, { headers: cookie ? { cookie } : {}, redirect: 'manual' });
@@ -155,6 +182,8 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
         let startPath = '';
         let coachCookie = '';
         let handle = '';
+        let paymentsPath = '';
+        let moneyCookie = '';
 
         await step("1. a signed text from the coach's phone gets one branded, one-segment text with a start link", async () => {
           // Signed with the relay's secret, and marked by the relay as sent
@@ -200,14 +229,16 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           );
         });
 
-        await step('2. the start link takes a name, the model reads the week, and the preview shows the sessions', async () => {
+        await step('2. the start link takes a name and the texts box, the model reads the week, and the preview shows the sessions', async () => {
           const form = await get(startPath);
           assert.equal(form.status, 200, 'the texted link opens');
           const formHtml = await form.text();
           assert.match(visible(formHtml), /We already have your phone from the text\./);
           assert.match(formHtml, new RegExp(`<form method="post" action="${escapeRegExp(startPath)}">`), 'the name form posts back to the link');
+          assert.match(formHtml, /name="sms_consent"/, 'the form has the texts box');
+          assert.match(visible(formHtml), /get your page link and a link to set up payments by text when you go live/);
 
-          const named = await postForm(startPath, { name: 'Dana Rivera', email: 'dana@example.com', tz: 'America/Chicago' });
+          const named = await postForm(startPath, { name: 'Dana Rivera', email: 'dana@example.com', tz: coachTz, sms_consent: '1' });
           assert.equal(named.status, 303, 'a name is all the link needs');
           assert.equal(named.headers.get('location'), '/app/schedule?setup=1', 'straight to the preview');
           coachCookie = sessionCookie(named);
@@ -219,7 +250,8 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           assert.doesNotMatch(call.messages[0].content, /Current setup:/, 'the first read starts from no draft');
 
           const coach = await db.query<{ phone: string; name: string; tz: string }>('select phone, name, tz from coach');
-          assert.deepEqual(coach.rows, [{ phone: COACH_PHONE, name: 'Dana Rivera', tz: 'America/Chicago' }]);
+          assert.deepEqual(coach.rows, [{ phone: COACH_PHONE, name: 'Dana Rivera', tz: coachTz }]);
+          assert.equal(await hasActiveConsent(db, COACH_PHONE), true, 'the ticked box lets the app text the coach');
           assert.deepEqual(
             (await db.query('select email, email_verified_at is not null as verified from coach')).rows,
             [{ email: 'dana@example.com', verified: false }],
@@ -251,7 +283,7 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           assert.match(ready, /Publish/, 'with nothing left to ask, the preview offers Publish');
         });
 
-        await step('3. publishing puts the sessions on the coach page', async () => {
+        await step('3. publishing puts the sessions on the coach page and texts the coach the page link and a payments link', async () => {
           const draft = await db.query<{ id: number }>('select id from setup_draft where published_at is null');
           assert.equal(draft.rows.length, 1, 'one open draft to publish');
           const published = await postForm('/app/setup/publish', { id: String(draft.rows[0].id) }, coachCookie);
@@ -259,11 +291,28 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           assert.equal(published.headers.get('location'), '/app/schedule?published=1');
 
           const live = visible(await (await get('/app/schedule?published=1', coachCookie)).text());
-          const link = new RegExp(`You're live\\. Parents book at ${escapeRegExp(appBase.replace(/^https?:\/\//, ''))}/c/([a-z0-9-]+)`).exec(live);
+          const link = new RegExp(`You're live\\. Parents book at ${escapeRegExp(appHost)}/c/([a-z0-9-]+)`).exec(live);
           assert.ok(link, `the schedule shows the coach's public link: ${live.slice(0, 300)}`);
           handle = link[1];
           assert.equal(handle, 'dana-rivera', 'the handle comes from the name');
-          assert.match(live, /They can't pay you until payments are connected\./);
+          assert.match(live, /Parents can't book until payments are set up\./);
+
+          const texts = textsToCoach();
+          assert.equal(texts.length, 2, 'one more text to the coach: the start link, then this one');
+          const goLive = texts[1];
+          const goLiveShape = new RegExp(
+            `^Coachatron: You're live at ${escapeRegExp(appHost)}/c/${handle}\\. To take payments, tap: ${escapeRegExp(appBase)}(/p/[A-Za-z0-9_-]{22}) Reply STOP to opt out\\.$`,
+          );
+          const goLiveMatch = goLiveShape.exec(goLive);
+          assert.ok(goLiveMatch, `the text carries the page link and a payments link: ${JSON.stringify(goLive)}`);
+          assert.equal(segmentCount(goLive), 1, 'the text is one segment');
+          assert.match(goLive, /^[ -~]+$/, 'plain ASCII, so it stays GSM-7');
+          paymentsPath = goLiveMatch[1];
+          assert.equal(
+            await count("message_log where to_phone = $1 and template = 'coach-live' and status = 'sent'", [COACH_PHONE]),
+            1,
+            'the go-live text went through the one send path and was logged',
+          );
 
           assert.equal(await count('session_type'), 2);
           assert.equal(await count('weekly_slot where active = true'), 3, 'Tue and Thu privates, Saturday group');
@@ -284,16 +333,57 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
             assert.match(c.when, /^Sat, \w{3} \d{1,2}, 9:00 AM$/, `the group is Saturday 9am: ${c.when}`);
             assert.equal(c.detail, '8 spots left · $25.00');
           }
-          assert.ok(cards.every((c) => c.book), 'every open session has a Book link');
         });
 
-        await step('4. the coach accepts the terms, onboards with the relay, and payments connect', async () => {
-          const before = visible(await (await get('/app/money', coachCookie)).text());
+        await step('4. until payments work, the coach page shows "Booking opens soon" and no Pay', async () => {
+          const pubHtml = await (await get(`/c/${handle}`)).text();
+          const cards = sessionCards(pubHtml);
+          assert.ok(cards.length >= 3);
+          assert.ok(
+            cards.every((c) => c.opensSoon && c.book === null),
+            `every priced session says "Booking opens soon" and has no Book link: ${JSON.stringify(cards.slice(0, 3))}`,
+          );
+          const pubText = visible(pubHtml);
+          assert.doesNotMatch(pubText, /\bPay\b/, 'nothing offers to pay');
+          assert.doesNotMatch(pubText, /Book with them/, 'no family holds credits, so there is no credits link either');
+
+          const group = await db.query<{ id: number }>(
+            `select s.id from session s join session_type st on st.id = s.session_type_id
+             where st.name = 'Group' and s.starts_at_utc > now() order by s.starts_at_utc limit 1`,
+          );
+          const bookPath = `/c/${handle}/sessions/${group.rows[0].id}/book`;
+          const bookPage = await get(bookPath);
+          assert.equal(bookPage.status, 200);
+          const bookHtml = await bookPage.text();
+          assert.match(visible(bookHtml), /Booking opens soon Dana Rivera is still setting up payments\./);
+          assert.doesNotMatch(bookHtml, /name="contact_phone"/, 'no booking form');
+          assert.doesNotMatch(bookHtml, new RegExp(escapeRegExp(relay.url)), 'no link to the payment page');
+
+          const tried = await postForm(bookPath, { athlete_name: 'Sam Lee', contact_phone: '(512) 555-0142' });
+          assert.equal(tried.status, 409, 'a booking posted anyway is turned away');
+          assert.match(visible(await tried.text()), /Booking opens soon/);
+          assert.equal(await count('booking'), 0, 'and starts no booking');
+          assert.deepEqual(relay.buyLinks, [], 'no parent reached a payment page');
+        });
+
+        await step('5. the payments link from the text signs the coach in on Money, where they accept the terms and onboard', async () => {
+          const opened = await get(paymentsPath);
+          assert.equal(opened.status, 200, 'the payments link opens');
+          assert.match(visible(await opened.text()), /Set up payments Signs you in as Dana Rivera and opens payments/);
+          assert.ok(!opened.headers.getSetCookie().some((c) => c.startsWith('cx_session=')), 'opening it alone signs no one in');
+
+          const tapped = await postForm(paymentsPath, {});
+          assert.equal(tapped.status, 303);
+          assert.equal(tapped.headers.get('location'), '/app/money', 'the link opens Money');
+          moneyCookie = sessionCookie(tapped);
+          assert.equal((await postForm(paymentsPath, {})).status, 410, 'the payments link works once');
+
+          const before = visible(await (await get('/app/money', moneyCookie)).text());
           assert.match(before, /Connect a payment account so athletes can pay you when they book\./);
           assert.match(before, /Coachatron keeps 5% of each payment/);
           assert.match(before, /I accept the Coachatron marketplace terms \(v1\)\./);
 
-          const connect = await postForm('/app/money/payments', { agree: '1' }, coachCookie);
+          const connect = await postForm('/app/money/payments', { agree: '1' }, moneyCookie);
           assert.equal(connect.status, 303, 'accepting the terms starts onboarding');
           assert.equal(
             connect.headers.get('location'),
@@ -304,28 +394,60 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           assert.equal(seller?.agreementVersion, 'v1', 'the relay recorded the accepted terms');
           assert.equal(seller?.chargesEnabled, false, 'not chargeable until onboarding is finished');
           assert.deepEqual(relay.onboards, [
-            { product: 'coachatron', sellerKey: handle, returnUrl: `${appBase}/app/money`, email: 'dana@example.com' },
+            {
+              product: 'coachatron',
+              sellerKey: handle,
+              returnUrl: `${appBase}/app/money`,
+              email: 'dana@example.com',
+              profile: {
+                phone: COACH_PHONE,
+                entityType: 'individual',
+                businessUrl: `${appBase}/c/${handle}`,
+                productDescription: SELLER_PRODUCT_DESCRIPTION,
+              },
+            },
           ]);
           assert.match(
-            visible(await (await get('/app/money', coachCookie)).text()),
+            visible(await (await get('/app/money', moneyCookie)).text()),
             /Finish setting up your payment account/,
             'between accepting and finishing, Money asks the coach to finish',
           );
+          const stillClosed = sessionCards(await (await get(`/c/${handle}`)).text());
+          assert.ok(stillClosed.every((c) => c.opensSoon), 'booking stays closed until charges work');
+        });
 
-          // What the provider's onboarding does once the coach finishes it.
+        await step('6. when the seller event says charges work, the coach gets one "You can take payments now" text and booking opens', async () => {
+          // What the provider's onboarding does once the coach finishes it,
+          // and the event the relay forwards about it.
           relay.enableCharges('coachatron', handle);
+          const event = await postSellerEvent(base, { sellerKey: handle, chargesEnabled: true });
+          assert.equal(event.status, 200, 'a signed seller.updated event is accepted');
 
-          const after = visible(await (await get('/app/money?seller=connected', coachCookie)).text());
+          const texts = textsToCoach();
+          assert.equal(texts.length, 3, 'one more text to the coach');
+          assert.equal(texts[2], `Coachatron: You can take payments now. Your page: ${appHost}/c/${handle} Reply STOP to opt out.`);
+          assert.equal(segmentCount(texts[2]), 1);
+          assert.equal(
+            await count("message_log where to_phone = $1 and template = 'payments-ready' and status = 'sent'", [COACH_PHONE]),
+            1,
+          );
+
+          const after = visible(await (await get('/app/money?seller=connected', moneyCookie)).text());
           assert.match(after, /Payments are connected\./, 'the return notice');
           assert.match(after, /Payments connected\. Athletes pay you directly\. Coachatron keeps 5% of each payment\./);
           assert.match(after, /Payouts go to your bank account\./);
           assert.doesNotMatch(after, /marketplace terms/, 'the terms are not asked again');
 
+          assert.equal(textsToCoach().length, 3, 'coming back from onboarding does not text again');
+
           const live = visible(await (await get('/app/schedule?published=1', coachCookie)).text());
-          assert.doesNotMatch(live, /can't pay you/, 'the schedule no longer warns about payments');
+          assert.doesNotMatch(live, /can't book until payments/, 'the schedule no longer warns about payments');
+
+          const cards = sessionCards(await (await get(`/c/${handle}`)).text());
+          assert.ok(cards.every((c) => c.book && !c.opensSoon), 'every open session has a Book link now');
         });
 
-        await step('5. a parent books, pays on the signed buy link, and the manage page shows the booking', async () => {
+        await step('7. a parent books, pays on the signed buy link, and the manage page shows the booking', async () => {
           const pubHtml = await (await get(`/c/${handle}`)).text();
           const group = sessionCards(pubHtml).find((c) => c.name === 'Group');
           assert.ok(group?.book, 'the parent taps Book on a group session');
