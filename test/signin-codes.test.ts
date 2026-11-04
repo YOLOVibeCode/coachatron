@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { freshDb } from './helpers/db.js';
 import { withServer } from './helpers/server.js';
 import { withRelay } from './helpers/relay.js';
+import { seedCoachWithSession } from './helpers/fixtures.js';
 import { createCoach, createCoachSession } from '../src/domain/auth.js';
 import { isOptedOut } from '../src/domain/cascade.js';
 import { sendEmailMessage, sendText } from '../src/domain/outbound.js';
@@ -341,6 +342,28 @@ test('/sms cannot undo a STOP, and opt-ins from one address are limited', async 
       });
       assert.equal(relay.sms.length, 5, 'one confirmation per accepted opt-in');
     });
+  });
+});
+
+test('the texts box on the booking form records consent but cannot undo a STOP', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 4 });
+    await grantSmsConsent(db, '+15550008080');
+    await revokeConsent(db, '+15550008080');
+    await withServer(async (base) => {
+      for (const phone of ['5550008080', '5550008181']) {
+        const res = await post(base, `/c/${seed.coach.handle}/sessions/${seed.sessionId}/book`, {
+          athlete_name: 'Sam',
+          contact_phone: phone,
+          sms_consent: '1',
+        });
+        assert.equal(res.status, 303);
+      }
+    });
+    assert.equal(await isOptedOut(db, '+15550008080'), true, 'still opted out');
+    assert.equal(await hasActiveConsent(db, '+15550008080'), false);
+    assert.equal(await hasActiveConsent(db, '+15550008181'), true, 'a number that never said STOP opts in');
   });
 });
 
