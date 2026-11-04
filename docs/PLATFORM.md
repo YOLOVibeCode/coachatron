@@ -69,16 +69,22 @@ Per `AGENTS.md`, this is data, not code:
 `appFeeBps: 500` is the locked 5% from SPEC.md §9.3 (2026-09-22): the ease
 of a five-minute link, a parent who pays with no account, and a full session
 that texts the next coach. FieldView runs 1000 (10%) for a different product.
-A later default applies to coaches who connect after the change. Per-transaction
-override is supported and bounded by `app_fee_bps_max`, so pilot coaches can
-be zero-rated without a deploy.
 
-The fee the relay applies, and whether an environment takes live or test
-payments, live on that environment's Connect row (`connect_apps`) on `ns`:
-`coachatron`, `coachatron-dev`, and `coachatron-uat` are Stripe rows at 500 bps
-on store contract v1. `appFeeBps` in the manifest records the same number. The
-live manifest entry still carries a leftover `squareEnv` field; nothing reads
-it for payments.
+**The fee is one rate per environment.** The fee the relay applies, and
+whether an environment takes live or test payments, live on that
+environment's Connect row (`connect_apps`) on `ns`: `coachatron`,
+`coachatron-dev`, and `coachatron-uat` are Stripe rows at 500 bps
+(`app_fee_bps`) on store contract v1. The relay reads the rate at each charge,
+so changing the row changes the fee for every coach in that environment at
+once, with no deploy, and no connected coach keeps the earlier rate.
+Coachatron's buy links carry no fee, and the relay gives a public buy link the
+row's rate. It takes another rate (`feeBps`, up to `app_fee_bps_max`) only on
+an authenticated checkout call, which Coachatron does not make. So a per-coach
+rate (a zero-rated pilot coach, or holding connected coaches at their rate
+when the default rises) needs a relay change first. `coach.fee_bps` in
+Coachatron's schema is not sent to the relay, and `appFeeBps` in the manifest
+records the same number as the rows. The live manifest entry still carries a
+leftover `squareEnv` field; nothing reads it for payments.
 
 ---
 
@@ -121,7 +127,8 @@ Built in the relay, not used by Coachatron yet:
 
 - **Refunds:** `POST …/recipients/:seller/refunds` with `{ paymentRef,
   amountCents?, idempotencyKey }`; the platform fee is returned with it. A
-  later change will call this and handle `purchase.refunded` (SPEC.md §9.4).
+  later change will call this and handle `marketplace.purchase.refunded`
+  (SPEC.md §9.4).
   Until then a refund is a support request, as the Money screen says.
 - **Seller subscriptions** (`…/plans`, `…/subscriptions` and cancel / pause /
   resume / swap-plan / update-card). The monthly plan is charged once today;
@@ -325,8 +332,8 @@ A busy month — eight sessions a week, six athletes, a confirmation and a
 reminder each, plus overflow and the coach texting — is on the order of
 **600–1,200 segments, about $8–$16.** At 5%, a coach covers $16 of texts once
 they book about $320. The $49 plan covers that same month with room left. A
-zero-rated pilot costs us the texts and nothing else, which at this volume is
-a few dollars.
+zero-rated pilot (which needs a per-coach rate in the relay first, §1.1) would
+cost us the texts and nothing else, which at this volume is a few dollars.
 
 What can outrun the fee is a loop, a broadcast storm, or a number Twilio
 prices like an international destination. Those are capped in the send path

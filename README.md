@@ -114,16 +114,18 @@ The twelve screens of Coachatron (Slice 1):
 
 All routes are server-rendered HTML. No SPA.
 
-## Relay environment (sandbox)
+## Relay environment
 
 To exercise real Connect Hub, SMS, and email against Noctusoft `ns` (not used in CI):
 
 | Variable | Purpose |
 | --- | --- |
-| `RELAY_BASE_URL` | Hub base URL (sandbox: `https://api.square.noctusoft.com`) |
+| `RELAY_BASE_URL` | Relay base URL for Connect Hub, SMS, and email calls (default `http://localhost:4000`) |
 | `RELAY_API_KEY` | Relay key for this environment's Connect app, sent as `X-Api-Key` |
-| `RELAY_CONNECT_PRODUCT` | The relay Connect app: `coachatron-dev`, `coachatron-uat`, or `coachatron` (default) |
+| `RELAY_CONNECT_PRODUCT` | The relay Connect app: `coachatron-dev`, `coachatron-uat`, or `coachatron` (default). Its Connect row decides test or live payments; use `coachatron-dev` for test mode |
 | `RELAY_WEBHOOK_SECRET` | That Connect app's signing key: signs buy links and verifies `/webhooks/store` |
+| `STORE_BASE_URL` | Optional. Host for signed buy links (`/buy/connect/…`); defaults to `RELAY_BASE_URL`, then the relay's store host `https://store.noctusoft.com` |
+| `STORE_WEBHOOK_URL` | Optional. The URL store events are signed for, checked on `/webhooks/store`; defaults to `APP_BASE_URL` + `/webhooks/store` |
 | `RELAY_APP_ENV` | Set to `dev` so relay email is captured (smtp4dev) instead of delivered |
 
 Do not commit secrets. `npm test` uses the in-process fake in `test/fakes/relay.ts`.
@@ -143,7 +145,7 @@ Do not commit secrets. `npm test` uses the in-process fake in `test/fakes/relay.
   Coachatron. The relay already has a seller refund route
   (`POST /connect/:productKey/recipients/:seller/refunds`, which returns
   Coachatron's fee with the refund). A later change will call it and reverse
-  a credit when `purchase.refunded` arrives (`SPEC.md §9.4`).
+  a credit when `marketplace.purchase.refunded` arrives (`SPEC.md §9.4`).
 - **The overflow cascade reuses the original session**, rather than
   creating a literal second "parallel session" row — the accepted backup
   coach is recorded on the same session via `assigned_roster_member_id`.

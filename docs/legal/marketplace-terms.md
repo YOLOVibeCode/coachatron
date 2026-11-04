@@ -103,9 +103,16 @@ link to show coaches.]
   without a new version of these terms. A higher fee applies to you only
   through a new version that you accept.
 
-[Attorney: `SPEC.md` §9.3 says a higher default applies to coaches who connect
-after the change. Decide whether a coach already connected is ever moved to a
-higher fee, and with what notice.]
+[Attorney: lowering or waiving the fee for one coach needs a relay change
+before it can be offered. Today the fee is one rate for every coach in an
+environment, set on the relay and applied at each charge.]
+
+[Attorney: raising that rate raises it at once for every connected coach,
+including any who never accepted a new version. Accepting a version gates
+starting or updating payment onboarding (section 1), not charges. Decide the
+notice period before a raise, and whether the relay must be able to hold
+existing coaches at their rate before any raise; without that, "a higher fee
+applies to you only through a new version that you accept" cannot be kept.]
 
 **Taxes.** You are responsible for taxes on your income and for any sales or
 use tax on your services.
@@ -147,8 +154,8 @@ a later change will use; until then refunds go through support. Decide how
 support confirms that a refund request comes from the coach before acting on
 it.]
 
-[Attorney: an earlier draft of `SPEC.md` §9.4 kept the platform fee on partial
-refunds. The relay returns the fee with any refund, and the Money screen tells
+[Attorney: until 2026-11-03, `SPEC.md` §9.4 said the platform keeps its fee
+on partial refunds. The relay returns the fee with any refund, and the Money screen tells
 coaches "Coachatron's fee is returned with the refund". This draft follows the
 relay and the Money screen.]
 

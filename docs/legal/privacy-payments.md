@@ -91,9 +91,14 @@ Coachatron's bookings (tax and accounting rules may require several years).]
   bookings and the Money screen, return credits when a session is cancelled,
   handle a refund or dispute, and meet legal duties such as tax reporting and
   fraud prevention.
-- **The coach you booked sees** the athlete's name, your mobile number and
-  email, the session, how you paid, and attendance. Coaches never see card
-  details.
+- **The coach you booked sees** the athlete's name, the session, the booking's
+  status and attendance, and totals on their Money screen. Coaches do not see
+  your mobile number, email, or how you paid, and never see card details. When
+  a coach sends an update about a session, Coachatron texts it to you.
+
+[Attorney: this lists what the coach's screens show today. If a later screen
+shows coaches a parent's contact details or payment method, this notice needs
+to say so first.]
 - We do not sell payment information or use it for marketing.
 
 [Attorney: the California "sale" and "sharing" statements, and whether any

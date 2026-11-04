@@ -153,7 +153,9 @@ the solo coach. They return only when a paying customer is blocked without them.
 5. Connects payments on the Money screen: accepts the marketplace terms (v1),
    then a relay link opens Stripe's hosted onboarding (identity and bank
    details) and brings them back. **Skippable** — the coach can
-   share a booking link immediately and connect before the first payout.
+   share a booking link immediately and connect before the first paid booking
+   (charges are made on the coach's own Stripe account, so until then checkout
+   cannot take a card).
    *(Updated 2026-11-03: Stripe Connect through the relay, not Square OAuth.)*
 6. Gets their link: `coachatron.com/c/<handle>`. Done.
 
@@ -336,16 +338,23 @@ lessons. A lower rate is still how the product spreads: one coach's athletes
 and roster are how the next coach shows up. FieldView's 10% is a different
 product: a paid stream the team did not previously sell.
 
-Raising the default later is a config change (`appFeeBps` 500), and a higher
-default applies to coaches who connect after the change. Pilot coaches can be
-zero-rated the same way, with no deploy.
+The rate is one number per environment: `app_fee_bps` (500) on the relay's
+Connect row, read at each charge. Changing it needs no deploy, and it changes
+the fee for every coach in that environment at once; no connected coach keeps
+the old rate. *(Updated 2026-11-03: this said a higher default would reach
+only coaches who connect later.)*
 
 Offer a **$49/mo, 0% fee** plan once a coach clears roughly $1,000/mo in
 bookings — at 5%, that is the crossover, and letting them switch themselves
-is how a growing coach stays.
+is how a growing coach stays. Like zero-rating a pilot coach, this needs a
+per-coach rate, which is not built.
 
-Fee is configurable per-coach and per-transaction-type from day one (Connect Hub
-supports this).
+A per-coach or per-transaction-type fee needs a relay change first.
+Coachatron's buy links carry no fee, and the relay gives a public buy link the
+Connect row's rate; it takes another rate (up to `app_fee_bps_max`) only on an
+authenticated checkout call, which Coachatron does not make. Detail in
+`docs/PLATFORM.md` §1.1. *(Updated 2026-11-03: this said the fee was
+configurable per coach and per transaction type from day one.)*
 
 ### 9.4 Refunds
 
@@ -354,8 +363,8 @@ dashboard to refund from (§9.1), so today a refund is a request to Coachatron
 support; the Money screen says so. The relay already has a seller refund route
 (`POST /connect/:productKey/recipients/:seller/refunds`, `refund()` in
 `packages/store-client`). A later change will call it, and on the
-`purchase.refunded` event reverse the package credit and release the session
-slot. *(Updated 2026-11-03: this first said the coach refunds in Square.)*
+`marketplace.purchase.refunded` event reverse the package credit and release
+the session slot. *(Updated 2026-11-03: this first said the coach refunds in Square.)*
 
 **We return our application fee with a refund** (in proportion for a partial
 refund): the relay's seller refund does this, and the Money screen tells the
@@ -467,7 +476,8 @@ is unused (a coach reaches their Stripe account through
 `coach.connect_recipient_key`, the relay's seller key), and
 `square_subscription_id` holds the relay's opaque payment reference for a plan
 purchase. `booking.charge_id` holds the same kind of reference. Coachatron
-stores no Stripe id.
+stores no Stripe id. `coach.fee_bps` (default 500) is stored but not sent to
+the relay; the Connect row sets the fee (§9.3).
 
 ---
 

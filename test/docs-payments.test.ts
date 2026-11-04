@@ -30,6 +30,10 @@ const RETIRED_PAYMENT_CLAIMS = [
   /Square billing/,
   /"squareEnv"/,
   /NOCTUSOFT_SQUARE_CLIENT_SECRET/,
+  /api\.square\.noctusoft\.com/,
+  /connect after the change/,
+  /zero-rated without a deploy/,
+  /configurable per-coach and per-transaction-type from day one/,
 ];
 
 function section(text: string, heading: string): string {
@@ -63,12 +67,36 @@ test('docs and the coach terms draft state the platform fee the app is configure
   assert.match(read('docs/legal/marketplace-terms.md'), new RegExp(`${percent} \\(${APP_FEE_BPS} basis points\\)`));
 });
 
-test('docs say refunds are not built yet and name the relay refund route', () => {
+test('docs say the fee is one rate per environment and a per-coach rate needs a relay change', () => {
+  const cut = section(read('SPEC.md'), '### 9.3 Our cut');
+  assert.match(cut, /one number per environment/);
+  assert.match(cut, /every coach in that environment at once/);
+  assert.match(cut, /per-coach or per-transaction-type fee needs a relay change/);
+  const platform = section(read('docs/PLATFORM.md'), '### 1.1 Adding Coachatron as a product');
+  assert.match(platform, /one rate per environment/);
+  assert.match(platform, /every coach in that environment at\s+once/);
+  assert.match(platform, /per-coach\s+rate[^.]*needs a relay change/);
+  assert.match(read('docs/legal/marketplace-terms.md'), /needs a relay change\s+before it can be offered/);
+});
+
+test('docs say refunds are not built yet and name the relay refund route and event', () => {
   const refunds = section(read('SPEC.md'), '### 9.4 Refunds');
   assert.match(refunds, /Not built yet/);
   assert.match(refunds, /recipients\/:seller\/refunds/);
   assert.match(read('README.md'), /Refunds are not built/);
   assert.match(read('docs/PLATFORM.md'), /recipients\/:seller\/refunds/);
+  for (const doc of ['SPEC.md', 'docs/PLATFORM.md', 'README.md']) {
+    const text = read(doc);
+    assert.match(text, /`marketplace\.purchase\.refunded`/, `${doc} names the seller refund event`);
+    assert.doesNotMatch(text, /`purchase\.refunded`/, `${doc} names the refund event without its marketplace prefix`);
+  }
+});
+
+test('the README lists the store settings the buy links and store events use', () => {
+  const readme = read('README.md');
+  for (const name of ['RELAY_BASE_URL', 'RELAY_CONNECT_PRODUCT', 'RELAY_WEBHOOK_SECRET', 'STORE_BASE_URL', 'STORE_WEBHOOK_URL']) {
+    assert.match(readme, new RegExp(`^\\| \`${name}\` \\|`, 'm'), `README documents ${name}`);
+  }
 });
 
 test('docs say the monthly plan is charged once', () => {
