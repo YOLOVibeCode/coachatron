@@ -82,6 +82,24 @@ export async function getPlanById(db: DbClient, coachId: number, planId: number)
  * is on its way or done (SPEC.md §9.4). */
 const NOT_HELD_FOR_REFUND = 'refund_id is null';
 
+/** A credit made from a booking whose payment is being refunded (its
+ * session was cancelled while the refund is on its way) is held with that
+ * refund from the start, like the credit the payment bought: it cannot be
+ * used until the refund goes through (and withdraws it) or fails (and gives
+ * it back). Run in the same transaction that creates the credit. Returns
+ * whether it was held. */
+export async function holdCreditForRefund(db: DbClient, creditId: number, paymentRef: string | null): Promise<boolean> {
+  if (paymentRef === null) return false;
+  const result = await db.query<{ id: number }>(
+    `update credit set refund_id = r.id
+     from refund r
+     where credit.id = $1 and r.payment_ref = $2 and r.status in ('requested', 'pending') and r.refunded_at is null
+     returning credit.id`,
+    [creditId, paymentRef],
+  );
+  return result.rows.length === 1;
+}
+
 /** The oldest-expiring usable credit for this coach+phone, if any. Credits
  * are tracked per phone number, not per account (SPEC.md §9.2), so a parent
  * booking two children with one phone draws from one pool. */

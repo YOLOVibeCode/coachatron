@@ -420,7 +420,9 @@ out of the coach's Stripe balance and goes back to the card that paid.
   after a refund failed.
 - **Held while on its way.** From the moment the coach confirms, the credit
   the payment bought cannot be used, so nothing more is booked with it
-  while Stripe confirms. A refund that does not go through gives it back.
+  while Stripe confirms. A credit the payment becomes in the meantime (the
+  coach cancels its session) is held the same way, and the parent's cancel
+  text does not offer it. A refund that does not go through gives it back.
 - **What a refund does,** once, whether the relay confirms at once or by the
   `marketplace.purchase.refunded` event: the booking it bought is marked
   refunded, and when its session is still to come its spot is free again;
@@ -584,7 +586,7 @@ message_log(id, to_phone, template, body, provider_id, sent_at, status)
 `credit.contact_phone` is the join key for a buyer, by design (§9.2). Normalize
 to E.164 on write.
 
-Added since the sketch (migrations 0013–0019): `request_limit` (fixed-window
+Added since the sketch (migrations 0013–0020): `request_limit` (fixed-window
 counts per client address, phone, or email) and `otp_code.attempts`;
 `coach.email_verified_at`; `coach_payments` (whether the coach can take
 charges, and the payment texts owed) and `payments_link`;
@@ -593,7 +595,8 @@ charges, and the payment texts owed) and `payments_link`;
 store event, handled once) and `payment_attention` (payments kept for the
 coach to resolve). Migration 0019 adds `refund` (one row per refunded
 payment: its status, try, and what it withdrew) and `payment_dispute`, and a
-booking's status can be `refunded`.
+booking's status can be `refunded`. Migration 0020 adds `credit.refund_id`
+(held while a refund is on its way) and `withdrawn_at`.
 
 Two column names predate the move to Stripe and were kept: `square_merchant_id`
 is unused (a coach reaches their Stripe account through

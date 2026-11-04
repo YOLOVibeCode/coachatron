@@ -234,11 +234,13 @@ SPEC.md §8.1.
   payment's ref and its try number: the same key goes again when the
   relay's answer never came (a timeout, a 429, or a 5xx), and a new one only
   after a refusal or a failed refund.
-- **Held while on its way.** The claim sets the payment's credit's
-  `refund_id` in the same transaction, and a credit with one cannot be
-  booked with; a booking that drew on it since the check stops the claim.
-  A refund that fails before its effects were applied clears it (migration
-  0020).
+- **Held while on its way.** The claim locks the booking and sets its
+  credit's `refund_id` in the same transaction, and a credit with one cannot
+  be booked with; a booking that drew on it since the check stops the claim.
+  A credit made from the booking while its refund is `requested` or
+  `pending` (a coach's cancel of a paid drop-in) gets that `refund_id` in
+  the transaction that makes it. A refund that fails before its effects
+  were applied clears it (migration 0020).
 - **Effects, once.** When the relay answers `succeeded`, or
   `marketplace.purchase.refunded` arrives (whichever is first), the booking
   the payment bought becomes `refunded` (its spot is free when its session

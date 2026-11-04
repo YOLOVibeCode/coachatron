@@ -7,6 +7,7 @@ import { seedCoachWithSession, seedPackage, type SeededSession } from './helpers
 import { postPaymentEvent } from './helpers/store-event.js';
 import { bookOnline, postCheckout } from './helpers/booking.js';
 import { cancelScheduledSession } from '../src/domain/cancelSession.js';
+import { getCreditBalance } from '../src/domain/pricing.js';
 import type { DbClient } from '../src/db/client.js';
 import {
   PHONE,
@@ -149,6 +150,73 @@ test('the credits of a package whose refund is on its way cannot be booked with,
     });
     assert.equal(relay.refundCalls, 1);
     assert.equal((await refundRow(db, 'ns_pay_held')).status, 'failed');
+  });
+});
+
+test('when the coach cancels a paid drop-in while its refund is on its way, the credit it becomes is held, and comes back only if the refund fails', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 2, priceCents: 3500 });
+    await withServer(async (base) => {
+      const bookingId = await payFor(base, db, {
+        handle: seed.coach.handle,
+        sessionId: seed.sessionId,
+        paymentId: 'ns_pay_cancel_held',
+        amountCents: 3500,
+      });
+      relay.refundStatus = 'pending';
+      const cookie = await coachCookie(db, seed.coach.id);
+      const sent = await postForm(base, `/app/sessions/${seed.sessionId}/bookings/${bookingId}/refund`, cookie);
+      assert.equal(sent.headers.get('location'), `/app/sessions/${seed.sessionId}?notice=refund-pending`);
+
+      // The coach cancels the session before Stripe confirms the refund.
+      const result = await cancelScheduledSession(db, seed.coach.id, seed.sessionId);
+      assert.equal(result.kind, 'cancelled');
+      if (result.kind === 'cancelled') assert.equal(result.creditsReturned, 0, 'no credit is counted as returned while the refund is on its way');
+      assert.equal(await getCreditBalance(db, seed.coach.id, PHONE), null, 'the credit the drop-in became cannot be used');
+      const cancelText = relay.sms.filter((m) => m.to === PHONE && /cancel/i.test(m.body));
+      assert.equal(cancelText.length, 1);
+      assert.doesNotMatch(cancelText[0].body, /credit/i, 'the parent is not offered a credit the refund will take back');
+
+      // The refund does not go through, so the credit can be used.
+      const failed = await postPaymentEvent(base, {
+        type: 'marketplace.purchase.refund_failed',
+        paymentId: 'ns_pay_cancel_held',
+        refundId: relay.refunds[0].refundRef,
+        amountCents: 3500,
+      });
+      assert.equal(failed.status, 200);
+      const usable = await getCreditBalance(db, seed.coach.id, PHONE);
+      assert.equal(usable?.remaining, 1);
+    });
+    assert.equal(relay.refundCalls, 1);
+    assert.equal((await refundRow(db, 'ns_pay_cancel_held')).status, 'failed');
+  });
+});
+
+test('a refund Stripe confirms after the coach cancelled the drop-in withdraws the credit it became', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 2, priceCents: 3500 });
+    await withServer(async (base) => {
+      const bookingId = await payFor(base, db, {
+        handle: seed.coach.handle,
+        sessionId: seed.sessionId,
+        paymentId: 'ns_pay_cancel_confirmed',
+        amountCents: 3500,
+      });
+      relay.refundStatus = 'pending';
+      await postForm(base, `/app/sessions/${seed.sessionId}/bookings/${bookingId}/refund`, await coachCookie(db, seed.coach.id));
+      assert.equal((await cancelScheduledSession(db, seed.coach.id, seed.sessionId)).kind, 'cancelled');
+      assert.equal(await getCreditBalance(db, seed.coach.id, PHONE), null);
+
+      const event = { type: 'marketplace.purchase.refunded' as const, paymentId: 'ns_pay_cancel_confirmed', refundId: relay.refunds[0].refundRef, amountCents: 3500 };
+      assert.equal((await postPaymentEvent(base, event)).status, 200);
+      assert.equal(await creditLeft(db, bookingId), 0);
+      assert.equal(await getCreditBalance(db, seed.coach.id, PHONE), null);
+    });
+    const row = await refundRow(db, 'ns_pay_cancel_confirmed');
+    assert.deepEqual({ status: row.status, withdrawn: row.credits_withdrawn, used: row.credits_used }, { status: 'refunded', withdrawn: 1, used: 0 });
   });
 });
 

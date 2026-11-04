@@ -58,8 +58,9 @@ const PURCHASE_COLUMNS = `b.id, st.coach_id, b.session_id, b.status, b.payment_s
   b.athlete_name, b.contact_phone, s.starts_at_utc, s.tz, st.name as session_name`;
 const PURCHASE_FROM = `booking b join session s on s.id = b.session_id join session_type st on st.id = s.session_type_id`;
 
-async function bookingById(db: DbClient, bookingId: number): Promise<PurchaseBooking | null> {
-  const result = await db.query<PurchaseBooking>(`select ${PURCHASE_COLUMNS} from ${PURCHASE_FROM} where b.id = $1`, [bookingId]);
+/** A booking by id, its row locked until the transaction ends. */
+async function lockedBooking(db: DbClient, bookingId: number): Promise<PurchaseBooking | null> {
+  const result = await db.query<PurchaseBooking>(`select ${PURCHASE_COLUMNS} from ${PURCHASE_FROM} where b.id = $1 for update of b`, [bookingId]);
   return result.rows[0] ?? null;
 }
 
@@ -402,9 +403,12 @@ async function claimRefund(db: DbClient, plan: RefundPlan): Promise<{ attempt: n
         return { block: blockFromExisting(await refundForPayment(tx, plan.paymentRef)) ?? { kind: 'in_progress' } };
       }
       // A refund applied before it failed already withdrew the credit.
-      if (plan.creditId !== null && plan.bookingId !== null && claimed.refunded_at === null) {
-        await tx.query('update credit set refund_id = $2 where id = $1', [plan.creditId, claimed.id]);
-        const b = await bookingById(tx, plan.bookingId);
+      if (plan.bookingId !== null && claimed.refunded_at === null) {
+        // The booking's row is locked, so a cancel that turns its payment
+        // into a credit either finished first (and that credit is held
+        // here) or runs after and finds this refund on its way.
+        const b = await lockedBooking(tx, plan.bookingId);
+        if (b && b.credit_id !== null) await tx.query('update credit set refund_id = $2 where id = $1', [b.credit_id, claimed.id]);
         const credits = b ? await purchaseCredits(tx, b) : null;
         if (credits && credits.usedElsewhere > 0) {
           throw new ClaimStopped({ kind: 'credits_used', used: credits.usedElsewhere, sessions: credits.sessions });
@@ -591,10 +595,7 @@ export async function applyRefunded(db: DbClient, report: RefundReport): Promise
     let ended = false;
     let released = false;
     if (current.booking_id !== null) {
-      const booking = await tx.query<PurchaseBooking>(`select ${PURCHASE_COLUMNS} from ${PURCHASE_FROM} where b.id = $1 for update of b`, [
-        current.booking_id,
-      ]);
-      const b = booking.rows[0];
+      const b = await lockedBooking(tx, current.booking_id);
       if (b) {
         // Lock the credit too, so a booking drawing on it waits, and what is
         // counted here is what is withdrawn. Never below zero.

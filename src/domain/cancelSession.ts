@@ -1,7 +1,7 @@
 import { inTransaction, type DbClient } from '../db/client.js';
 import { formatConfirmWhen, formatLocal } from '../lib/time.js';
 import { OPT_OUT_LINE, canText, sendText, toOneSegment } from './outbound.js';
-import { cancelledSessionCreditSource, createCredit, restoreCredit } from './pricing.js';
+import { cancelledSessionCreditSource, createCredit, holdCreditForRefund, restoreCredit } from './pricing.js';
 import { plain } from './bookingMessages.js';
 import { hasActiveConsent } from './sms-consent.js';
 
@@ -43,9 +43,11 @@ export type CancelSessionResult =
 const LIVE = "('booked', 'attended', 'noshow')";
 
 /** A cancelled booking whose session went back to the parent as credit:
- * it has a credit, and that credit was not withdrawn by a refund of the
- * payment that bought it. Reads `booking b left join credit c`. */
-const CREDIT_BACK = '(c.id is not null and c.withdrawn_at is null)';
+ * it has a credit, and that credit is not held or withdrawn by a refund of
+ * the payment that bought it. While a refund is on its way the parent is
+ * not told of a credit they cannot use; the refund's own notice follows.
+ * Reads `booking b left join credit c`. */
+const CREDIT_BACK = '(c.id is not null and c.withdrawn_at is null and c.refund_id is null)';
 
 /** A drop-in the parent paid for, as opposed to a free one. */
 function paidDropIn(b: { payment_source: string | null; gross_cents: number | null }): boolean {
@@ -125,10 +127,16 @@ export async function cancelScheduledSession(
   ]);
   for (const booking of live.rows) {
     await inTransaction(db, async (tx) => {
-      const closed = await tx.query<{ credit_id: number | null; payment_source: string | null; gross_cents: number | null; contact_phone: string }>(
+      const closed = await tx.query<{
+        credit_id: number | null;
+        payment_source: string | null;
+        gross_cents: number | null;
+        contact_phone: string;
+        charge_id: string | null;
+      }>(
         `update booking set status = 'cancelled', cancel_notice = 'pending'
          where id = $1 and status in ${LIVE}
-         returning credit_id, payment_source, gross_cents, contact_phone`,
+         returning credit_id, payment_source, gross_cents, contact_phone, charge_id`,
         [booking.id],
       );
       const b = closed.rows[0];
@@ -138,6 +146,8 @@ export async function cancelScheduledSession(
       } else if (paidDropIn(b)) {
         const creditId = await createCredit(tx, coachId, b.contact_phone, null, cancelledSessionCreditSource(sessionId), 1, null);
         await tx.query('update booking set credit_id = $2 where id = $1', [booking.id, creditId]);
+        // A refund of this payment on its way holds the credit it became.
+        await holdCreditForRefund(tx, creditId, b.charge_id);
       }
     });
   }
