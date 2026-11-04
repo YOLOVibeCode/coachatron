@@ -11,7 +11,7 @@ import {
   normalizePhone,
   type CoachRow,
 } from '../domain/auth.js';
-import { consumeStartLink, getOpenStartLink } from '../domain/startLink.js';
+import { consumeStartLink, getOpenStartLink, reopenStartLink } from '../domain/startLink.js';
 import { clientKey, START_BOX_LIMITS, takeRequest } from '../domain/requestLimits.js';
 import { handleSetupMessage } from '../domain/setup.js';
 import { html, landingPage, page, raw } from '../lib/html.js';
@@ -142,6 +142,12 @@ const TZ_SCRIPT = raw(
   `<script>try{var t=document.getElementById('tz');if(t&&!t.value)t.value=Intl.DateTimeFormat().resolvedOptions().timeZone||''}catch(e){}</script>`,
 );
 
+const EMAIL_TAKEN = 'That email already has an account. Use another email, or leave it blank.';
+
+function isUniqueViolation(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === '23505';
+}
+
 function gonePage(): string {
   return page(
     'Link expired',
@@ -200,6 +206,8 @@ landingRouter.post('/start/:token', async (req, res) => {
     return;
   }
   // The optional email stays unproved, and must not be on another account.
+  // Checked before the link is used, so the coach can fix it and try again
+  // with the same link.
   const extraEmail = existing ? null : normalizeEmail(email);
   const holder = extraEmail ? await findCoachHoldingEmail(db, extraEmail) : null;
   if (holder) {
@@ -213,13 +221,21 @@ landingRouter.post('/start/:token', async (req, res) => {
   }
   let coach: CoachRow | null = existing;
   if (!coach) {
-    coach = await createCoach(db, {
-      phone: consumed.phone,
-      name,
-      email: extraEmail ?? '',
-      emailVerified: false,
-      tz: isValidTimeZone(tz) ? tz : DEFAULT_TZ,
-    });
+    try {
+      coach = await createCoach(db, {
+        phone: consumed.phone,
+        name,
+        email: extraEmail ?? '',
+        emailVerified: false,
+        tz: isValidTimeZone(tz) ? tz : DEFAULT_TZ,
+      });
+    } catch (err) {
+      // Someone took the email or phone between the check and the insert.
+      if (!isUniqueViolation(err)) throw err;
+      await reopenStartLink(db, token);
+      res.status(422).send(renderStartForm(token, { name, email, tz }, EMAIL_TAKEN));
+      return;
+    }
   }
   const session = await createCoachSession(db, coach.id);
   const cookies = [serializeCookie(SESSION_COOKIE, session, 30 * 24 * 60 * 60)];
