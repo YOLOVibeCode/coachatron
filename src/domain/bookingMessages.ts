@@ -1,16 +1,17 @@
 import type { DbClient } from '../db/client.js';
 import { APP_BASE_URL } from '../config.js';
 import { escapeHtml } from '../lib/html.js';
-import { formatConfirmWhen } from '../lib/time.js';
+import { formatCoachDollars, formatConfirmWhen } from '../lib/time.js';
 import { PLACEHOLDER_EMAIL_DOMAIN } from '../relay/buy-link.js';
 import { normalizeEmail } from './auth.js';
 import { OPT_OUT_LINE, canText, sendEmailMessage, sendText, toOneSegment, type SendOutcome } from './outbound.js';
 import { hasActiveConsent } from './sms-consent.js';
 
-/** What a parent is told about their own booking: that it is booked, or
- * that a payment for a cancelled session became credit. Texts go only to a
- * phone with SMS consent, and email only to an address the parent typed.
- * A failed send is logged and never undoes the booking. */
+/** What a parent is told about their own booking: that it is booked, that
+ * a payment for a cancelled session became credit, or that a payment was
+ * refunded. Texts go only to a phone with SMS consent, and email only to an
+ * address the parent typed. A failed send is logged and never undoes the
+ * booking. */
 
 export type MessageOutcome = SendOutcome | 'skipped' | 'failed';
 
@@ -152,6 +153,51 @@ export async function sendBookingConfirmation(db: DbClient, bookingId: number): 
       html: emailHtml([line, 'See or cancel this booking here:'], link, 'Manage this booking'),
     },
     'booking-confirmation',
+  );
+  return { text, email };
+}
+
+function refundAmount(cents: number | null): string {
+  return cents === null ? 'your payment' : formatCoachDollars(cents);
+}
+
+/** Sent once when a payment is refunded: how much went back to the card,
+ * what it was for, and what the refund ended (the booking it paid for, or
+ * the session credits it bought). */
+export async function sendRefundNotice(
+  db: DbClient,
+  bookingId: number,
+  refund: { amountCents: number | null; bookingReleased: boolean; creditsRemoved: number },
+): Promise<ParentMessageResult> {
+  const d = await loadDetails(db, bookingId);
+  if (!d) return { text: 'skipped', email: 'skipped' };
+  const { when, athlete } = describe(d);
+  const day = when.split(',')[0];
+  const link = manageUrl(d.manage_token);
+  const amount = refundAmount(refund.amountCents);
+  const text = await textParent(
+    db,
+    d,
+    textWithLink(`Coachatron: ${d.coach_name} refunded ${amount} for ${athlete}'s ${d.session_name} ${day}.`, link),
+    'refund-notice',
+  );
+  const lines = [`${d.coach_name} refunded ${amount} to the card you paid with, for ${d.athlete_name}'s ${d.session_name} on ${when}.`];
+  if (refund.bookingReleased) lines.push('That booking is cancelled.');
+  if (refund.creditsRemoved > 0) {
+    lines.push(
+      `The ${refund.creditsRemoved} unused session ${refund.creditsRemoved === 1 ? 'credit' : 'credits'} from this payment ${refund.creditsRemoved === 1 ? 'was' : 'were'} removed.`,
+    );
+  }
+  lines.push('Your bank may take a few days to show the refund.');
+  const email = await emailParent(
+    db,
+    d,
+    {
+      subject: `Refund from ${d.coach_name}: ${amount}`,
+      text: `${lines.join(' ')}\n\nYour booking: ${link}\n\nCoachatron`,
+      html: emailHtml(lines, link, 'See your booking'),
+    },
+    'refund-notice',
   );
   return { text, email };
 }
