@@ -251,6 +251,12 @@ coach's account. Money also lists, under "Payments to resolve", payments that
 reached the coach's account but did not book (the session filled or started
 first, the amount did not match, or a second payment), with the parent's name
 and number, for the coach to settle with the parent.)*
+*(Updated 2026-11-04: the coach refunds a payment from Money or Session
+detail, after a confirmation (§9.4). Money lists recent payments with their
+Refund, a Refund on each payment under "Payments to resolve", refunds that
+did not go through, the refunds made, and card disputes with what they
+mean. A refunded booking is out of booked and collected, and Money shows
+what was refunded this week.)*
 
 ---
 
@@ -263,11 +269,11 @@ Ship nothing else until a real coach has taken real money through this.
 **Coach-facing (7)**
 1. Sign in (email or mobile + one-time code)
 2. Schedule — this week's sessions, tap one to see who's in it
-3. Session detail — roster of athletes, mark attendance, cancel session
+3. Session detail — roster of athletes, mark attendance, cancel session, refund a paid booking
 4. Session types — list + create/edit (name, duration, capacity, price)
 5. Pricing — packages and plans (create/retire); a plan is shown as a one-time pack
 6. My roster — assistant coaches, add by phone, reorder priority
-7. Money — read-only summary (§7.4)
+7. Money — summary (§7.4), refunds and card disputes (§9.4), connecting payments
 
 **Athlete-facing (4)**
 8. Coach's public page — open sessions list
@@ -336,8 +342,9 @@ Connect Hub (mounted at `/connect/:productKey/*`) also covers a
 runtime-enforced versioned seller agreement, refunds, and seller
 subscriptions. **Build against it; do not call Stripe or any processor
 directly.** Coachatron uses the agreement, onboarding, seller status, and the
-one-time buy link today: a plan is sold as a one-time pack, charged once
-(§9.2), and refunds are not built (§9.4). The legal steps (attorney review of
+one-time buy link, and the seller refund today: a plan is sold as a one-time
+pack, charged once (§9.2), and a coach refunds a whole payment from Money or
+Session detail (§9.4). The legal steps (attorney review of
 the marketplace terms, parent terms, and payments privacy notice) have no
 code dependency; drafts are in `docs/legal/`. Detail in `docs/PLATFORM.md` §2.
 
@@ -387,18 +394,51 @@ configurable per coach and per transaction type from day one.)*
 
 ### 9.4 Refunds
 
-**Not built yet.** Coachatron has no refund button, and the coach has no Stripe
-dashboard to refund from (§9.1), so today a refund is a request to Coachatron
-support; the Money screen says so. The relay already has a seller refund route
+*(Built 2026-11-04. This section first said refunds were not built and went
+through Coachatron support.)* The coach has no Stripe dashboard (§9.1), so
+Coachatron refunds for them, through the relay's seller refund route
 (`POST /connect/:productKey/recipients/:seller/refunds`, `refund()` in
-`packages/store-client`). A later change will call it, and on the
-`marketplace.purchase.refunded` event reverse the package credit and release
-the session slot. *(Updated 2026-11-03: this first said the coach refunds in Square.)*
+`packages/store-client`). Coachatron never holds the money: the refund comes
+out of the coach's Stripe balance and goes back to the card that paid.
+
+- **Where.** Session detail shows what each booking paid, with **Refund**.
+  Money lists recent payments with theirs, and a Refund on each payment
+  under "Payments to resolve". The coach confirms on the same screen, which
+  says what the refund changes. No new screen.
+- **Whole payments only.** A refund is the whole payment, and only while
+  nothing it bought beyond its own booking has been used: a drop-in any
+  time (or, when the coach cancelled its session, while the credit it
+  became is unused), and a package or one-time pack while none of the
+  credits it added has been used. Otherwise the screen says how many
+  sessions were used and refunds nothing; a partial refund goes through
+  Coachatron support. The relay's route takes an amount, so a partial
+  refund needs only a product decision, not a relay change.
+- **Once.** Each payment has one refund row (`refund`), so a second tap
+  sends nothing. The relay is called with an idempotency key per payment
+  and try: the same key again when its answer never came, a new one only
+  after a refund failed.
+- **What a refund does,** once, whether the relay confirms at once or by the
+  `marketplace.purchase.refunded` event: the booking it bought is marked
+  refunded and its spot is free again; the session credits it bought are
+  withdrawn (any already used are counted and shown, never below zero); a
+  payment under "Payments to resolve" leaves that list; and the parent is
+  told once, by text if they chose texts and by email if they gave one.
+- **Refunds made elsewhere.** A refund event for a payment Coachatron did not
+  refund is applied when it covers the whole payment. One for part of a
+  payment changes nothing, and Money shows it under "Payments to resolve".
+- **Failures.** `marketplace.purchase.refund_failed`, or a refusal from the
+  relay, shows under "Payments to resolve" with a way to try again.
+- **Disputes.** `marketplace.purchase.disputed`, `…dispute_won` and
+  `…dispute_lost` are recorded (`payment_dispute`) and shown on Money with
+  what they mean. Stripe handles disputes and Coachatron holds no funds; a
+  dispute changes no booking or credit. A coach answers one through
+  Coachatron support.
 
 **We return our application fee with a refund** (in proportion for a partial
 refund): the relay's seller refund does this, and the Money screen tells the
-coach before they connect payments. As before, this is stated plainly in
-the coach's terms rather than hidden.
+coach before they connect payments and on each refund's confirmation. Stripe
+keeps its own processing fee. As before, this is stated plainly in the
+coach's terms rather than hidden.
 
 ### 9.5 Booking policy
 
@@ -441,6 +481,7 @@ marketing. Messages are short enough to read in a notification preview.
 | Offer claimed / cascade exhausted | Coach | SMS |
 | Slot opened from waitlist | Waitlisted athlete | SMS |
 | Payment failed (subscription) | Athlete/parent | SMS + email |
+| Payment refunded | Athlete/parent | SMS + email |
 
 *(Updated 2026-11-03, as built: a booking confirmation carries the manage
 link and goes by text when the parent ticked the texts box and by email when
@@ -451,7 +492,9 @@ cancelled while the parent paid, it becomes credit and the parent is told the
 same way as a confirmation. No subscription payment can fail while plans are
 one-time packs. The coach also gets payment texts: the go-live text with the
 page link and, until payments work, a payments link; one "You can take
-payments now" text; and up to two set-up reminders.)*
+payments now" text; and up to two set-up reminders. A refund is told once,
+by text only with the parent's consent and by email only to an address they
+gave, with the amount, what it was for, and the manage link.)*
 
 **Inbound SMS** is parsed for a small fixed vocabulary only in Slice 1: `Y`/`YES`,
 `N`/`NO`, `STOP`, `HELP`, plus `1` and `2` as the coach's answer to an overflow
@@ -535,14 +578,16 @@ message_log(id, to_phone, template, body, provider_id, sent_at, status)
 `credit.contact_phone` is the join key for a buyer, by design (§9.2). Normalize
 to E.164 on write.
 
-Added since the sketch (migrations 0013–0018): `request_limit` (fixed-window
+Added since the sketch (migrations 0013–0019): `request_limit` (fixed-window
 counts per client address, phone, or email) and `otp_code.attempts`;
 `coach.email_verified_at`; `coach_payments` (whether the coach can take
 charges, and the payment texts owed) and `payments_link`;
 `booking.hold_expires_at`, `booking.checkout_token`,
 `booking.phone_verified_at`, and `booking.cancel_notice`; `store_event` (each
-paid event, handled once) and `payment_attention` (payments kept for the
-coach to resolve).
+store event, handled once) and `payment_attention` (payments kept for the
+coach to resolve). Migration 0019 adds `refund` (one row per refunded
+payment: its status, try, and what it withdrew) and `payment_dispute`, and a
+booking's status can be `refunded`.
 
 Two column names predate the move to Stripe and were kept: `square_merchant_id`
 is unused (a coach reaches their Stripe account through

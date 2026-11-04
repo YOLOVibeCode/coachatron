@@ -8,8 +8,9 @@ import { withServer } from './helpers/server.js';
  * the coach as merchant, the configured platform fee, a plan sold as a
  * one-time pack, booking that opens once the coach can take charges, spot
  * holds, payments kept for the coach when they cannot book, a credit for
- * every paid booking a coach cancels, and refunds not built yet. The drafts
- * in docs/legal are marked as drafts and are not served by the app. */
+ * every paid booking a coach cancels, and refunds as built: whole payments,
+ * through the relay's seller refund route. The drafts in docs/legal are
+ * marked as drafts and are not served by the app. */
 
 const root = new URL('..', import.meta.url);
 const read = (p: string) => readFileSync(new URL(p, root), 'utf8');
@@ -92,17 +93,41 @@ test('docs say the fee is one rate per environment and a per-coach rate needs a 
   assert.match(read('docs/legal/marketplace-terms.md'), /needs a relay change\s+before it can be offered/);
 });
 
-test('docs say refunds are not built yet and name the relay refund route and event', () => {
+test('docs describe refunds as built and name the relay refund route and events', () => {
   const refunds = section(read('SPEC.md'), '### 9.4 Refunds');
-  assert.match(refunds, /Not built yet/);
+  assert.doesNotMatch(refunds, /Not built yet/);
   assert.match(refunds, /recipients\/:seller\/refunds/);
-  assert.match(read('README.md'), /Refunds are not built/);
+  assert.match(refunds, /Whole payments only/);
+  assert.match(refunds, /return our application fee with a refund/);
+  assert.match(refunds, /`marketplace\.purchase\.refund_failed`/);
+  assert.match(refunds, /`marketplace\.purchase\.disputed`/);
+  const readme = read('README.md');
+  assert.doesNotMatch(readme, /Refunds are not built/);
+  assert.match(readme, /`\/app\/money\/refund`/);
+  assert.match(readme, /`\/app\/sessions\/:id\/bookings\/:bookingId\/refund`/);
   assert.match(read('docs/PLATFORM.md'), /recipients\/:seller\/refunds/);
+  assert.doesNotMatch(read('docs/PLATFORM.md'), /A\s+later change will call this/);
   for (const doc of ['SPEC.md', 'docs/PLATFORM.md', 'README.md']) {
     const text = read(doc);
     assert.match(text, /`marketplace\.purchase\.refunded`/, `${doc} names the seller refund event`);
     assert.doesNotMatch(text, /`purchase\.refunded`/, `${doc} names the refund event without its marketplace prefix`);
   }
+  for (const draft of ['marketplace-terms.md', 'parent-terms.md']) {
+    const text = read(`docs/legal/${draft}`);
+    assert.doesNotMatch(text, /no refund button/, `${draft} still says there is no refund button`);
+    assert.match(text, /refund[^.]*whole payment|whole payment[^.]*refund/i, `${draft} says a refund is the whole payment`);
+  }
+  assert.match(read('docs/legal/marketplace-terms.md'), /\*\*Refund\*\*/);
+});
+
+test('docs use the words the app shows for refunds and disputes', () => {
+  const coach = read('src/routes/coach.ts');
+  assert.match(coach, /Confirm refund/);
+  assert.match(coach, /Card disputes/);
+  for (const doc of ['SPEC.md', 'README.md', 'docs/PLATFORM.md']) {
+    assert.match(read(doc), /\*\*Refund\*\*/, `${doc} names the Refund action`);
+  }
+  assert.match(read('docs/legal/parent-terms.md'), /shows the booking as\s+refunded/);
 });
 
 test('the README lists the store settings the buy links and store events use', () => {

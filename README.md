@@ -104,11 +104,11 @@ The twelve screens of Coachatron (Slice 1):
 |---|--------|----------|-----|
 | 1 | Sign in (and the texted payments link) | `/signin`, `/signin/otp`, `/signin/verify`, `/p/:token` | Coach |
 | 2 | Schedule (and voice setup) | `/app/schedule`, `/app/setup`, `/app/setup/publish`, `/app/setup/discard` | Coach |
-| 3 | Session detail | `/app/sessions/:id`, `/app/sessions/:id/bookings/:bookingId/attendance`, `/app/sessions/:id/cancel` | Coach |
+| 3 | Session detail | `/app/sessions/:id`, `/app/sessions/:id/bookings/:bookingId/attendance`, `/app/sessions/:id/bookings/:bookingId/refund`, `/app/sessions/:id/cancel` | Coach |
 | 4 | Session types | `/app/session-types`, `/app/session-types/:id/generate-week` (weekly times), `/app/session-types/:id/slots/:slotId/remove` | Coach |
 | 5 | Pricing | `/app/pricing`, `/app/pricing/package`, `/app/pricing/plan` | Coach |
 | 6 | Roster | `/app/roster`, `/app/roster/:id/priority` | Coach |
-| 7 | Money (and connecting payments) | `/app/money`, `/app/money/payments`, `/signout` | Coach |
+| 7 | Money (refunds, disputes, and connecting payments) | `/app/money`, `/app/money/refund`, `/app/money/payments`, `/signout` | Coach |
 | 8 | Public page | `/c/:handle` | Athlete |
 | 9 | Booking form | `/c/:handle/sessions/:sessionId/book`, `/c/:handle/sessions/:sessionId/waitlist` | Athlete |
 | 10 | Checkout | `/c/:handle/checkout/:token` | Athlete |
@@ -140,14 +140,10 @@ Do not commit secrets. `npm test` uses the in-process fake in `test/fakes/relay.
   expire, and nothing renews it, so the Pricing screen and checkout call it a
   one-time pack. Monthly renewal would use the relay's seller subscriptions,
   which this slice doesn't call (see `ROADMAP.md` M3).
-- **Refunds are not built.** Coaches have no Stripe dashboard, so there is
-  no refund button anywhere yet; the Money screen tells a coach to ask
-  Coachatron. The relay already has a seller refund route
-  (`POST /connect/:productKey/recipients/:seller/refunds`, which returns
-  Coachatron's fee with the refund). A later change will call it and reverse
-  a credit when `marketplace.purchase.refunded` arrives (`SPEC.md §9.4`).
-  Until then a payment that reached the coach but could not book is listed
-  on Money for the coach to settle with the parent (see "Booking and paying").
+- **Refunds are whole payments.** A package or pack whose credits were
+  partly used is not refunded in the app; a partial refund goes through
+  Coachatron support (`SPEC.md §9.4`). A card dispute is shown on Money, but
+  a coach answers one through support too.
 - **The overflow cascade reuses the original session**, rather than
   creating a literal second "parallel session" row — the accepted backup
   coach is recorded on the same session via `assigned_roster_member_id`.
@@ -214,6 +210,19 @@ public page does not ask the relay on every view.
   payment that arrives for a session the coach cancelled while the parent was
   paying becomes credit the same way, and the parent is told by text or
   email.
+- **Refunds.** Session detail and Money offer **Refund** on a paid booking
+  and on each payment under "Payments to resolve", with a confirmation on
+  the same screen. The app calls the relay's seller refund route
+  (`POST /connect/:productKey/recipients/:seller/refunds`, which returns
+  Coachatron's fee with the refund) with one idempotency key per payment and
+  try, and keeps one `refund` row per payment, so a second tap sends
+  nothing. When the relay answers that it refunded, or
+  `marketplace.purchase.refunded` arrives, the booking it bought is marked
+  refunded (its spot is free), the session credits it bought are withdrawn,
+  and the parent is told once, by text with consent and by email they gave.
+  A refund that fails, or one made outside the app for part of a payment, is
+  listed under **Payments to resolve**. Card disputes are recorded and shown
+  on Money with what they mean; they change no booking or credit.
 
 ## Texting in
 

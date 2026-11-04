@@ -106,6 +106,8 @@ What Coachatron calls today:
 | Status | `GET /connect/:product/recipients/:seller` | Charges and payouts enabled, accepted agreement version; whether charges work is saved in `coach_payments` (§2.2) |
 | Pay | Signed buy link `GET /buy/connect/:product/:seller?…&sig=` → Stripe's hosted checkout, with the platform fee | Checkout (screen 10, reached by its token): drop-in, package, or one-time pack, each one charge, offered only while the coach's charges work |
 | Hear back | Event v1 `marketplace.purchase.paid` at `/webhooks/store`; `seller.updated` and `seller.disconnected` for the coach's account | Records the event once, checks it, then books the held spot and grants package or pack credits, or keeps the payment for the coach (§2.2) |
+| Refund | `POST …/recipients/:seller/refunds` with `{ paymentRef, idempotencyKey }` (no amount: the whole payment); the platform fee is returned with it | **Refund** on Session detail and Money, after a confirmation; one key per payment and try (§2.2) |
+| Hear back on refunds and disputes | `marketplace.purchase.refunded`, `marketplace.purchase.refund_failed`, `marketplace.purchase.disputed`, `marketplace.purchase.dispute_won`, `marketplace.purchase.dispute_lost` | Each recorded once; a refund's effects applied once; failures and disputes shown on Money (§2.2) |
 
 How the relay sets up each coach (`stripe/adapter.js`, `beginOnboarding`):
 
@@ -125,17 +127,16 @@ How the relay sets up each coach (`stripe/adapter.js`, `beginOnboarding`):
 
 Built in the relay, not used by Coachatron yet:
 
-- **Refunds:** `POST …/recipients/:seller/refunds` with `{ paymentRef,
-  amountCents?, idempotencyKey }`; the platform fee is returned with it. A
-  later change will call this and handle `marketplace.purchase.refunded`
-  (SPEC.md §9.4).
-  Until then a refund is a support request, as the Money screen says.
+- **Partial refunds:** the refund route also takes `amountCents`; the fee is
+  returned in proportion. Coachatron refunds whole payments only, and a
+  partial refund is a support request (SPEC.md §9.4).
 - **Seller subscriptions** (`…/plans`, `…/subscriptions` and cancel / pause /
   resume / swap-plan / update-card). A plan is sold as a one-time pack,
   charged once, and parents and coaches see it that way; monthly renewal
   would use these.
-- **Disputes:** Stripe handles them. Event v1 carries a `disputeId` ref, which
-  Coachatron does not read yet.
+- **Answering a dispute:** Stripe handles disputes. Coachatron records each
+  one and its outcome and shows them on Money, but a coach with no Stripe
+  dashboard sends evidence through Coachatron support.
 
 So SPEC.md §15.1 ("is Connect Hub ready enough to build against?") is **answered:
 yes, build against it.** Do not call Stripe, or any processor, directly.
@@ -149,13 +150,14 @@ No live charge has run for Coachatron yet. What gates it, slowest first:
    privacy policy — start this now, it is the long pole
 2. **Marketplace terms v1 published** where the Money screen's box can point
    to them. The box names v1; the text has to exist before a coach accepts it
-3. **Dispute and refund handoff** — how a coach with no Stripe dashboard asks
-   for a refund or answers a dispute, until the app does both. Payments listed
-   under "Payments to resolve" on Money (§2.2) need the same handoff
+3. **Dispute handoff** — how a coach with no Stripe dashboard answers a
+   dispute (through support today), and how support handles a partial
+   refund. Whole refunds, including payments listed under "Payments to
+   resolve" on Money (§2.2), are made from the app
 4. Production's Connect row switched from Stripe test mode to live (an
    operator step on `ns`)
 5. Production canary — one $1 real charge on a real coach account, refunded
-   through the relay's seller refund route
+   from the Money screen through the relay's seller refund route
 
 **Sequencing consequence:** items 1–3 are legal/ops work with no code dependency.
 They should start in parallel with Slice 1 development, or they become the
@@ -218,6 +220,36 @@ SPEC.md §8.1.
   finishes on the next try; how each parent was reached is kept on the
   booking (`booking.cancel_notice`), and the session screen lists who the
   coach still needs to contact.
+
+*Refunds, implemented 2026-11-04* (`src/domain/refunds.ts`,
+`src/relay/seller.ts`, `src/routes/coach.ts`, `src/routes/store-webhook.ts`):
+
+- **Asking.** Session detail and Money offer **Refund** on a paid booking and
+  on each payment under "Payments to resolve". The coach confirms on the same
+  screen, which says what the refund changes. A refund is the whole payment;
+  a package or pack is refunded only while none of the credits it added has
+  been used, and the screen says why not otherwise.
+- **Once.** A `refund` row per payment is claimed before the relay is
+  called, so a second tap sends nothing. The idempotency key is the
+  payment's ref and its try number: the same key goes again when the
+  relay's answer never came (a timeout, a 429, or a 5xx), and a new one only
+  after a refusal or a failed refund.
+- **Effects, once.** When the relay answers `succeeded`, or
+  `marketplace.purchase.refunded` arrives (whichever is first), the booking
+  the payment bought becomes `refunded` and its spot is free, the payment's
+  credit is set to zero (what was already used is counted and shown), a
+  kept payment is resolved, and the parent is told once: a text with their
+  consent, an email to an address they typed. Totals on Money leave the
+  booking out and show what was refunded this week.
+- **Refunds made elsewhere.** A refund event for a payment Coachatron did not
+  refund is applied when it is the whole payment; a part refund is only
+  recorded and listed under "Payments to resolve".
+- **Failures** (`marketplace.purchase.refund_failed`, or a refusal such as
+  `NOT_FOUND` or `REFUND_EXCEEDS_PAYMENT`) are listed under "Payments to
+  resolve" with a way to try again.
+- **Disputes** are recorded in `payment_dispute` (open, then won or lost; a
+  late "opened" never undoes an outcome) and shown on Money with what they
+  mean. They change no booking or credit.
 
 ---
 

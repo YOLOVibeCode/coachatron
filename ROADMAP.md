@@ -1009,7 +1009,8 @@ milestone Notes above where they happened:
   was never asked to automate reversing a package credit on a partial refund
   in Slice 1, and the "I will judge it by" / acceptance criteria across all
   seven milestones never required it). *(Corrected 2026-11-03: this first
-  sent refunds to a Square dashboard.)*
+  sent refunds to a Square dashboard.)* *(Updated 2026-11-04: refunds are
+  built; see M16.)*
 
 ### Release verification (post-M7)
 
@@ -1306,3 +1307,25 @@ Acceptance:
 - [x] Development has `RELAY_APP_ENV=dev`; uat and production leave it unset
 - [x] All five quality-bar commands still exit 0
 
+## M16: Refunds through the relay
+Status: [x] done
+Goal: A coach refunds a whole payment from the screens they already use,
+without a Stripe dashboard, and the app keeps bookings, credits, and Money
+true to it.
+Acceptance:
+- [x] `refundSellerPayment()` calls the relay's seller refund route; the
+      fake relay takes refunds, one per idempotency key
+      (`test/refund-relay.test.ts`)
+- [x] **Refund** on Session detail and Money (recent payments and each
+      payment under "Payments to resolve"), confirmed first on the same
+      screen; a second tap sends nothing; a package or pack with used
+      credits says why it is not refunded (`test/refunds.test.ts`)
+- [x] `marketplace.purchase.refunded`, `refund_failed`, `disputed`,
+      `dispute_won` and `dispute_lost` handled once at `/webhooks/store`;
+      refunded bookings leave Money's totals, credits are withdrawn (never
+      below zero), failures and disputes show on Money
+      (`test/refund-events.test.ts`)
+- [x] The parent is told once, by text with consent and by email they gave
+      (`test/refund-notice.test.ts`)
+- [x] SPEC §9.4, PLATFORM §2, README, and the legal drafts describe refunds
+      as built
