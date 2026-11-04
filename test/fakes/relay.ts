@@ -3,8 +3,8 @@ import { createServer, type Server } from 'node:http';
 import { listenLoopback } from '../helpers/listen.js';
 
 /** In-process fake for the Noctusoft relay (Connect sellers + SMS + email).
- * Tests point RELAY_BASE_URL at this instead of a live relay, per SPEC.md:
- * "Tests use a fake HTTP relay, not Square." */
+ * Tests point RELAY_BASE_URL at this instead of a live relay, so no test
+ * reaches Stripe, Twilio, or SendGrid. */
 
 export interface FakeSms {
   to: string;

@@ -32,7 +32,7 @@ jobs:
           cache: npm
 
       # Fresh clone, no secrets. Tests use PGlite and in-process fakes
-      # (relay, model). Do not add Square, Twilio, or LiteLLM credentials.
+      # (relay, model). Do not add Stripe, Square, Twilio, or LiteLLM credentials.
       - name: Install
         run: npm ci
 
