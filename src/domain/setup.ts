@@ -223,7 +223,7 @@ export function setupSystemPrompt(
     'Each weekly entry names its session type by key. Give every session type a short unique key.',
     'backup_pay_cents is what a backup coach is paid to run one session, if the coach says so.',
     'coach_timezone is an IANA zone only if the coach names a city or zone; otherwise null.',
-    'Packages are prepaid session packs. Plans are monthly subscriptions.',
+    'Packages are prepaid session packs. Plans are one-time packs, charged once, even when the coach calls one monthly: credits_per_month is the number of sessions in it.',
     'Leave out phone numbers, emails, and card numbers.',
     `Today is ${localDateLine(now, coach.tz)} in ${coach.tz}.`,
     `Session types the coach already has: ${existing.map((e) => e.name).join(', ') || '(none)'}.`,

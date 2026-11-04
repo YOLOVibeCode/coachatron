@@ -131,7 +131,8 @@ test("the assistant's cancel reply says how many were texted and who was not rea
     setComplete(fakeComplete(new Error('the model must not run')));
     try {
       const ask = await handleCoachMessage(db, seed.coach, "cancel tomorrow's 6pm", 'sms');
-      assert.match(ask.text, /Reply Y/);
+      assert.match(ask.text, /\? 2 athletes, 1 can be texted\. Reply Y\.$/);
+      assert.doesNotMatch(ask.text, /credits/, 'a drop-in gets no credit back, so none is promised');
       const done = await handleCoachMessage(db, seed.coach, 'Y', 'sms');
       assert.match(done.text, /Cancelled\. 1 of 2 athletes texted, 0 credits returned\. Not reached: Mia Ortiz\./);
       assert.ok(done.text.length <= 160);
@@ -152,5 +153,27 @@ test('a cancelled session with nobody booked just says it was cancelled', async 
       assert.match(detail, /<strong>Cancelled\.<\/strong><\/p>/);
       assert.doesNotMatch(detail, /Texted \d+ of|Not reached/);
     });
+  });
+});
+
+test("the assistant's cancel question says when every parent will be texted, or that nobody is booked", async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 6 });
+    await db.query('update session set starts_at_utc = $1 where id = $2', [tomorrowAt(seed.coach.tz, 18).toISOString(), seed.sessionId]);
+    setComplete(fakeComplete(new Error('the model must not run')));
+    try {
+      const empty = await handleCoachMessage(db, seed.coach, "cancel tomorrow's 6pm", 'sms');
+      assert.match(empty.text, /\? Nobody is booked\. Reply Y\.$/);
+      assert.equal((await handleCoachMessage(db, seed.coach, 'N', 'sms')).text, 'Dropped.');
+
+      await seedBookedSession(db, seed.sessionId, 'Sam Reyes', '+15550000031');
+      await seedBookedSession(db, seed.sessionId, 'Ana Diaz', '+15550000032');
+      const all = await handleCoachMessage(db, seed.coach, "cancel tomorrow's 6pm", 'sms');
+      assert.match(all.text, /\? 2 athletes, all will be texted\. Reply Y\.$/);
+      assert.ok(all.text.length <= 160);
+    } finally {
+      resetComplete();
+    }
   });
 });

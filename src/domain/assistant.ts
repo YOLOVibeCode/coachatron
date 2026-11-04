@@ -15,7 +15,7 @@ import {
   type IntentName,
 } from '../llm/schema.js';
 import { clipSms, formatConfirmWhen, formatLocal } from '../lib/time.js';
-import { cancelScheduledSession } from './cancelSession.js';
+import { cancelScheduledSession, previewSessionCancel } from './cancelSession.js';
 import { sendText } from './outbound.js';
 import {
   consumePending,
@@ -459,6 +459,7 @@ function athleteBroadcastBody(session: SessionBrief, classified: ClassifiedInten
 }
 
 async function renderConfirm(
+  db: DbClient,
   classified: ClassifiedIntent,
   sessions: SessionBrief[],
   types: Array<{ id: number; name: string; duration_min: number }>,
@@ -468,9 +469,17 @@ async function renderConfirm(
     const session = sessionById(sessions, classified.session_id);
     if (!session) return null;
     const when = formatConfirmWhen(session.startsAtUtc, session.tz);
-    return clipSms(
-      `Cancel ${when}, ${session.durationMin}-min ${session.name}? ${session.booked} athletes. They'll be texted and credits returned. Reply Y.`,
-    );
+    // The same count the web confirm page gives: who is booked, and how
+    // many of them can get a text.
+    const preview = await previewSessionCancel(db, session.id);
+    const athletes = `${preview.total} ${preview.total === 1 ? 'athlete' : 'athletes'}`;
+    const who =
+      preview.total === 0
+        ? 'Nobody is booked.'
+        : preview.textable === preview.total
+          ? `${athletes}, all will be texted.`
+          : `${athletes}, ${preview.textable} can be texted.`;
+    return clipSms(`Cancel ${when}, ${session.durationMin}-min ${session.name}? ${who} Reply Y.`);
   }
   if (classified.intent === 'session.add') {
     const type = types.find((t) => t.id === classified.session_type_id);
@@ -679,7 +688,7 @@ async function applyClassified(
     const text = await renderRead(db, coach, classified, sessions, now);
     return { text, pendingId: null, kind: 'answer' };
   }
-  const confirmText = await renderConfirm(classified, sessions, types, coach.tz);
+  const confirmText = await renderConfirm(db, classified, sessions, types, coach.tz);
   if (!confirmText) return catchThat();
   const pending = await createPending(db, coach.id, classified, confirmText, now);
   return { text: confirmText, pendingId: pending.id, kind: 'confirm' };

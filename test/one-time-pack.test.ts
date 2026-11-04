@@ -6,7 +6,7 @@ import { withRelay } from './helpers/relay.js';
 import { seedCoachWithSession } from './helpers/fixtures.js';
 import { createPlan } from '../src/domain/pricing.js';
 import { createCoachSession } from '../src/domain/auth.js';
-import { renderSetupPreview, validateSetupPlan } from '../src/domain/setup.js';
+import { renderSetupPreview, setupSystemPrompt, validateSetupPlan } from '../src/domain/setup.js';
 
 /** A plan is charged once and its sessions do not expire, so parents and
  * coaches see it as a one-time pack: nothing reads as monthly or recurring. */
@@ -68,4 +68,14 @@ test('the setup preview shows a plan as a one-time pack', () => {
   const preview = renderSetupPreview(plan, coach, new Date('2026-10-20T12:00:00Z')).value;
   assert.match(preview, /Four pack: 4 sessions for \$120, one-time/);
   assert.doesNotMatch(preview, RECURRING);
+});
+
+test('the setup model is told a plan is a one-time pack', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db);
+    const prompt = setupSystemPrompt(seed.coach, [], null, new Date());
+    assert.match(prompt, /Plans are one-time packs, charged once/);
+    assert.doesNotMatch(prompt, /subscri|recurring/i);
+  });
 });
