@@ -309,8 +309,25 @@ All sends go through the relay. Rules from SPEC.md §10 stand (transactional onl
   body). `src/routes/webhooks.ts` checks it whenever `RELAY_INBOUND_SECRET` is
   set, and answers 503 in production when it is not (mint it with `node scripts/relay-keys.js inbound-secret --product
   coachatron --rotate` in the relay repo). `INBOUND_SMS_URL` must equal the
-  manifest `url` exactly. The relay ignores a non-XML reply, so Coachatron
-  answers by sending a text, not TwiML.
+  manifest `url` exactly.
+- **How the app answers.** The relay passes the app's reply back to Twilio
+  when it is XML (TwiML) and answers an empty `<Response></Response>` for
+  anything else (`twimlFrom` in the relay's `inbound.js`). *(Corrected
+  2026-11-04: this said the relay ignores a non-XML reply, so the app had to
+  send a text.)* So:
+  - `HELP` (and `INFO`) is answered with TwiML: one segment with the brand,
+    the support address, the rates line and how to stop
+    (`helpReplyText` in `src/routes/webhooks.ts`). Twilio's Messaging
+    Service has its own HELP reply; it should carry the same text, or be
+    turned off, so a parent does not get two.
+  - `STOP` and the other opt-out words, and `START`, get empty TwiML. Twilio
+    answers those keywords itself at the number level, with its own
+    confirmation, and blocks the number; the app records the opt-out (or
+    clears it) and sends nothing. A reply that asks to stop in its own words
+    ("please stop texting me") is recorded the same way.
+  - Everything else that needs an answer (the assistant's replies, a start
+    link, an offer link) is sent as a text through the send path, so it is
+    counted, capped and logged like any other text.
 - **Only texts and status callbacks Twilio signed are acted on.** The relay
   also sends `x-relay-twilio-verified`: `1` when Twilio's own signature
   checked out, `0` when not. With the relay's `TWILIO_SIGNATURE_MODE=log` it

@@ -6,6 +6,7 @@ import { withRelay } from './helpers/relay.js';
 import { fakeComplete } from './fakes/llm.js';
 import { inboundSmsUrl, parseInboundSms, relaySignature } from '../src/lib/inboundSms.js';
 import { resetComplete, setComplete } from '../src/llm/complete.js';
+import { isOptedOut } from '../src/domain/cascade.js';
 
 const SECRET = 'test-inbound-secret';
 
@@ -71,23 +72,24 @@ test('with a secret set, only a correctly signed inbound text is handled', async
   });
 });
 
-test(
-  'a signed STOP gets its confirmation as a sent text',
-  { todo: 'open: keyword replies are TwiML on this branch; docs/PLATFORM.md says the relay needs a sent text' },
-  async () => {
-    await withRelay(async (relay) => {
-      await freshDb();
-      await withSecret(async () => {
-        await withServer(async (base) => {
-          const form = twilioForm('+15559990000', 'STOP');
-          const ok = await sendInbound(base, form, relaySignature(SECRET, inboundSmsUrl(), Buffer.from(form)));
-          assert.equal(ok.status, 200);
-          assert.equal(relay.sms.filter((m) => m.to === '+15559990000').length, 1, 'the STOP confirmation');
-        });
+test('a signed STOP is answered with empty TwiML, records the opt-out, and sends no text of its own', async () => {
+  // The relay passes the app's TwiML reply back to Twilio, and Twilio
+  // answers STOP itself at the number level, so the app adds no message.
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    await withSecret(async () => {
+      await withServer(async (base) => {
+        const form = twilioForm('+15559990000', 'STOP');
+        const res = await sendInbound(base, form, relaySignature(SECRET, inboundSmsUrl(), Buffer.from(form)));
+        assert.equal(res.status, 200);
+        assert.match(res.headers.get('content-type') ?? '', /xml/);
+        assert.equal(await res.text(), '<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
       });
     });
-  },
-);
+    assert.equal(await isOptedOut(db, '+15559990000'), true);
+    assert.equal(relay.sms.filter((m) => m.to === '+15559990000').length, 0, 'no text is sent');
+  });
+});
 
 test(
   'a stranger texts their week in the relay format and gets a start link',
