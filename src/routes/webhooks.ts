@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 import { getDb, type DbClient } from '../db/client.js';
-import { sendText } from '../domain/outbound.js';
+import { segmentCount, sendText } from '../domain/outbound.js';
 import { findCoachByPhone, normalizePhone } from '../domain/auth.js';
 import { acceptOffer, answerAsk, declineOffer, hasOpenAsk } from '../domain/cascade.js';
 import { handleCoachMessage, keywordToken } from '../domain/assistant.js';
@@ -76,8 +76,18 @@ function twimlMessage(res: Response, text: string): void {
 
 const OVERFLOW_CHOICES_REPLY = 'Coachatron: reply 1 to open a second group, 2 to add a backup coach, or N for no.';
 
-function helpReplyText(): string {
-  return `${SMS_BRAND}: booking confirmations and reminders for coaching sessions. Help: ${SUPPORT_EMAIL}. Msg frequency varies. Msg & data rates may apply. Reply STOP to opt out.`;
+/** The HELP reply: who is texting, where to get help, and how to stop, in
+ * one segment (SPEC.md §10). TwiML replies skip the send path, so it is
+ * sized here; a long support address drops the description first. The same
+ * text belongs in the Messaging Service's own HELP reply. */
+export function helpReplyText(): string {
+  const tail = 'Msg frequency varies. Msg & data rates may apply. Reply STOP to opt out.';
+  const wordings = [
+    `${SMS_BRAND}: booking and session texts. Help: ${SUPPORT_EMAIL}. ${tail}`,
+    `${SMS_BRAND} help: ${SUPPORT_EMAIL}. ${tail}`,
+    `${SMS_BRAND} help: ${SUPPORT_EMAIL}. Reply STOP to opt out.`,
+  ];
+  return wordings.find((text) => segmentCount(text) === 1) ?? wordings[wordings.length - 1];
 }
 
 async function findSentOfferForPhone(

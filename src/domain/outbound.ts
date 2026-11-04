@@ -37,6 +37,35 @@ const TRANSLITERATE: Array<[RegExp, string]> = [
   [/[   ]/g, ' '],
 ];
 
+/** Letters with no accent-free form in Unicode that still have a plain
+ * spelling. */
+const PLAIN_LETTERS: Record<string, string> = { œ: 'oe', Œ: 'OE', ł: 'l', Ł: 'L', đ: 'd', Đ: 'D', ı: 'i' };
+
+/** "García" → "Garcia": a letter outside GSM-7 whose accent-free form is
+ * inside it is written that way, so one name does not turn the whole text
+ * into UCS-2 (70 characters a segment instead of 160). GSM-7 letters such
+ * as é, ñ and ü stay as they are. */
+export function toGsmLetters(text: string): string {
+  let out = '';
+  for (const ch of text) {
+    if (GSM_BASIC.has(ch) || GSM_EXTENDED.has(ch)) {
+      out += ch;
+      continue;
+    }
+    const plain = PLAIN_LETTERS[ch] ?? ch.normalize('NFD').replace(/\p{M}/gu, '');
+    out += plain && [...plain].every((c) => GSM_BASIC.has(c)) ? plain : ch;
+  }
+  return out;
+}
+
+/** Typographic characters and accented letters written in GSM-7 where
+ * they can be. */
+function plainText(text: string): string {
+  let out = text;
+  for (const [re, to] of TRANSLITERATE) out = out.replace(re, to);
+  return toGsmLetters(out);
+}
+
 function gsmLength(text: string): number | null {
   let n = 0;
   for (const ch of text) {
@@ -51,8 +80,7 @@ function gsmLength(text: string): number | null {
  * to 70. PLATFORM.md §4.5: "a second segment is never sent." `reserve`
  * leaves that many characters free for a GSM-7 line added after. */
 export function toOneSegment(body: string, reserve = 0): string {
-  let text = body.trim();
-  for (const [re, to] of TRANSLITERATE) text = text.replace(re, to);
+  const text = plainText(body.trim());
   const gsm = gsmLength(text);
   if (gsm !== null) {
     const max = GSM_SEGMENT - reserve;
@@ -149,7 +177,7 @@ export function composeText(body: string, template: string): string {
 export function fitsOneSegment(body: string, template: string): boolean {
   const branded = withBrand(body.trim());
   const reserve = NO_OPT_OUT_LINE_TEMPLATES.has(template) || /\bSTOP\b/.test(branded) ? 0 : OPT_OUT_LINE.length + 1;
-  const length = gsmLength(branded);
+  const length = gsmLength(plainText(branded));
   return length !== null && length + reserve <= GSM_SEGMENT;
 }
 
