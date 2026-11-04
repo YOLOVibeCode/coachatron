@@ -56,6 +56,9 @@ test('pages opened by a private link are not cached and do not pass the link on 
         '/offer/not-a-real-offer',
         '/signin/verify?to=pat%40example.com',
         `/c/${seed.coach.handle}/checkout/${pending}`,
+        `/Booking/${token}`,
+        `/START/${start}`,
+        '/Signin/Verify?to=pat%40example.com',
       ]) {
         const res = await fetch(`${base}${path}`, { redirect: 'manual' });
         assert.equal(res.headers.get('cache-control'), 'no-store', path);
@@ -67,12 +70,25 @@ test('pages opened by a private link are not cached and do not pass the link on 
       const cookie = `cx_session=${await createCoachSession(db, seed.coach.id)}`;
       const schedule = await fetch(`${base}/app/schedule`, { headers: { cookie } });
       assert.equal(schedule.headers.get('cache-control'), 'no-store', 'signed-in pages are not cached either');
+      const upper = await fetch(`${base}/App/Schedule`, { headers: { cookie } });
+      assert.equal(upper.status, 200);
+      assert.equal(upper.headers.get('cache-control'), 'no-store', 'whatever the case of the path');
     });
   });
 });
 
 test('private-link paths are told apart from public ones', () => {
-  for (const path of ['/booking/abc', '/booking/abc/cancel', '/start/abc', '/offer/abc', '/signin/verify', '/c/pat/checkout/12']) {
+  for (const path of [
+    '/booking/abc',
+    '/booking/abc/cancel',
+    '/start/abc',
+    '/offer/abc',
+    '/signin/verify',
+    '/c/pat/checkout/12',
+    '/BOOKING/abc',
+    '/Signin/Verify',
+    '/c/pat/Checkout/12',
+  ]) {
     assert.equal(isPrivateLinkPath(path), true, path);
   }
   for (const path of ['/', '/start', '/signin', '/signin/otp', '/c/pat', '/c/pat/sessions/1/book', '/sms']) {
