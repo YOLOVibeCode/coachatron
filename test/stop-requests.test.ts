@@ -37,6 +37,10 @@ test('a short reply that asks to stop in its own words counts as STOP', () => {
     'end these messages',
     "don't text me",
     'do not message me again',
+    "don't contact me",
+    'do not contact me again',
+    'never contact me',
+    'stop contacting me',
     'no more texts',
   ]) {
     assert.equal(isStopRequest(body), true, body);
@@ -56,6 +60,8 @@ test('a message that only contains a stop word while asking for something else i
     'stopping by at six',
     'stop texting the athletes about rain',
     "don't stop",
+    'please contact me',
+    'contact me about the 6pm',
     'no more sessions this week',
     'I need help with my booking',
     'Y',

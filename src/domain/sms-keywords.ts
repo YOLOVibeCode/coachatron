@@ -32,7 +32,8 @@ const STOP_IF_ABOUT_TEXTS = new Set(['cancel', 'end', 'remove', 'removed']);
 /** The texts, or the person getting them. */
 const ABOUT_TEXTS = new Set([
   'me', 'text', 'texts', 'texting', 'message', 'messages', 'messaging', 'sms', 'reminder', 'reminders',
-  'notification', 'notifications', 'alert', 'alerts', 'subscription', 'list', 'number', 'consent',
+  'notification', 'notifications', 'alert', 'alerts', 'subscription', 'list', 'number', 'consent', 'contact',
+  'contacting',
 ]);
 /** Words that may sit around those without changing what is asked. */
 const FILLER = new Set([
