@@ -2,6 +2,8 @@
  * template that escapes interpolated values by default, plus a `raw()`
  * escape hatch for pre-built markup. */
 
+import { canonicalUrl } from './siteHost.js';
+
 export function escapeHtml(value: unknown): string {
   return String(value)
     .replace(/&/g, '&amp;')
@@ -318,13 +320,30 @@ export function siteFooter(): SafeHtml {
 /** In every page's head: the tab icon, served by src/routes/site.ts. */
 const FAVICON_LINK = '<link rel="icon" href="/favicon.svg" type="image/svg+xml">';
 
-export function page(title: string, body: SafeHtml): string {
+/** What a page's head may carry beyond its title. */
+export interface PageHead {
+  /** The public page's own path, with no query: the landing page, the
+   * legal and texting pages, a coach's page. Search engines are pointed at
+   * APP_BASE_URL plus this path, so www, a Railway name or a query string
+   * is not indexed as a page of its own. Never set on a coach's screen or
+   * on a page a private link opens. */
+  canonicalPath?: string;
+}
+
+/** The <link rel="canonical"> line, or nothing when the page names no path
+ * or APP_BASE_URL is unset. */
+function canonicalLink(head: PageHead): string {
+  const href = head.canonicalPath === undefined ? null : canonicalUrl(head.canonicalPath);
+  return href ? `\n<link rel="canonical" href="${escapeHtml(href)}">` : '';
+}
+
+export function page(title: string, body: SafeHtml, head: PageHead = {}): string {
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-${FAVICON_LINK}
+${FAVICON_LINK}${canonicalLink(head)}
 <title>${escapeHtml(title)} — Coachatron</title>
 <style>${POSTCARD_TOKENS_CSS}
   .site-footer { margin-top: 24px; font-size: 0.9rem; }
@@ -582,13 +601,13 @@ export const LANDING_CSS = `
   }
 `;
 
-export function landingPage(title: string, description: string, body: SafeHtml): string {
+export function landingPage(title: string, description: string, body: SafeHtml, head: PageHead = {}): string {
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-${FAVICON_LINK}
+${FAVICON_LINK}${canonicalLink(head)}
 <title>${escapeHtml(title)}</title>
 <meta name="description" content="${escapeHtml(description)}">
 <meta property="og:title" content="${escapeHtml(title)}">

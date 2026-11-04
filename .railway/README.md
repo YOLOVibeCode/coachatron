@@ -28,14 +28,19 @@ railway config apply
   reads that variable before `package.json` engines, so it decides the Node a
   deploy runs. To apply everything except a Node change, set
   `COACHATRON_IAC_PRESERVE_NODE=1`.
-- **Known Railway bug (production).** `railway config apply` with any change
-  fails in production with "Custom-domain registration is not supported" for
-  `coachatron.com` and `www.coachatron.com`, though both exist and `plan`
-  shows only the intended change. Until Railway fixes it, make the planned
-  change directly (for a variable: `railway variable set KEY=VALUE --service
-  web --environment production`), then run `railway config plan` to confirm
-  it says "already up to date".
-- **Production draining.** `railway environment edit` would not set
-  `deploy.drainingSeconds` in production either, so production carries it as
-  the variable `RAILWAY_DEPLOYMENT_DRAINING_SECONDS=15`. Its plan therefore
-  still lists that one `deploy.drainingSeconds` change; nothing else.
+- **Railway bug seen before (production).** `railway config apply` with any
+  change used to fail in production with "Custom-domain registration is not
+  supported" for `coachatron.com` and `www.coachatron.com`, though both exist
+  and `plan` showed only the intended change. It did not occur on 2026-11-04,
+  when apply worked in production. If it comes back, make the planned change
+  directly (for a variable: `railway variable set KEY=VALUE --service web
+  --environment production`), then run `railway config plan` to confirm it
+  says "already up to date".
+- **Production draining.** On 2026-11-04 `railway config apply` worked in
+  production and set `deploy.drainingSeconds` to 15, the healthcheck path to
+  `/health` and the start command to `node dist/server.js`, so production's
+  plan no longer lists a `deploy.drainingSeconds` change. Before that, apply
+  and `railway environment edit` would not set it there, so production was
+  given the variable `RAILWAY_DEPLOYMENT_DRAINING_SECONDS=15` instead. That
+  variable is now a leftover: `railway.ts` still keeps it with `preserve()`,
+  and it can be removed from Railway and from the file together later.

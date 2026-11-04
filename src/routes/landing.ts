@@ -112,6 +112,7 @@ function renderLanding(): string {
         <p>Prefer forms? <a href="/signin">Set up with a form instead</a></p>
       </footer>
     </div>`,
+    { canonicalPath: '/' },
   );
 }
 

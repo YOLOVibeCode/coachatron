@@ -14,6 +14,7 @@ import { runMigrations } from './db/migrate.js';
 import { runTick } from './jobs/tick.js';
 import { pageHeaders, trustProxyHops } from './lib/headers.js';
 import { refuseNulCharacters } from './lib/input.js';
+import { wwwRedirect } from './lib/siteHost.js';
 
 const TICK_MS = 60_000;
 
@@ -23,6 +24,9 @@ export function createApp() {
   // Limits and consent records need the visitor's address, not the proxy's.
   app.set('trust proxy', trustProxyHops());
   app.use(pageHeaders);
+  // www.<APP_BASE_URL's host> is sent to APP_BASE_URL, before any body is
+  // read; /health and every other host are answered here.
+  app.use(wwwRedirect);
   app.use('/webhooks/store', express.raw({ type: '*/*' }), storeWebhookRouter);
   // Inbound texts are signed over the raw body, so keep it raw here.
   app.use('/webhooks/sms', express.raw({ type: '*/*' }), smsInboundRouter);
