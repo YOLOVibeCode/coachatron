@@ -1,7 +1,7 @@
 import { inTransaction, type DbClient } from '../db/client.js';
 import { formatConfirmWhen, formatLocal } from '../lib/time.js';
 import { OPT_OUT_LINE, canText, sendText, toOneSegment } from './outbound.js';
-import { cancelledSessionCreditSource, createCredit } from './pricing.js';
+import { cancelledSessionCreditSource, createCredit, restoreCredit } from './pricing.js';
 import { plain } from './bookingMessages.js';
 import { hasActiveConsent } from './sms-consent.js';
 
@@ -42,6 +42,11 @@ export type CancelSessionResult =
 
 const LIVE = "('booked', 'attended', 'noshow')";
 
+/** A cancelled booking whose session went back to the parent as credit:
+ * it has a credit, and that credit was not withdrawn by a refund of the
+ * payment that bought it. Reads `booking b left join credit c`. */
+const CREDIT_BACK = '(c.id is not null and c.withdrawn_at is null)';
+
 /** A drop-in the parent paid for, as opposed to a free one. */
 function paidDropIn(b: { payment_source: string | null; gross_cents: number | null }): boolean {
   return b.payment_source === 'DropIn' && (b.gross_cents ?? 0) > 0;
@@ -52,10 +57,10 @@ function paidDropIn(b: { payment_source: string | null; gross_cents: number | nu
  * keeps the credit line whole; if it would still not fit one segment, the
  * athlete's name at the end of the first part is what gets shortened. */
 function cancelText(
-  booking: { athlete_name: string; payment_source: string | null; credit_id: number | null },
+  booking: { athlete_name: string; payment_source: string | null; credit_back: boolean },
   session: { name: string; starts_at_utc: string; tz: string; coach_name: string },
 ): string {
-  if (booking.credit_id === null) {
+  if (!booking.credit_back) {
     return `${booking.athlete_name}'s ${session.name} on ${formatLocal(session.starts_at_utc, session.tz)} has been cancelled.`;
   }
   const dropIn = booking.payment_source === 'DropIn';
@@ -129,7 +134,7 @@ export async function cancelScheduledSession(
       const b = closed.rows[0];
       if (!b) return;
       if (b.credit_id !== null) {
-        await tx.query('update credit set remaining = remaining + 1 where id = $1', [b.credit_id]);
+        await restoreCredit(tx, b.credit_id);
       } else if (paidDropIn(b)) {
         const creditId = await createCredit(tx, coachId, b.contact_phone, null, cancelledSessionCreditSource(sessionId), 1, null);
         await tx.query('update booking set credit_id = $2 where id = $1', [booking.id, creditId]);
@@ -139,8 +144,10 @@ export async function cancelScheduledSession(
 
   // 3. Tell each parent. Claiming the booking first keeps a second run from
   // texting anyone twice; a failed send is recorded and the loop goes on.
-  const toTell = await db.query<{ id: number; athlete_name: string; contact_phone: string; payment_source: string | null; credit_id: number | null }>(
-    "select id, athlete_name, contact_phone, payment_source, credit_id from booking where session_id = $1 and cancel_notice = 'pending' order by id",
+  const toTell = await db.query<{ id: number; athlete_name: string; contact_phone: string; payment_source: string | null; credit_back: boolean }>(
+    `select b.id, b.athlete_name, b.contact_phone, b.payment_source, ${CREDIT_BACK} as credit_back
+     from booking b left join credit c on c.id = b.credit_id
+     where b.session_id = $1 and b.cancel_notice = 'pending' order by b.id`,
     [sessionId],
   );
   for (const booking of toTell.rows) {
@@ -183,12 +190,13 @@ export async function cancelReach(db: DbClient, sessionId: number): Promise<Canc
     athlete_name: string;
     contact_phone: string;
     cancel_notice: string;
-    credit_id: number | null;
+    credit_back: boolean;
     payment_source: string | null;
   }>(
-    `select id, athlete_name, contact_phone, cancel_notice, credit_id, payment_source from booking
-     where session_id = $1 and cancel_notice is not null
-     order by id`,
+    `select b.id, b.athlete_name, b.contact_phone, b.cancel_notice, ${CREDIT_BACK} as credit_back, b.payment_source
+     from booking b left join credit c on c.id = b.credit_id
+     where b.session_id = $1 and b.cancel_notice is not null
+     order by b.id`,
     [sessionId],
   );
   const unreached: UnreachedParent[] = [];
@@ -196,8 +204,8 @@ export async function cancelReach(db: DbClient, sessionId: number): Promise<Canc
   let credits = 0;
   let dropInCredits = 0;
   for (const r of rows.rows) {
-    if (r.credit_id !== null) credits += 1;
-    if (r.credit_id !== null && r.payment_source === 'DropIn') dropInCredits += 1;
+    if (r.credit_back) credits += 1;
+    if (r.credit_back && r.payment_source === 'DropIn') dropInCredits += 1;
     if (r.cancel_notice === 'texted') {
       notified += 1;
       continue;

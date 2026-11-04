@@ -163,11 +163,12 @@ function refundAmount(cents: number | null): string {
 
 /** Sent once when a payment is refunded: how much went back to the card,
  * what it was for, and what the refund ended (the booking it paid for, or
- * the session credits it bought). */
+ * the session credits it bought). A booking for a session still to come is
+ * cancelled; one for a session that already happened is marked refunded. */
 export async function sendRefundNotice(
   db: DbClient,
   bookingId: number,
-  refund: { amountCents: number | null; bookingReleased: boolean; creditsRemoved: number },
+  refund: { amountCents: number | null; bookingEnded: boolean; bookingReleased: boolean; creditsRemoved: number },
 ): Promise<ParentMessageResult> {
   const d = await loadDetails(db, bookingId);
   if (!d) return { text: 'skipped', email: 'skipped' };
@@ -183,6 +184,7 @@ export async function sendRefundNotice(
   );
   const lines = [`${d.coach_name} refunded ${amount} to the card you paid with, for ${d.athlete_name}'s ${d.session_name} on ${when}.`];
   if (refund.bookingReleased) lines.push('That booking is cancelled.');
+  else if (refund.bookingEnded) lines.push('That booking is marked refunded.');
   if (refund.creditsRemoved > 0) {
     lines.push(
       `The ${refund.creditsRemoved} unused session ${refund.creditsRemoved === 1 ? 'credit' : 'credits'} from this payment ${refund.creditsRemoved === 1 ? 'was' : 'were'} removed.`,

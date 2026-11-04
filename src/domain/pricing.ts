@@ -78,6 +78,10 @@ export async function getPlanById(db: DbClient, coachId: number, planId: number)
   return result.rows[0] ?? null;
 }
 
+/** A credit can be used only while no refund of the payment that bought it
+ * is on its way or done (SPEC.md §9.4). */
+const NOT_HELD_FOR_REFUND = 'refund_id is null';
+
 /** The oldest-expiring usable credit for this coach+phone, if any. Credits
  * are tracked per phone number, not per account (SPEC.md §9.2), so a parent
  * booking two children with one phone draws from one pool. */
@@ -86,6 +90,7 @@ export async function getCreditBalance(db: DbClient, coachId: number, contactPho
     `select id, coach_id, contact_phone, package_id, remaining, source, expires_at
      from credit
      where coach_id = $1 and contact_phone = $2 and remaining > 0 and (expires_at is null or expires_at > now())
+       and ${NOT_HELD_FOR_REFUND}
      order by expires_at asc nulls last, id asc
      limit 1`,
     [coachId, contactPhone],
@@ -96,7 +101,7 @@ export async function getCreditBalance(db: DbClient, coachId: number, contactPho
 /** Whether any family holds an unused, unexpired credit with this coach. */
 export async function coachHasOpenCredits(db: DbClient, coachId: number): Promise<boolean> {
   const result = await db.query(
-    'select 1 from credit where coach_id = $1 and remaining > 0 and (expires_at is null or expires_at > now()) limit 1',
+    `select 1 from credit where coach_id = $1 and remaining > 0 and (expires_at is null or expires_at > now()) and ${NOT_HELD_FOR_REFUND} limit 1`,
     [coachId],
   );
   return result.rows.length > 0;
@@ -104,10 +109,11 @@ export async function coachHasOpenCredits(db: DbClient, coachId: number): Promis
 
 /** Decrements one unit off a specific credit row. Returns false if the
  * credit is already exhausted (race with another booking on the same
- * phone). Caller re-fetches the credit immediately before calling this. */
+ * phone), or a refund of its purchase was asked for since it was fetched.
+ * Caller re-fetches the credit immediately before calling this. */
 export async function decrementCredit(db: DbClient, creditId: number): Promise<boolean> {
   const result = await db.query<{ id: number }>(
-    'update credit set remaining = remaining - 1 where id = $1 and remaining > 0 returning id',
+    `update credit set remaining = remaining - 1 where id = $1 and remaining > 0 and ${NOT_HELD_FOR_REFUND} returning id`,
     [creditId],
   );
   return result.rows.length === 1;
@@ -436,6 +442,13 @@ export async function markPhoneVerified(db: DbClient, bookingId: number): Promis
   await db.query('update booking set phone_verified_at = now() where id = $1 and phone_verified_at is null', [bookingId]);
 }
 
-export async function restoreCredit(db: DbClient, creditId: number): Promise<void> {
-  await db.query('update credit set remaining = remaining + 1 where id = $1', [creditId]);
+/** Gives one session back to a credit when a booking that drew on it is
+ * cancelled. A credit whose purchase was refunded gets nothing back: the
+ * refund withdrew it. Returns whether the session went back. */
+export async function restoreCredit(db: DbClient, creditId: number): Promise<boolean> {
+  const result = await db.query<{ id: number }>(
+    'update credit set remaining = remaining + 1 where id = $1 and withdrawn_at is null returning id',
+    [creditId],
+  );
+  return result.rows.length === 1;
 }

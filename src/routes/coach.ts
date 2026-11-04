@@ -70,6 +70,7 @@ import {
   type DisputeItem,
   type PaymentItem,
   type Refundability,
+  type RefundBlock,
   type RefundItem,
   type RefundRequestOutcome,
   type RefundRow,
@@ -1370,7 +1371,9 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
   );
   const refundable = new Map<number, Refundability>();
   for (const b of bookings.rows) {
-    if (b.charge_id && (b.gross_cents ?? 0) > 0) refundable.set(b.id, await checkRefund(db, coachId, { bookingId: b.id }));
+    if ((b.charge_id && (b.gross_cents ?? 0) > 0) || b.credit_id !== null) {
+      refundable.set(b.id, await checkRefund(db, coachId, { bookingId: b.id }));
+    }
   }
   
   const reach = session.status === 'cancelled' ? await cancelReach(db, sessionId) : null;
@@ -1442,14 +1445,21 @@ interface SessionBooking {
 }
 
 /** A paid booking's payment on screen 3: what was paid, and its refund,
- * the Refund link, or why it cannot be refunded here. */
+ * the Refund link, or why it cannot be refunded here. A booking paid with a
+ * session credit points to the payment the credit came from. */
 function renderBookingPayment(
   b: Pick<SessionBooking, 'payment_source' | 'gross_cents' | 'charge_id'>,
   refunds: Map<string, RefundRow>,
   check: Refundability | null,
   refundHref: string,
 ) {
-  if (!b.charge_id || (b.gross_cents ?? 0) <= 0) return raw('');
+  if (!b.charge_id || (b.gross_cents ?? 0) <= 0) {
+    if (check && !check.ok && check.block.kind === 'paid_with_credit') {
+      return html`<p class="muted">${describeRefundBlock(check.block)}</p>
+        ${creditPurchaseLink(check.block)}`;
+    }
+    return raw('');
+  }
   const paid = `Paid ${formatCoachDollars(b.gross_cents ?? 0)} · ${purchaseLabel(b.payment_source)}`;
   const refund = refunds.get(b.charge_id);
   if (refund && !canTryAgain(refund)) {
@@ -1460,6 +1470,13 @@ function renderBookingPayment(
   }
   return html`<p class="muted">${paid}${refund ? ` · ${refundLabel(refund)}` : ''}</p>
     <a class="action ghost" href="${refundHref}">${refund ? 'Try the refund again' : 'Refund'}</a>`;
+}
+
+/** A link to the payment a session credit came from, on Money (screen 7). */
+function creditPurchaseLink(block: Extract<RefundBlock, { kind: 'paid_with_credit' }>) {
+  return block.purchaseBookingId === null
+    ? raw('')
+    : html`<a class="action ghost" href="/app/money?refund=b${block.purchaseBookingId}#refund">See the payment the credit came from</a>`;
 }
 
 const PLAN_KIND: Record<string, string> = {
@@ -1476,6 +1493,7 @@ function renderRefundConfirm(check: Refundability, opts: { action: string; keepH
     return html`<div class="card" id="refund">
       <p><strong>Refund</strong></p>
       <p>${describeRefundBlock(check.block)}</p>
+      ${check.block.kind === 'paid_with_credit' ? creditPurchaseLink(check.block) : raw('')}
       <a class="action ghost" href="${opts.keepHref}">Back</a>
     </div>`;
   }
@@ -1487,7 +1505,11 @@ function renderRefundConfirm(check: Refundability, opts: { action: string; keepH
       ? `${who} · ${PLAN_KIND[plan.kind]} · ${plan.sessionName}, ${formatLocal(plan.startsAtUtc, plan.tz)}`
       : `${who} · ${PLAN_KIND[plan.kind]}`;
   const effects: string[] = [];
-  if (plan.releasesBooking) effects.push(`${who}'s booking is cancelled and the spot is free again.`);
+  if (plan.releasesBooking) {
+    effects.push(plan.sessionStarted ? `${who}'s booking is marked refunded.` : `${who}'s booking is cancelled and the spot is free again.`);
+  } else if (plan.bookingStatus === 'cancelled' && plan.creditsWithdrawn === 0) {
+    effects.push(`${who}'s booking was already cancelled, so nothing else changes.`);
+  }
   if (plan.creditsWithdrawn > 0) {
     effects.push(`The ${plan.creditsWithdrawn} unused session ${plan.creditsWithdrawn === 1 ? 'credit' : 'credits'} it bought ${plan.creditsWithdrawn === 1 ? 'is' : 'are'} withdrawn.`);
   }

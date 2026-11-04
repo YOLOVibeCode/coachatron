@@ -188,7 +188,8 @@ test("docs say a coach's cancel gives every paid booking a credit, drop-ins incl
 test("docs say a package credit a coach's cancel returns keeps its package's expiry", () => {
   // The cancel puts the credit back on the row it came from, expiry and all;
   // only the credit a paid drop-in becomes is new, and it has none.
-  assert.match(read('src/domain/cancelSession.ts'), /update credit set remaining = remaining \+ 1 where id = \$1/);
+  assert.match(read('src/domain/cancelSession.ts'), /restoreCredit\(tx, b\.credit_id\)/);
+  assert.match(read('src/domain/pricing.ts'), /update credit set remaining = remaining \+ 1 where id = \$1/);
   assert.match(read('src/domain/cancelSession.ts'), /cancelledSessionCreditSource\(sessionId\), 1, null\)/);
   for (const doc of ['docs/legal/marketplace-terms.md', 'docs/legal/parent-terms.md']) {
     assert.match(read(doc), /package credit that comes back\s+keeps that package's\s+expiry/, `${doc} says a returned package credit keeps its expiry`);

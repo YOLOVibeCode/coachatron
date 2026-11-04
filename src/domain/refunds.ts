@@ -16,6 +16,12 @@ import { sendRefundNotice } from './bookingMessages.js';
  * (its spot is free again), the session credits the payment bought are
  * withdrawn, a payment kept for the coach leaves "Payments to resolve", and
  * the parent is told once.
+ *
+ * The credit a payment bought is held from the moment its refund is asked
+ * for: nothing more is booked with it while the refund is on its way. A
+ * refund that does not go through gives it back; one that goes through
+ * withdraws it for good, so a booking that drew on it and is cancelled
+ * later gives nothing back to it.
  */
 
 export type RefundStatus = 'requested' | 'pending' | 'refunded' | 'failed' | 'partial';
@@ -52,6 +58,11 @@ const PURCHASE_COLUMNS = `b.id, st.coach_id, b.session_id, b.status, b.payment_s
   b.athlete_name, b.contact_phone, s.starts_at_utc, s.tz, st.name as session_name`;
 const PURCHASE_FROM = `booking b join session s on s.id = b.session_id join session_type st on st.id = s.session_type_id`;
 
+async function bookingById(db: DbClient, bookingId: number): Promise<PurchaseBooking | null> {
+  const result = await db.query<PurchaseBooking>(`select ${PURCHASE_COLUMNS} from ${PURCHASE_FROM} where b.id = $1`, [bookingId]);
+  return result.rows[0] ?? null;
+}
+
 async function bookingForCoach(db: DbClient, coachId: number, bookingId: number): Promise<PurchaseBooking | null> {
   const result = await db.query<PurchaseBooking>(`select ${PURCHASE_COLUMNS} from ${PURCHASE_FROM} where b.id = $1 and st.coach_id = $2`, [
     bookingId,
@@ -73,6 +84,21 @@ function isPurchase(b: PurchaseBooking): boolean {
   return b.charge_id !== null && (b.gross_cents ?? 0) > 0;
 }
 
+/** The booking whose payment bought this credit, when one did. */
+async function purchaseOfCredit(db: DbClient, coachId: number, creditId: number): Promise<number | null> {
+  const result = await db.query<{ id: number }>(
+    `select b.id from ${PURCHASE_FROM}
+     where b.credit_id = $1 and st.coach_id = $2 and b.charge_id is not null and b.gross_cents > 0
+     order by b.id limit 1`,
+    [creditId, coachId],
+  );
+  return result.rows[0]?.id ?? null;
+}
+
+function hasStarted(startsAtUtc: string): boolean {
+  return new Date(startsAtUtc).getTime() <= Date.now();
+}
+
 export type PurchaseKind = 'drop-in' | 'package' | 'pack';
 
 interface PurchaseCredits {
@@ -89,7 +115,8 @@ interface PurchaseCredits {
 /** The sessions a payment bought and how many are still unused. The
  * payment's own booking uses one while it stands; the rest sit on the
  * credit the payment added (a coach's cancel puts the booking's own session
- * back on it, or makes a paid drop-in one credit). */
+ * back on it, or makes a paid drop-in one credit). A drop-in the parent
+ * cancelled has neither, and nothing it bought was used. */
 async function purchaseCredits(db: DbClient, b: PurchaseBooking): Promise<PurchaseCredits> {
   const credit =
     b.credit_id === null
@@ -102,20 +129,24 @@ async function purchaseCredits(db: DbClient, b: PurchaseBooking): Promise<Purcha
         ).rows[0] ?? null);
   const kind: PurchaseKind = b.payment_source === 'Subscription' ? 'pack' : b.payment_source === 'PackageCredit' ? 'package' : 'drop-in';
   const own = LIVE.has(b.status) ? 1 : 0;
-  let sessions = 1;
-  if (kind !== 'drop-in') {
-    const [, from, id] = /^(package|plan):(\d+)$/.exec(credit?.source ?? '') ?? [];
-    if (from === 'package') {
-      const row = await db.query<{ credits: number }>('select credits from package where id = $1', [Number(id)]);
-      sessions = row.rows[0]?.credits ?? own + (credit?.remaining ?? 0);
-    } else if (from === 'plan') {
-      const row = await db.query<{ credits_per_month: number }>('select credits_per_month from plan where id = $1', [Number(id)]);
-      sessions = row.rows[0]?.credits_per_month ?? own + (credit?.remaining ?? 0);
-    } else {
-      sessions = own + (credit?.remaining ?? 0);
-    }
-  }
   const unused = Math.max(0, credit?.remaining ?? 0);
+  if (kind === 'drop-in') {
+    // Its one session was used elsewhere only when a coach's cancel made it
+    // a credit and that credit is spent.
+    const used = own === 0 && credit !== null && unused === 0 ? 1 : 0;
+    return { kind, creditId: b.credit_id, sessions: 1, unused, usedElsewhere: used };
+  }
+  let sessions: number;
+  const [, from, id] = /^(package|plan):(\d+)$/.exec(credit?.source ?? '') ?? [];
+  if (from === 'package') {
+    const row = await db.query<{ credits: number }>('select credits from package where id = $1', [Number(id)]);
+    sessions = row.rows[0]?.credits ?? own + unused;
+  } else if (from === 'plan') {
+    const row = await db.query<{ credits_per_month: number }>('select credits_per_month from plan where id = $1', [Number(id)]);
+    sessions = row.rows[0]?.credits_per_month ?? own + unused;
+  } else {
+    sessions = own + unused;
+  }
   const usedElsewhere = Math.max(0, sessions - own - unused);
   return { kind, creditId: b.credit_id, sessions, unused, usedElsewhere };
 }
@@ -156,7 +187,8 @@ export type RefundBlock =
   | { kind: 'not_found' }
   /** A free booking, or one paid with a session credit. */
   | { kind: 'not_paid' }
-  | { kind: 'paid_with_credit' }
+  /** The booking whose payment bought the credit, when one did. */
+  | { kind: 'paid_with_credit'; purchaseBookingId: number | null }
   /** Sessions the payment bought were used. */
   | { kind: 'credits_used'; used: number; sessions: number }
   | { kind: 'in_progress' }
@@ -181,6 +213,13 @@ export interface RefundPlan {
   kind: PurchaseKind | 'kept-payment';
   /** The booking stands now, and the refund ends it. */
   releasesBooking: boolean;
+  /** The status of the booking the payment bought, when it bought one. */
+  bookingStatus: string | null;
+  /** The session has started, so a booking the refund ends is marked
+   * refunded rather than cancelled with its spot freed. */
+  sessionStarted: boolean;
+  /** The credit the payment bought, held while the refund is on its way. */
+  creditId: number | null;
   /** Unused session credits the refund withdraws. */
   creditsWithdrawn: number;
   /** A booking holds the parent's number or email, so they can be told. */
@@ -213,7 +252,10 @@ function blockFromExisting(row: RefundRow | null): RefundBlock | null {
 
 async function planForBooking(db: DbClient, b: PurchaseBooking, attentionId: number | null): Promise<Refundability> {
   if (!isPurchase(b) || b.charge_id === null) {
-    return { ok: false, block: b.credit_id !== null && b.charge_id === null ? { kind: 'paid_with_credit' } : { kind: 'not_paid' } };
+    if (b.credit_id !== null && b.charge_id === null) {
+      return { ok: false, block: { kind: 'paid_with_credit', purchaseBookingId: await purchaseOfCredit(db, b.coach_id, b.credit_id) } };
+    }
+    return { ok: false, block: { kind: 'not_paid' } };
   }
   const existing = await refundForPayment(db, b.charge_id);
   const block = blockFromExisting(existing);
@@ -238,6 +280,9 @@ async function planForBooking(db: DbClient, b: PurchaseBooking, attentionId: num
       tz: b.tz,
       kind: credits.kind,
       releasesBooking: LIVE.has(b.status),
+      bookingStatus: b.status,
+      sessionStarted: hasStarted(b.starts_at_utc),
+      creditId: b.credit_id,
       creditsWithdrawn: existing?.refunded_at ? 0 : credits.unused,
       reachable: true,
     },
@@ -293,6 +338,9 @@ export async function checkRefund(db: DbClient, coachId: number, target: RefundT
       tz: session?.tz ?? null,
       kind: 'kept-payment',
       releasesBooking: false,
+      bookingStatus: null,
+      sessionStarted: session ? hasStarted(session.starts_at_utc) : false,
+      creditId: null,
       creditsWithdrawn: 0,
       reachable: session !== null,
     },
@@ -307,7 +355,7 @@ export function describeRefundBlock(block: RefundBlock): string {
     case 'not_paid':
       return 'Nothing was paid for this booking, so there is nothing to refund.';
     case 'paid_with_credit':
-      return 'This booking used a session credit. Refund the package or pack the credit came from instead.';
+      return 'This booking used a session credit. To refund it, refund the payment the credit came from.';
     case 'credits_used':
       return `${block.used} of the ${block.sessions} sessions this payment bought ${block.used === 1 ? 'was' : 'were'} used, so it cannot be refunded in full here. Talk with the parent, and contact Coachatron support if you want to refund part of it.`;
     case 'in_progress':
@@ -332,12 +380,46 @@ export type RefundRequestOutcome =
   | { kind: 'failed'; code: string }
   | { kind: 'unavailable' };
 
+/** Stops a claim inside its transaction, so nothing of it is kept. */
+class ClaimStopped extends Error {
+  constructor(readonly block: RefundBlock) {
+    super(block.kind);
+  }
+}
+
 /** Claims the payment's refund row for one call to the relay. A new row, a
  * failed refund (tried again under a new key), or a call whose answer never
  * came (tried again under the same key) can be claimed; anything else is
- * already on its way or done. Returns the attempt to send, or null. */
-async function claimRefund(db: DbClient, plan: RefundPlan): Promise<number | null> {
-  const result = await db.query<{ attempt: number }>(
+ * already on its way or done. The claim holds the credit the payment
+ * bought, so nothing more is booked with it while the refund is on its way;
+ * a booking that drew on it since the check stops the claim. Returns the
+ * attempt to send, or why not. */
+async function claimRefund(db: DbClient, plan: RefundPlan): Promise<{ attempt: number } | { block: RefundBlock }> {
+  try {
+    return await inTransaction(db, async (tx) => {
+      const claimed = await upsertClaim(tx, plan);
+      if (!claimed) {
+        return { block: blockFromExisting(await refundForPayment(tx, plan.paymentRef)) ?? { kind: 'in_progress' } };
+      }
+      // A refund applied before it failed already withdrew the credit.
+      if (plan.creditId !== null && plan.bookingId !== null && claimed.refunded_at === null) {
+        await tx.query('update credit set refund_id = $2 where id = $1', [plan.creditId, claimed.id]);
+        const b = await bookingById(tx, plan.bookingId);
+        const credits = b ? await purchaseCredits(tx, b) : null;
+        if (credits && credits.usedElsewhere > 0) {
+          throw new ClaimStopped({ kind: 'credits_used', used: credits.usedElsewhere, sessions: credits.sessions });
+        }
+      }
+      return { attempt: claimed.attempt };
+    });
+  } catch (err) {
+    if (err instanceof ClaimStopped) return { block: err.block };
+    throw err;
+  }
+}
+
+async function upsertClaim(db: DbClient, plan: RefundPlan): Promise<{ id: number; attempt: number; refunded_at: string | null } | null> {
+  const result = await db.query<{ id: number; attempt: number; refunded_at: string | null }>(
     `insert into refund (coach_id, payment_ref, booking_id, attention_id, athlete_name, contact_phone, amount_cents, status)
      values ($1, $2, $3, $4, $5, $6, $7, 'requested')
      on conflict (payment_ref) do update set
@@ -352,7 +434,7 @@ async function claimRefund(db: DbClient, plan: RefundPlan): Promise<number | nul
      where refund.status = 'failed'
         or (refund.status = 'requested'
             and (refund.error_code is not null or refund.requested_at < now() - make_interval(mins => $8::int)))
-     returning attempt`,
+     returning id, attempt, refunded_at`,
     [
       plan.coachId,
       plan.paymentRef,
@@ -364,15 +446,22 @@ async function claimRefund(db: DbClient, plan: RefundPlan): Promise<number | nul
       STALE_REQUEST_MINUTES,
     ],
   );
-  return result.rows[0]?.attempt ?? null;
+  return result.rows[0] ?? null;
 }
 
+/** The money did not go back. Unless the refund's effects were already
+ * applied, the credit it held can be used again. */
 async function markFailed(db: DbClient, paymentRef: string, code: string, from: RefundStatus[]): Promise<void> {
-  await db.query(
+  const failed = await db.query<{ id: number; refunded_at: string | null }>(
     `update refund set status = 'failed', error_code = $2, failed_at = now(), updated_at = now()
-     where payment_ref = $1 and status = any($3::text[])`,
+     where payment_ref = $1 and status = any($3::text[])
+     returning id, refunded_at`,
     [paymentRef, code, from],
   );
+  const row = failed.rows[0];
+  if (row && row.refunded_at === null) {
+    await db.query('update credit set refund_id = null where refund_id = $1 and withdrawn_at is null', [row.id]);
+  }
 }
 
 /** The coach confirmed: refund the whole payment through the relay. Safe to
@@ -381,10 +470,9 @@ export async function requestRefund(db: DbClient, coach: CoachRow, target: Refun
   const check = await checkRefund(db, coach.id, target);
   if (!check.ok) return { kind: 'blocked', block: check.block };
   const plan = check.plan;
-  const attempt = await claimRefund(db, plan);
-  if (attempt === null) {
-    return { kind: 'blocked', block: blockFromExisting(await refundForPayment(db, plan.paymentRef)) ?? { kind: 'in_progress' } };
-  }
+  const claim = await claimRefund(db, plan);
+  if ('block' in claim) return { kind: 'blocked', block: claim.block };
+  const attempt = claim.attempt;
   let answer;
   try {
     answer = await refundSellerPayment(getConnectRecipientKey(coach), {
@@ -500,6 +588,7 @@ export async function applyRefunded(db: DbClient, report: RefundReport): Promise
     }
     let creditsWithdrawn = 0;
     let creditsUsed = 0;
+    let ended = false;
     let released = false;
     if (current.booking_id !== null) {
       const booking = await tx.query<PurchaseBooking>(`select ${PURCHASE_COLUMNS} from ${PURCHASE_FROM} where b.id = $1 for update of b`, [
@@ -511,12 +600,19 @@ export async function applyRefunded(db: DbClient, report: RefundReport): Promise
         // counted here is what is withdrawn. Never below zero.
         if (b.credit_id !== null) await tx.query('select id from credit where id = $1 for update', [b.credit_id]);
         const credits = await purchaseCredits(tx, b);
-        if (credits.creditId !== null && credits.unused > 0) {
-          await tx.query('update credit set remaining = 0 where id = $1', [credits.creditId]);
+        if (credits.creditId !== null) {
+          // Withdrawn for good: a booking that drew on it and is cancelled
+          // later gives nothing back to it.
+          await tx.query(
+            'update credit set remaining = 0, refund_id = $2, withdrawn_at = coalesce(withdrawn_at, now()) where id = $1',
+            [credits.creditId, current.id],
+          );
           creditsWithdrawn = credits.unused;
         }
         creditsUsed = credits.usedElsewhere;
-        released = LIVE.has(b.status);
+        ended = LIVE.has(b.status);
+        // A session that already happened has no spot to free.
+        released = ended && !hasStarted(b.starts_at_utc);
         await tx.query("update booking set status = 'refunded' where id = $1 and status in ('booked', 'attended', 'noshow', 'cancelled')", [b.id]);
       }
     }
@@ -527,7 +623,7 @@ export async function applyRefunded(db: DbClient, report: RefundReport): Promise
        where id = $1`,
       [current.id, report.refundRef, creditsWithdrawn, creditsUsed, released],
     );
-    return { row: current, creditsWithdrawn, released };
+    return { row: current, creditsWithdrawn, ended, released };
   });
   if (!applied) return 'already';
   await tellParent(db, applied.row, applied);
@@ -536,7 +632,7 @@ export async function applyRefunded(db: DbClient, report: RefundReport): Promise
 
 /** The parent hears once, when the refund's effects are applied: by text
  * only with their consent, by email only to an address they typed. */
-async function tellParent(db: DbClient, row: RefundRow, effects: { creditsWithdrawn: number; released: boolean }): Promise<void> {
+async function tellParent(db: DbClient, row: RefundRow, effects: { creditsWithdrawn: number; ended: boolean; released: boolean }): Promise<void> {
   let bookingId = row.booking_id;
   if (bookingId === null && row.attention_id !== null) {
     const item = await db.query<{ booking_id: number | null }>('select booking_id from payment_attention where id = $1', [row.attention_id]);
@@ -546,6 +642,7 @@ async function tellParent(db: DbClient, row: RefundRow, effects: { creditsWithdr
   if (bookingId !== null) {
     const sent = await sendRefundNotice(db, bookingId, {
       amountCents: row.amount_cents,
+      bookingEnded: effects.ended,
       bookingReleased: effects.released,
       creditsRemoved: effects.creditsWithdrawn,
     });

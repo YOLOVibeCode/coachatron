@@ -1276,7 +1276,7 @@ publicRouter.post('/booking/:token/cancel', async (req, res) => {
   );
 
   if (result.rows.length > 0 && booking.credit_id) {
-    await db.query('update credit set remaining = remaining + 1 where id = $1', [booking.credit_id]);
+    await restoreCredit(db, booking.credit_id);
   }
 
   res.redirect(303, `/booking/${req.params.token}`);

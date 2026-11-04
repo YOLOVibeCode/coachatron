@@ -160,8 +160,11 @@ test('a booking paid with a session credit points the coach at the payment that 
     );
     await withServer(async (base) => {
       const cookie = await coachCookie(db, seed.coach.id);
+      const detail = await getPage(base, `/app/sessions/${seed.sessionId}`, cookie);
+      assert.match(detail, /This booking used a session credit\. To refund it, refund the payment the credit came from\./);
+      assert.doesNotMatch(detail, /See the payment the credit came from/, 'no payment bought this credit here');
       const confirm = await getPage(base, `/app/sessions/${seed.sessionId}?refund=${used.rows[0].id}`, cookie);
-      assert.match(confirm, /This booking used a session credit\. Refund the package or pack the credit came from instead\./);
+      assert.match(confirm, /This booking used a session credit\. To refund it, refund the payment the credit came from\./);
       const tried = await postForm(base, `/app/sessions/${seed.sessionId}/bookings/${used.rows[0].id}/refund`, cookie);
       assert.equal(tried.status, 303);
     });
