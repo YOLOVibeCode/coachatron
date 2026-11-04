@@ -12,6 +12,7 @@ import {
 import { hasActiveConsent } from './sms-consent.js';
 import { isOptedOut } from './cascade.js';
 import { revokeConsent } from './sms-consent.js';
+import { isUsOrCanada } from '../lib/phone.js';
 
 /** The only way Coachatron sends a text. SPEC.md §10: "The stop is there
  * for a loop." Every send is one segment, domestic, logged, and counted
@@ -81,11 +82,12 @@ export function segmentCount(body: string): number {
   return gsm !== null ? Math.max(1, Math.ceil(gsm / GSM_SEGMENT)) : Math.max(1, Math.ceil(body.length / UCS2_SEGMENT));
 }
 
-/** US and Canada only: the NANP is what Twilio prices near $0.0083 a
- * segment. Anything else can cost many times that, so it is refused
- * (PLATFORM.md §4.5: "above $0.02/segment is refused"). */
+/** US and Canada only: that is what Twilio prices near $0.0083 a
+ * segment. Anything else, the other +1 countries included, can cost many
+ * times that, so it is refused (PLATFORM.md §4.5: "above $0.02/segment is
+ * refused"). */
 export function isDomesticDestination(phone: string): boolean {
-  return /^\+1\d{10}$/.test(phone);
+  return isUsOrCanada(phone);
 }
 
 /** RELAY_APP_ENV=dev: the relay captures every text in the dev mail catcher

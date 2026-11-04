@@ -120,6 +120,8 @@ function renderContactForm(value = '', error?: string, saved = false) {
   );
 }
 
+const NOT_TEXTABLE = 'We text only US and Canadian mobile numbers. Use your email instead.';
+
 function smsConsentChecked(body: unknown): boolean {
   const value = (body as Record<string, unknown> | undefined)?.sms_consent;
   return value === '1' || value === 'on' || value === true;
@@ -150,7 +152,7 @@ coachRouter.post('/signin/otp', async (req, res) => {
   }
   const db = getDb();
   if (contact.kind === 'phone' && !canText(contact.phone)) {
-    res.status(422).send(renderContactForm(rawContact, "We can't text that number yet. Use your email instead.", saved));
+    res.status(422).send(renderContactForm(rawContact, NOT_TEXTABLE, saved));
     return;
   }
   // The code is one text the person asked for; the box only covers the
