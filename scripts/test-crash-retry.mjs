@@ -26,8 +26,10 @@
  *      the process as they happened. The whole file runs again and must pass.
  *      Anything else fails the run as before.
  *
- * Remove both once the Node line in .nvmrc ships the backport (or .nvmrc
- * moves to 26) and CI has gone a while without "Retrying" in its log.
+ * Remove both, with scripts/test-failure-recorder.mjs and run-tests.mjs (set
+ * npm test back to node --import tsx --test), once the Node line in .nvmrc
+ * ships the backport (or .nvmrc moves to 26) and CI has gone a while without
+ * "Retrying" in its log.
  */
 
 import { resolve } from 'node:path';
