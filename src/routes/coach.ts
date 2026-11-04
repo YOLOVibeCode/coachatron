@@ -30,7 +30,13 @@ import {
 } from '../domain/auth.js';
 import { APP_BASE_URL, APP_FEE_BPS, OTP_DAILY_MAX_PER_CONTACT, SELLER_AGREEMENT_VERSION } from '../config.js';
 import { acceptSellerAgreement, getSellerStatus, startSellerOnboarding } from '../relay/seller.js';
-import { markPaymentsStarted, recordSellerStatus } from '../domain/payments.js';
+import {
+  consumePaymentsLink,
+  markPaymentsStarted,
+  notePublished,
+  openPaymentsLink,
+  recordSellerStatus,
+} from '../domain/payments.js';
 import { createWeeklySlots, deactivateSlot, listWeeklySlots, type WeeklySlot } from '../domain/scheduling.js';
 import { coachNav, html, oneTimeCodeNote, page, raw, smsConsentCheckbox } from '../lib/html.js';
 import { cancelScheduledSession, countSessionCancelNotifyAthletes } from '../domain/cancelSession.js';
@@ -102,6 +108,11 @@ export const coachRouter = Router();
 function field(body: unknown, key: string): string {
   const value = (body as Record<string, unknown> | undefined)?.[key];
   return typeof value === 'string' ? value.trim() : '';
+}
+
+async function signedInCoachId(req: Request): Promise<number | null> {
+  const token = parseCookies(req.headers.cookie).cx_session;
+  return token ? getCoachBySessionToken(getDb(), token) : null;
 }
 
 async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -415,6 +426,63 @@ coachRouter.post('/signout', async (req, res) => {
   res.redirect(303, '/signin');
 });
 
+// ---- Screen 1, from a text: the payments link ----
+
+// A coach who only texts gets this link after publishing. It signs them in
+// once and opens Money, where the terms box and the payments button are.
+// Opening it only shows a button: a link preview must not use it up.
+
+function renderPaymentsLinkPage(token: string, coachName: string) {
+  return page(
+    'Set up payments',
+    html`<h1>Set up payments</h1>
+      <p class="muted">Signs you in as ${coachName} and opens payments, so parents can pay you when they book.</p>
+      <form method="post" action="/p/${token}">
+        <button type="submit">Continue</button>
+      </form>`,
+  );
+}
+
+function paymentsLinkDonePage() {
+  return page(
+    'Link expired',
+    html`<h1>That link is done.</h1>
+      <p class="muted">Sign in to set up payments.</p>
+      <a class="action" href="/signin">Sign in</a>`,
+  );
+}
+
+async function answerUsedPaymentsLink(req: Request, res: Response): Promise<void> {
+  if (await signedInCoachId(req)) {
+    res.redirect(303, '/app/money');
+    return;
+  }
+  res.status(410).send(paymentsLinkDonePage());
+}
+
+coachRouter.get('/p/:token', async (req, res) => {
+  const db = getDb();
+  const coachId = await openPaymentsLink(db, req.params.token);
+  const coach = coachId ? await findCoachById(db, coachId) : null;
+  if (!coach) {
+    await answerUsedPaymentsLink(req, res);
+    return;
+  }
+  res.status(200).send(renderPaymentsLinkPage(req.params.token, coach.name));
+});
+
+coachRouter.post('/p/:token', async (req, res) => {
+  const db = getDb();
+  const coachId = await consumePaymentsLink(db, req.params.token);
+  if (!coachId) {
+    await answerUsedPaymentsLink(req, res);
+    return;
+  }
+  const token = await createCoachSession(db, coachId);
+  res.setHeader('Set-Cookie', serializeCookie(SESSION_COOKIE, token, 30 * 24 * 60 * 60));
+  res.redirect(303, '/app/money');
+});
+
 // ---- Screen 4: session types ----
 
 type SessionTypeFields = {
@@ -708,6 +776,8 @@ coachRouter.post('/app/session-types/:id/generate-week', requireAuth, async (req
   }
 
   await createWeeklySlots(db, typeId, tz, slots, new Date());
+  const coach = await findCoachById(db, coachId);
+  if (coach) await notePublished(db, coach);
   res.redirect(303, '/app/schedule');
 });
 
@@ -1168,6 +1238,7 @@ coachRouter.post('/app/setup/publish', requireAuth, async (req, res) => {
     return;
   }
   const counts = await publishSetupPlan(db, coach, Number(field(req.body, 'id')));
+  if (counts) await notePublished(db, (await findCoachById(db, coach.id)) ?? coach);
   res.redirect(303, counts ? '/app/schedule?published=1' : '/app/schedule?setup=1&e=stale');
 });
 

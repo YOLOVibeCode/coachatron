@@ -4,7 +4,7 @@ import { inQuietHours, topUpAllSlots } from '../domain/scheduling.js';
 import { clipSms, formatConfirmWhen } from '../lib/time.js';
 import { sendText } from '../domain/outbound.js';
 import { purgeRequestLimits } from '../domain/requestLimits.js';
-import { pollPaymentAccounts, sendDueReadyTexts } from '../domain/payments.js';
+import { pollPaymentAccounts, sendDueReadyTexts, sendPaymentReminders } from '../domain/payments.js';
 
 export { inQuietHours };
 
@@ -72,6 +72,7 @@ const STEPS: Array<[string, TickStep]> = [
   ['send reminders', sendDueReminders],
   ['check payment accounts', pollPaymentAccounts],
   ['text coaches whose payments are ready', sendDueReadyTexts],
+  ['remind coaches to set up payments', sendPaymentReminders],
   ['purge old request limits', purgeRequestLimits],
 ];
 

@@ -144,7 +144,7 @@ function renderSmsPage(values: { phone?: string } = {}, notice?: { kind: 'error'
       <ul>
         <li>Sign-in codes you ask for. Each request sends one code and does not sign you up for other texts.</li>
         <li>If you check the box: booking confirmations, session reminders, and session updates such as a time change or a cancellation.</li>
-        <li>Coaches who check the box also get a text when a session fills and offers to coach an extra session.</li>
+        <li>Coaches who check the box also get their page link and a link to set up payments when they go live, up to two reminders until payments are set up, a text when payments are ready, a text when a session fills, and offers to coach an extra session.</li>
         <li>Replies to texts you send us. A coach who texts their week to our number gets a link back to see it and go live.</li>
       </ul>
       <ul>

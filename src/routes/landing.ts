@@ -14,7 +14,8 @@ import {
 import { consumeStartLink, getOpenStartLink, reopenStartLink } from '../domain/startLink.js';
 import { clientKey, START_BOX_LIMITS, takeRequest } from '../domain/requestLimits.js';
 import { handleSetupMessage } from '../domain/setup.js';
-import { html, landingPage, page, raw } from '../lib/html.js';
+import { html, landingPage, page, raw, smsConsentCheckbox } from '../lib/html.js';
+import { recordConsent } from '../domain/sms-consent.js';
 import { clearCookie, serializeCookie } from '../lib/cookies.js';
 import {
   encodeStartCookie,
@@ -142,6 +143,11 @@ const TZ_SCRIPT = raw(
   `<script>try{var t=document.getElementById('tz');if(t&&!t.value)t.value=Intl.DateTimeFormat().resolvedOptions().timeZone||''}catch(e){}</script>`,
 );
 
+function smsConsentChecked(body: unknown): boolean {
+  const value = (body as Record<string, unknown> | undefined)?.sms_consent;
+  return value === '1' || value === 'on' || value === true;
+}
+
 const EMAIL_TAKEN = 'That email already has an account. Use another email, or leave it blank.';
 
 function isUniqueViolation(err: unknown): boolean {
@@ -172,6 +178,8 @@ function renderStartForm(
         <label for="email">Email (optional)</label>
         <input id="email" name="email" type="email" autocomplete="email" value="${values.email ?? ''}" />
         <input id="tz" name="tz" type="hidden" value="${values.tz ?? ''}" />
+        <p class="muted">Check the box to get your page link and a link to set up payments by text when you go live.</p>
+        ${smsConsentCheckbox()}
         <button type="submit">Continue</button>
       </form>
       ${error ? html`<p class="error">${error}</p>` : raw('')}
@@ -218,6 +226,14 @@ landingRouter.post('/start/:token', async (req, res) => {
   if (!consumed) {
     res.status(410).send(gonePage());
     return;
+  }
+  // The phone is proven by the text that sent this link. The box is what
+  // allows the texts after this one (SPEC.md §10).
+  if (smsConsentChecked(req.body)) {
+    await recordConsent(db, consumed.phone, '/start', {
+      ip: typeof req.ip === 'string' ? req.ip : null,
+      userAgent: typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : null,
+    });
   }
   let coach: CoachRow | null = existing;
   if (!coach) {

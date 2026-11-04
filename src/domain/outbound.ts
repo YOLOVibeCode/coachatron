@@ -143,6 +143,16 @@ export function composeText(body: string, template: string): string {
   return `${toOneSegment(branded, OPT_OUT_LINE.length + 1)} ${OPT_OUT_LINE}`;
 }
 
+/** True when this body goes out whole as one segment, with nothing cut to
+ * make room for the brand or the opt-out line. Texts that carry a link use
+ * it to pick a shorter wording instead of losing the end of the link. */
+export function fitsOneSegment(body: string, template: string): boolean {
+  const branded = withBrand(body.trim());
+  const reserve = NO_OPT_OUT_LINE_TEMPLATES.has(template) || /\bSTOP\b/.test(branded) ? 0 : OPT_OUT_LINE.length + 1;
+  const length = gsmLength(branded);
+  return length !== null && length + reserve <= GSM_SEGMENT;
+}
+
 type Channel = 'sms' | 'email';
 
 /** A text is logged 'sent'; Twilio's delivery reports (matched on the sid)
