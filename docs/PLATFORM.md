@@ -136,7 +136,13 @@ All sends go through the relay. Rules from SPEC.md §10 stand (transactional onl
   coachatron --rotate` in the relay repo). `INBOUND_SMS_URL` must equal the
   manifest `url` exactly. The relay ignores a non-XML reply, so Coachatron
   answers by sending a text, not TwiML.
-- Texts reach only `+1` numbers, by the app's and the relay's policy. A coach
+- **Only texts Twilio signed are acted on.** The relay also sends
+  `x-relay-twilio-verified`: `1` when Twilio's own signature checked out, `0`
+  when not. With the relay's `TWILIO_SIGNATURE_MODE=log` it still forwards the
+  `0` kind, so the app answers anything but `1` with an empty TwiML 200 and
+  does nothing with it.
+- Texts reach only US and Canadian numbers, by the app's and the relay's
+  policy; the other `+1` countries and the territories are refused. A coach
   elsewhere joins by email (SPEC.md §7.1).
 
 ---
@@ -296,7 +302,11 @@ prices like an international destination. Those are capped in the send path
 Destination price is enforced by country code: only `+1` (US and Canada) is
 texted, since the relay does not report a per-destination price. "Active
 coach" means a coach with a scheduled session ahead. Sign-in codes are also
-capped at 5 per number per day.
+capped at 5 per number or email per day, and requests that send a code, opt
+in at `/sms`, or use the landing page's box are limited per client address
+(`src/domain/requestLimits.ts`). A code stops working after 5 wrong tries.
+When the relay's own caps answer 429, the send path returns `busy` and the
+page asks to try again later.
 
 The full assistant fits inside those ceilings. Scheduling by text, setting a
 session up, asking before a change, confirmations, reminders, and the overflow
