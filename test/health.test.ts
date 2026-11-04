@@ -153,6 +153,25 @@ test('Railway checks /health in every environment', async () => {
   }
 });
 
+// The start command and the health check sit on neighbouring lines of
+// .railway/railway.ts and came from different branches; apply sends both.
+test('Railway starts node itself and checks /health, together, in every environment', async () => {
+  const iac = (await import(pathToFileURL(fileURLToPath(new URL('../.railway/railway.ts', import.meta.url))).href)) as {
+    default: (ctx: unknown) => {
+      resources: Array<{ name: string; deploy?: { startCommand?: string; healthcheckPath?: string } }>;
+    };
+  };
+  const { createRailwayContext } = await import('railway/iac');
+  for (const environment of ['development', 'uat', 'production']) {
+    const web = iac.default(createRailwayContext({ environment })).resources.find((r) => r.name === 'web');
+    assert.deepEqual(
+      { start: web?.deploy?.startCommand, healthcheck: web?.deploy?.healthcheckPath },
+      { start: 'node dist/server.js', healthcheck: '/health' },
+      environment,
+    );
+  }
+});
+
 test('every variable in the README table is kept when Railway config is applied, in every environment', async () => {
   const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
   const names = [...readme.matchAll(/^\| `([A-Z][A-Z0-9_]+)` \|/gm)].map((m) => m[1]);
