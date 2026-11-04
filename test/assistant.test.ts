@@ -13,6 +13,7 @@ import { checkOverflow } from '../src/domain/cascade.js';
 import { APP_BASE_URL } from '../src/config.js';
 import type { ClassifiedIntent } from '../src/llm/schema.js';
 import { postSignedSms } from './helpers/sms-webhook.js';
+import { composeText, segmentCount } from '../src/domain/outbound.js';
 
 async function smsTo(base: string, from: string, body: string): Promise<Response> {
   return postSignedSms(base, { From: from, Body: body });
@@ -260,7 +261,7 @@ test('roster live offer Y never reaches the model; other text gets one link a da
     setComplete(llm);
     try {
       await withServer(async (base) => {
-        await smsTo(base, seed.coach.phone, 'Y');
+        await smsTo(base, seed.coach.phone, '2');
         const banana = await smsTo(base, member.phone, 'cancel tomorrow');
         assert.equal(banana.status, 200);
         assert.match(await banana.text(), /<Response/);
@@ -301,7 +302,7 @@ test('second sentence re-asks then replaces the pending confirm', async () => {
   });
 });
 
-test('overflow ask retires a waiting cancel; overflow Y still starts the cascade', async () => {
+test('overflow ask retires a waiting cancel; the coach answering 2 starts the cascade', async () => {
   await withRelay(async () => {
     const db = await freshDb();
     const seed = await seedCoachWithSession(db, { capacity: 1 });
@@ -317,7 +318,7 @@ test('overflow ask retires a waiting cancel; overflow Y still starts the cascade
       await checkOverflow(db, seed.sessionId);
 
       await withServer(async (base) => {
-        const yes = await smsTo(base, seed.coach.phone, 'Y');
+        const yes = await smsTo(base, seed.coach.phone, '2');
         assert.equal(yes.status, 200);
         assert.match(await yes.text(), /<Response/);
       });
@@ -428,14 +429,14 @@ test('session.add, session.move, and broadcast.send confirm then execute', async
         session_type_id: seed.sessionTypeId,
         session_type: null,
         when: null,
-        new_when: newWhen.toISOString(),
+        new_when: tomorrowAt(seed.coach.tz, 20, 0).toISOString(),
         location: null,
         reason: null,
         source: 'model',
       }),
     );
     try {
-      const move = await handleCoachMessage(db, seed.coach, 'move the 6pm to 7pm', 'sms');
+      const move = await handleCoachMessage(db, seed.coach, 'move the 6pm to 8pm', 'sms');
       assert.equal(move.kind, 'confirm');
       const moved = await handleCoachMessage(db, seed.coach, 'Y', 'sms');
       assert.equal(moved.kind, 'done');
@@ -459,7 +460,7 @@ test('session.add, session.move, and broadcast.send confirm then execute', async
       }),
     );
     try {
-      const ask = await handleCoachMessage(db, seed.coach, 'tell the 7pm group to bring indoor shoes', 'sms');
+      const ask = await handleCoachMessage(db, seed.coach, 'tell the 8pm group to bring indoor shoes', 'sms');
       assert.equal(ask.kind, 'confirm');
       assert.match(ask.text, /bring indoor shoes/);
       const sent = await handleCoachMessage(db, seed.coach, 'Y', 'sms');
@@ -484,6 +485,173 @@ test('model daily cap skips LiteLLM and fails closed', async () => {
       const reply = await handleCoachMessage(db, seed.coach, 'please tell me in a novel sentence how the till looks', 'sms');
       assert.equal(llm.calls.length, 0);
       assert.equal(reply.kind, 'unknown');
+    } finally {
+      resetComplete();
+    }
+  });
+});
+
+// ---- the time the model gives for an add or a move ---------------------
+
+function addIntent(sessionTypeId: number, when: string, over: Partial<ClassifiedIntent> = {}) {
+  return {
+    intent: 'session.add',
+    confidence: 0.95,
+    session_id: null,
+    session_type_id: sessionTypeId,
+    session_type: null,
+    when,
+    new_when: null,
+    location: null,
+    reason: null,
+    source: 'model',
+    ...over,
+  };
+}
+
+async function countSessions(db: Awaited<ReturnType<typeof freshDb>>, typeId: number): Promise<number> {
+  const r = await db.query<{ n: string }>("select count(*)::text as n from session where session_type_id = $1 and status = 'scheduled'", [typeId]);
+  return Number(r.rows[0].n);
+}
+
+async function pendingCount(db: Awaited<ReturnType<typeof freshDb>>, coachId: number): Promise<number> {
+  const r = await db.query<{ n: string }>('select count(*)::text as n from assistant_pending where coach_id = $1 and consumed_at is null', [coachId]);
+  return Number(r.rows[0].n);
+}
+
+test('a model time that is not a date gets the usual "didn\'t catch that", by text too', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db);
+    try {
+      setComplete(fakeComplete(addIntent(seed.sessionTypeId, 'banana')));
+      const add = await handleCoachMessage(db, seed.coach, 'add a session some time soon', 'sms');
+      assert.equal(add.kind, 'unknown');
+      setComplete(fakeComplete(addIntent(seed.sessionTypeId, '', { intent: 'session.move', session_id: seed.sessionId, new_when: 'soonish' })));
+      const move = await handleCoachMessage(db, seed.coach, 'move it to soonish', 'sms');
+      assert.equal(move.kind, 'unknown');
+      await withServer(async (base) => {
+        setComplete(fakeComplete(addIntent(seed.sessionTypeId, 'banana')));
+        const res = await smsTo(base, seed.coach.phone as string, 'add a session some time soon');
+        assert.equal(res.status, 200);
+      });
+    } finally {
+      resetComplete();
+    }
+    assert.ok(relay.sms.some((m) => m.to === seed.coach.phone && /didn't catch that/.test(m.body)));
+    assert.equal(await pendingCount(db, seed.coach.id), 0);
+  });
+});
+
+test('an add in the past, past eight weeks, or on top of the same session is answered, not asked', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db);
+    const now = new Date();
+    const existing = tomorrowAt(seed.coach.tz, 18, 0);
+    await pinSession(db, seed.sessionId, existing);
+    const cases: Array<[string, RegExp]> = [
+      ['2020-01-07T18:00:00-06:00', /That time has already passed\./],
+      [new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000).toISOString(), /I can schedule up to 8 weeks ahead\./],
+      [existing.toISOString(), /You already have Goalkeeper Group /],
+    ];
+    try {
+      for (const [when, reply] of cases) {
+        const llm = fakeComplete(addIntent(seed.sessionTypeId, when));
+        setComplete(llm);
+        const answer = await handleCoachMessage(db, seed.coach, 'add the group then', 'sms', now);
+        assert.equal(answer.kind, 'answer', when);
+        assert.match(answer.text, reply);
+        const system = JSON.stringify(llm.calls[0]);
+        assert.ok(system.includes(`Now: `) && system.includes(now.toISOString()), 'the model is told the current time');
+      }
+    } finally {
+      resetComplete();
+    }
+    assert.equal(await pendingCount(db, seed.coach.id), 0);
+    assert.equal(await countSessions(db, seed.sessionTypeId), 1);
+  });
+});
+
+test('an add that overlaps another session says so in the question, and a Y after its time has passed adds nothing', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db);
+    const existing = tomorrowAt(seed.coach.tz, 18, 0);
+    await pinSession(db, seed.sessionId, existing);
+    try {
+      setComplete(fakeComplete(addIntent(seed.sessionTypeId, new Date(existing.getTime() + 30 * 60_000).toISOString())));
+      const ask = await handleCoachMessage(db, seed.coach, 'add a group at 6:30', 'sms');
+      assert.equal(ask.kind, 'confirm');
+      assert.match(ask.text, /Overlaps Goalkeeper Group at 6:00pm\. Reply Y\.$/);
+      const yes = await handleCoachMessage(db, seed.coach, 'Y', 'sms');
+      assert.equal(yes.kind, 'done');
+      assert.equal(await countSessions(db, seed.sessionTypeId), 2);
+
+      // Asked five minutes before the time, answered six minutes later.
+      const t0 = new Date();
+      setComplete(fakeComplete(addIntent(seed.sessionTypeId, new Date(t0.getTime() + 5 * 60_000).toISOString())));
+      const soon = await handleCoachMessage(db, seed.coach, 'add one in five minutes', 'sms', t0);
+      assert.equal(soon.kind, 'confirm');
+      const late = await handleCoachMessage(db, seed.coach, 'Y', 'sms', new Date(t0.getTime() + 6 * 60_000));
+      assert.equal(late.kind, 'done');
+      assert.equal(late.text, 'That time has already passed.');
+      assert.equal(await countSessions(db, seed.sessionTypeId), 2);
+    } finally {
+      resetComplete();
+    }
+  });
+});
+
+test('a long add question still ends "Reply Y." once the brand is put in front and it is fitted to one text', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db);
+    const existing = tomorrowAt(seed.coach.tz, 18, 0);
+    await pinSession(db, seed.sessionId, existing);
+    const overlapping = new Date(existing.getTime() + 30 * 60_000).toISOString();
+    const clear = tomorrowAt(seed.coach.tz, 9, 0).toISOString();
+    try {
+      // Places from short to long, so the question passes every length near
+      // one segment, with and without the overlap note.
+      for (const when of [clear, overlapping]) {
+        for (let n = 30; n <= 130; n += 2) {
+          // Each question is one model call; keep under the daily cap.
+          await db.query('delete from assistant_model_call');
+          const location = `the far field by the ${'l'.repeat(n - 26)}ake path`;
+          setComplete(fakeComplete(addIntent(seed.sessionTypeId, when, { location })));
+          const ask = await handleCoachMessage(db, seed.coach, 'add a group there', 'sms');
+          assert.equal(ask.kind, 'confirm', `${n}`);
+          const sent = composeText(ask.text, 'assistant');
+          assert.equal(segmentCount(sent), 1, `${n}: ${sent.length} characters`);
+          assert.match(sent, /^Coachatron: Add 60-min Goalkeeper Group /);
+          assert.match(sent, / Reply Y\.$/, `${n}: ${sent}`);
+          if (when === overlapping) assert.match(sent, /Overlaps (Goalkeeper Group at 6:00pm|another session)\. Reply Y\.$/);
+          assert.equal((await handleCoachMessage(db, seed.coach, 'N', 'sms')).kind, 'dropped');
+        }
+      }
+
+      // A place written in letters outside GSM-7 makes the text UCS-2, 70
+      // characters; the question still ends "Reply Y."
+      await db.query('delete from assistant_model_call');
+      setComplete(fakeComplete(addIntent(seed.sessionTypeId, clear, { location: '体育场 north field, the one past the gate' })));
+      const wide = await handleCoachMessage(db, seed.coach, 'add a group there', 'sms');
+      const wideSent = composeText(wide.text, 'assistant');
+      assert.equal(segmentCount(wideSent), 1, wideSent);
+      assert.match(wideSent, / Reply Y\.$/);
+      await handleCoachMessage(db, seed.coach, 'N', 'sms');
+
+      // The same, end to end: the text the coach gets.
+      await db.query('delete from assistant_model_call');
+      setComplete(fakeComplete(addIntent(seed.sessionTypeId, overlapping, { location: `the far field by the ${'l'.repeat(100)}ake` })));
+      await withServer(async (base) => {
+        const res = await smsTo(base, seed.coach.phone as string, 'add a group there');
+        assert.equal(res.status, 200);
+      });
+      const reply = relay.sms.filter((m) => m.to === seed.coach.phone).pop();
+      assert.ok(reply, 'the question was texted');
+      assert.equal(segmentCount(reply.body), 1);
+      assert.match(reply.body, /^Coachatron: Add .*Overlaps another session\. Reply Y\.$/);
     } finally {
       resetComplete();
     }

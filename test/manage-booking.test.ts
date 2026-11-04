@@ -62,9 +62,11 @@ test('POST /booking/:token/cancel sets status to cancelled and frees spot', asyn
   assert.equal(Number(bookedAfter.rows[0].count), 0);
 });
 
-test(' cancelling a paid-with-credit booking increments credit', async () => {
+test(' cancelling a paid-with-credit booking before the cancellation window increments credit', async () => {
   const db = await freshDb();
   const seed = await seedCoachWithSession(db, { capacity: 2 });
+  // Three days out: well before the coach's 24-hour window (SPEC.md §9.5).
+  await db.query("update session set starts_at_utc = now() + interval '3 days' where id = $1", [seed.sessionId]);
 
   // Create a package and credit
   const pkgId = await db.query<{ id: number }>(

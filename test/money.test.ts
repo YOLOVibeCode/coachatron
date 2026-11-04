@@ -3,6 +3,12 @@ import assert from 'node:assert/strict';
 import { freshDb } from './helpers/db.js';
 import { withServer } from './helpers/server.js';
 import { createCoach } from '../src/domain/auth.js';
+import { withRelay } from './helpers/relay.js';
+import { seedCoachWithSession } from './helpers/fixtures.js';
+import { bookOnline, postCheckout } from './helpers/booking.js';
+import { buyerFromLocation, postStorePaid } from './helpers/store-event.js';
+import { cancelScheduledSession } from '../src/domain/cancelSession.js';
+import { summarizeMoney } from '../src/domain/money.js';
 
 test('money screen shows correct summaries after various bookings', async () => {
   const db = await freshDb();
@@ -252,4 +258,70 @@ test('money screen shows correct data with credits that have expiry', async () =
   // Both credits should be counted (expiry check is done by getCreditBalance in pricing.ts,
   // but for money screen we sum all remaining, including expired ones per the schema design)
   assert.equal(summary.outstandingCreditCount, 15, 'both credits should be summed');
+});
+
+test('marking a booking attended or a no-show keeps it in booked and collected', async () => {
+  const { seedCoachWithSession, seedBookedSession } = await import('./helpers/fixtures.js');
+  const { summarizeMoney } = await import('../src/domain/money.js');
+  const db = await freshDb();
+  const seed = await seedCoachWithSession(db, { capacity: 4, priceCents: 3500 });
+  const first = await seedBookedSession(db, seed.sessionId, 'Athlete One', '+15550000001');
+  const second = await seedBookedSession(db, seed.sessionId, 'Athlete Two', '+15550000002');
+  await db.query('update booking set gross_cents = 3500 where id in ($1, $2)', [first, second]);
+  // "Now" is the session's own start, so it is always inside "this week".
+  const start = (await db.query<{ starts_at_utc: string }>('select starts_at_utc from session where id = $1', [seed.sessionId])).rows[0];
+  const now = new Date(start.starts_at_utc);
+
+  const before = await summarizeMoney(db, seed.coach.id, now);
+  assert.deepEqual([before.bookedThisWeekCount, before.bookedThisWeekCents, before.collectedThisWeekCents], [2, 7000, 7000]);
+
+  await db.query("update booking set status = 'attended' where id = $1", [first]);
+  await db.query("update booking set status = 'noshow' where id = $1", [second]);
+  const after = await summarizeMoney(db, seed.coach.id, now);
+  assert.deepEqual([after.bookedThisWeekCount, after.bookedThisWeekCents, after.collectedThisWeekCents], [2, 7000, 7000]);
+
+  await db.query("update booking set status = 'cancelled' where id = $1", [second]);
+  const cancelled = await summarizeMoney(db, seed.coach.id, now);
+  assert.deepEqual([cancelled.bookedThisWeekCount, cancelled.collectedThisWeekCents], [1, 3500]);
+});
+
+test('a payment that became credit because the coach had cancelled counts as collected, not as booked', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 3, priceCents: 3500 });
+    // "Now" is the session's own start, so it is always inside "this week".
+    const start = (await db.query<{ starts_at_utc: string }>('select starts_at_utc from session where id = $1', [seed.sessionId])).rows[0];
+    const now = new Date(start.starts_at_utc);
+    await withServer(async (base) => {
+      const b = await bookOnline(base, seed.coach.handle, seed.sessionId, 'Alex', '5551112222');
+      assert.ok(b.key);
+      const pay = await postCheckout(base, seed.coach.handle, b.key, { mode: 'dropin' });
+      const userId = buyerFromLocation(pay.headers.get('location'));
+      assert.equal((await cancelScheduledSession(db, seed.coach.id, seed.sessionId)).kind, 'cancelled');
+      assert.equal((await postStorePaid(base, { userId, amountCents: 3500, paymentId: 'ch_after_cancel' })).status, 200);
+    });
+    const row = await db.query<{ status: string; gross_cents: number; credit_id: number | null }>(
+      'select status, gross_cents, credit_id from booking where session_id = $1',
+      [seed.sessionId],
+    );
+    assert.deepEqual([row.rows[0].status, row.rows[0].gross_cents, row.rows[0].credit_id !== null], ['cancelled', 3500, true]);
+
+    const summary = await summarizeMoney(db, seed.coach.id, now);
+    assert.equal(summary.collectedThisWeekCents, 3500, 'the payment reached the coach');
+    assert.equal(summary.bookedThisWeekCount, 0, 'nobody is booked into a cancelled session');
+    assert.equal(summary.outstandingCreditCount, 1, 'and the parent holds it as one session credit');
+  });
+});
+
+test('a cancelled booking whose payment was not kept as credit stays out of collected', async () => {
+  const db = await freshDb();
+  const seed = await seedCoachWithSession(db, { capacity: 3, priceCents: 3500 });
+  const start = (await db.query<{ starts_at_utc: string }>('select starts_at_utc from session where id = $1', [seed.sessionId])).rows[0];
+  await db.query(
+    `insert into booking (session_id, athlete_name, contact_phone, status, payment_source, gross_cents, manage_token)
+     values ($1, 'Parent Cancelled', '+15557778888', 'cancelled', 'DropIn', 3500, 'tok_parent_cancelled_1')`,
+    [seed.sessionId],
+  );
+  const summary = await summarizeMoney(db, seed.coach.id, new Date(start.starts_at_utc));
+  assert.equal(summary.collectedThisWeekCents, 0);
 });

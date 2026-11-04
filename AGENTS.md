@@ -9,7 +9,7 @@ files win over a generic stack preference.
 - `design/index.html` is the Postcard reference. Match it. Do not replace the product with that file.
 - Server-rendered HTML. No SPA. Mobile first.
 - One service. Postgres in production. Tests may use PGlite so `npm test` needs no daemon.
-- Payments go through signed Noctusoft marketplace buy links (`GET /buy/connect/coachatron/:seller`). Do not import a Square SDK or card form.
+- Payments go through signed Noctusoft marketplace buy links (`GET /buy/connect/coachatron/:seller`). The relay runs them on Stripe Connect; the coach is the merchant. Do not import a Stripe or Square SDK or a card form, and hold no Stripe key or id.
 - SMS and email go through the Noctusoft relay. Do not import Twilio or SendGrid.
 - The model is one interface. The production client calls LiteLLM on litellm-vm at `https://ai.noctusoft.com/v1`. No provider SDK. Tests use a fake. The text assistant and voice setup (SMS + the schedule screen) are the only callers.
 
@@ -43,7 +43,7 @@ product's number: the relay would forward Coachatron's reply into that product.
 - Do not hold funds, store card data, or make Coachatron the merchant of record.
 - Do not add a thirteenth screen. Slice 1 is the twelve in SPEC.md §8.1.
 - Do not push to `main` or `develop`. Open a PR into `develop`.
-- Do not deploy. Do not call live Square, Twilio, or a model provider. The one exception is the text test below, run by the operator from their Mac.
+- Do not deploy. Do not call live Stripe, Square, Twilio, or a model provider. The one exception is the text test below, run by the operator from their Mac.
 - Do not put goalkeeper-specific words in the product name, schema, or URL structure.
 - Do not switch the Cloud Agent to Fast, Opus, or GPT. Do not buy extra Max usage.
 

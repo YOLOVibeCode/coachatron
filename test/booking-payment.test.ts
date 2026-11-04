@@ -6,14 +6,15 @@ import { withRelay } from './helpers/relay.js';
 import { seedCoachWithSession, seedPackage, seedPlan } from './helpers/fixtures.js';
 import { buyerFromLocation, postStorePaid } from './helpers/store-event.js';
 
-function bookingIdFromLocation(location: string | null): number {
+function checkoutKeyFromLocation(location: string | null): string {
   assert.ok(location, 'expected a redirect Location header');
-  const match = /\/checkout\/(\d+)/.exec(location!);
-  assert.ok(match, `expected .../checkout/<id> in ${location}`);
-  return Number(match![1]);
+  const match = /\/checkout\/([^/?#]+)/.exec(location!);
+  assert.ok(match, `expected .../checkout/<token> in ${location}`);
+  return match![1];
 }
 
-async function bookSession(base: string, handle: string, sessionId: number, athlete: string, phone: string): Promise<number> {
+/** Books a session and returns its checkout key. */
+async function bookSession(base: string, handle: string, sessionId: number, athlete: string, phone: string): Promise<string> {
   const bookRes = await fetch(`${base}/c/${handle}/sessions/${sessionId}/book`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -21,16 +22,16 @@ async function bookSession(base: string, handle: string, sessionId: number, athl
     redirect: 'manual',
   });
   assert.equal(bookRes.status, 303);
-  return bookingIdFromLocation(bookRes.headers.get('location'));
+  return checkoutKeyFromLocation(bookRes.headers.get('location'));
 }
 
 async function startHostedPay(
   base: string,
   handle: string,
-  bookingId: number,
+  checkoutKey: string,
   fields: Record<string, string>,
 ): Promise<{ location: string; userId: string }> {
-  const checkoutRes = await fetch(`${base}/c/${handle}/checkout/${bookingId}`, {
+  const checkoutRes = await fetch(`${base}/c/${handle}/checkout/${checkoutKey}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(fields),
@@ -50,15 +51,15 @@ test('drop-in payment: signed buy link then event v1 books the session at 500 bp
     const seed = await seedCoachWithSession(db, { capacity: 2, priceCents: 3500 });
 
     await withServer(async (base) => {
-      const bookingId = await bookSession(base, seed.coach.handle, seed.sessionId, 'Alex', '5551112222');
-      const { userId } = await startHostedPay(base, seed.coach.handle, bookingId, { mode: 'dropin' });
+      const checkoutKey = await bookSession(base, seed.coach.handle, seed.sessionId, 'Alex', '5551112222');
+      const { userId } = await startHostedPay(base, seed.coach.handle, checkoutKey, { mode: 'dropin' });
 
       const hook = await postStorePaid(base, { userId, amountCents: 3500, paymentId: 'ch_dropin' });
       assert.equal(hook.status, 200);
 
       const rows = await db.query<{ status: string; payment_source: string; gross_cents: number }>(
-        'select status, payment_source, gross_cents from booking where id = $1',
-        [bookingId],
+        'select status, payment_source, gross_cents from booking where checkout_token = $1',
+        [checkoutKey],
       );
       assert.equal(rows.rows[0].status, 'booked');
       assert.equal(rows.rows[0].payment_source, 'DropIn');
@@ -66,7 +67,7 @@ test('drop-in payment: signed buy link then event v1 books the session at 500 bp
 
       const publicHtml = await (await fetch(`${base}/c/${seed.coach.handle}`)).text();
       assert.match(publicHtml, /1 spot left/);
-      const checkoutHtml = await (await fetch(`${base}/c/${seed.coach.handle}/checkout/${bookingId}`)).text();
+      const checkoutHtml = await (await fetch(`${base}/c/${seed.coach.handle}/checkout/${checkoutKey}`)).text();
       assert.doesNotMatch(checkoutHtml, /square\.js/i);
     });
   });
@@ -79,8 +80,8 @@ test('the hosted pay page names what the athlete pays for, not the coach handle'
     const packageId = await seedPackage(db, seed.coach.id, 10, 30000);
     await withServer(async (base) => {
       const described = async (fields: Record<string, string>, phone: string) => {
-        const bookingId = await bookSession(base, seed.coach.handle, seed.sessionId, 'Rae', phone);
-        const { location } = await startHostedPay(base, seed.coach.handle, bookingId, fields);
+        const checkoutKey = await bookSession(base, seed.coach.handle, seed.sessionId, 'Rae', phone);
+        const { location } = await startHostedPay(base, seed.coach.handle, checkoutKey, fields);
         return new URL(location, base).searchParams.get('desc');
       };
       assert.match((await described({ mode: 'dropin' }, '5557770001')) ?? '', /^Goalkeeper Group — \w{3}, \w{3} \d{1,2}, \d{1,2}:\d{2}\s[AP]M$/);
@@ -96,8 +97,8 @@ test('package payment: buy link + paid event creates a credit ledger row', async
     const packageId = await seedPackage(db, seed.coach.id, 10, 30000);
 
     await withServer(async (base) => {
-      const bookingId = await bookSession(base, seed.coach.handle, seed.sessionId, 'Bailey', '5553334444');
-      const { userId } = await startHostedPay(base, seed.coach.handle, bookingId, {
+      const checkoutKey = await bookSession(base, seed.coach.handle, seed.sessionId, 'Bailey', '5553334444');
+      const { userId } = await startHostedPay(base, seed.coach.handle, checkoutKey, {
         mode: 'package',
         package_id: String(packageId),
       });
@@ -112,8 +113,8 @@ test('package payment: buy link + paid event creates a credit ledger row', async
       assert.equal(creditRows.rows[0].remaining, 9);
 
       const bookingRows = await db.query<{ status: string; payment_source: string; credit_id: number | null }>(
-        'select status, payment_source, credit_id from booking where id = $1',
-        [bookingId],
+        'select status, payment_source, credit_id from booking where checkout_token = $1',
+        [checkoutKey],
       );
       assert.equal(bookingRows.rows[0].status, 'booked');
       assert.equal(bookingRows.rows[0].payment_source, 'PackageCredit');
@@ -129,8 +130,8 @@ test('plan payment: buy link + paid event creates a subscription and credits', a
     const planId = await seedPlan(db, seed.coach.id, 4, 12000);
 
     await withServer(async (base) => {
-      const bookingId = await bookSession(base, seed.coach.handle, seed.sessionId, 'Casey', '5555556666');
-      const { userId } = await startHostedPay(base, seed.coach.handle, bookingId, {
+      const checkoutKey = await bookSession(base, seed.coach.handle, seed.sessionId, 'Casey', '5555556666');
+      const { userId } = await startHostedPay(base, seed.coach.handle, checkoutKey, {
         mode: 'plan',
         plan_id: String(planId),
       });
@@ -151,8 +152,8 @@ test('plan payment: buy link + paid event creates a subscription and credits', a
       assert.equal(creditRows.rows[0].remaining, 3);
 
       const bookingRows = await db.query<{ status: string; payment_source: string; gross_cents: number }>(
-        'select status, payment_source, gross_cents from booking where id = $1',
-        [bookingId],
+        'select status, payment_source, gross_cents from booking where checkout_token = $1',
+        [checkoutKey],
       );
       assert.equal(bookingRows.rows[0].status, 'booked');
       assert.equal(bookingRows.rows[0].payment_source, 'Subscription');
@@ -167,15 +168,15 @@ test('idempotency: a second paid event does not double-book', async () => {
     const seed = await seedCoachWithSession(db, { capacity: 2, priceCents: 3500 });
 
     await withServer(async (base) => {
-      const bookingId = await bookSession(base, seed.coach.handle, seed.sessionId, 'Drew', '5557778888');
-      const { userId } = await startHostedPay(base, seed.coach.handle, bookingId, { mode: 'dropin' });
+      const checkoutKey = await bookSession(base, seed.coach.handle, seed.sessionId, 'Drew', '5557778888');
+      const { userId } = await startHostedPay(base, seed.coach.handle, checkoutKey, { mode: 'dropin' });
       const first = await postStorePaid(base, { userId, amountCents: 3500, paymentId: 'ch_once' });
       const second = await postStorePaid(base, { userId, amountCents: 3500, paymentId: 'ch_once' });
       assert.equal(first.status, 200);
       assert.equal(second.status, 200);
 
-      const bookingRows = await db.query<{ id: number; status: string }>('select id, status from booking where id = $1', [
-        bookingId,
+      const bookingRows = await db.query<{ id: number; status: string }>('select id, status from booking where checkout_token = $1', [
+        checkoutKey,
       ]);
       assert.equal(bookingRows.rows.length, 1);
       assert.equal(bookingRows.rows[0].status, 'booked');
@@ -190,8 +191,8 @@ test('the buy link names the Connect app from RELAY_CONNECT_PRODUCT', async () =
     process.env.RELAY_CONNECT_PRODUCT = 'coachatron-dev';
     try {
       await withServer(async (base) => {
-        const bookingId = await bookSession(base, seed.coach.handle, seed.sessionId, 'Eli', '5553334444');
-        const res = await fetch(`${base}/c/${seed.coach.handle}/checkout/${bookingId}`, {
+        const checkoutKey = await bookSession(base, seed.coach.handle, seed.sessionId, 'Eli', '5553334444');
+        const res = await fetch(`${base}/c/${seed.coach.handle}/checkout/${checkoutKey}`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ mode: 'dropin' }),
