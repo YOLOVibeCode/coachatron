@@ -149,9 +149,15 @@ function smsConsentChecked(body: unknown): boolean {
 }
 
 const EMAIL_TAKEN = 'That email already has an account. Use another email, or leave it blank.';
+const TRY_AGAIN = 'That did not go through. Tap Continue to try again.';
+/** The unique index on a coach's email (migration 0011). */
+const EMAIL_INDEX = 'coach_email_unique';
 
-function isUniqueViolation(err: unknown): boolean {
-  return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === '23505';
+/** The constraint a unique violation names ('' when it names none), or null for any other error. */
+function uniqueViolation(err: unknown): string | null {
+  if (typeof err !== 'object' || err === null || (err as { code?: unknown }).code !== '23505') return null;
+  const constraint = (err as { constraint?: unknown }).constraint;
+  return typeof constraint === 'string' ? constraint : '';
 }
 
 function gonePage(): string {
@@ -236,7 +242,9 @@ landingRouter.post('/start/:token', async (req, res) => {
     });
   }
   let coach: CoachRow | null = existing;
-  if (!coach) {
+  // Two tries: the handle (picked from the name) or the phone can be taken
+  // between the check and the insert by a coach signing up at the same time.
+  for (let attempt = 0; !coach && attempt < 2; attempt += 1) {
     try {
       coach = await createCoach(db, {
         phone: consumed.phone,
@@ -246,12 +254,22 @@ landingRouter.post('/start/:token', async (req, res) => {
         tz: isValidTimeZone(tz) ? tz : DEFAULT_TZ,
       });
     } catch (err) {
-      // Someone took the email or phone between the check and the insert.
-      if (!isUniqueViolation(err)) throw err;
-      await reopenStartLink(db, token);
-      res.status(422).send(renderStartForm(token, { name, email, tz }, EMAIL_TAKEN));
-      return;
+      const constraint = uniqueViolation(err);
+      if (constraint === null) throw err;
+      if (constraint === EMAIL_INDEX) {
+        await reopenStartLink(db, token);
+        res.status(422).send(renderStartForm(token, { name, email, tz }, EMAIL_TAKEN));
+        return;
+      }
+      // The phone was proven by the text with this link, so the coach who
+      // now has it is this coach; otherwise the next try picks another handle.
+      coach = await findCoachByPhone(db, consumed.phone);
     }
+  }
+  if (!coach) {
+    await reopenStartLink(db, token);
+    res.status(422).send(renderStartForm(token, { name, email, tz }, TRY_AGAIN));
+    return;
   }
   const session = await createCoachSession(db, coach.id);
   const cookies = [serializeCookie(SESSION_COOKIE, session, 30 * 24 * 60 * 60)];
