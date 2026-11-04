@@ -70,6 +70,17 @@ and `npm start` runs `exec node dist/server.js`, so the shell npm starts is
 replaced by node rather than left in between to be stopped in its place
 (`test/start-signal.test.ts`).
 
+Every response carries `X-Content-Type-Options: nosniff` and refuses to be
+framed; pages behind a private link or a session are not cached
+(`src/lib/headers.ts`). Where `APP_BASE_URL` is https, responses also send
+`Strict-Transport-Security: max-age=31536000`, for that host only. Outside
+production (`APP_ENV` other than `production`) every response says
+`X-Robots-Tag: noindex` and `/robots.txt` turns every crawler away; in
+production it keeps crawlers off the coach's screens and every private link.
+An address nothing answers gets the app's Not found page, and a request the
+app cannot read (too large, a body that does not parse, a bad percent-escape)
+gets its branded error page with one warning line in the log.
+
 ## Status
 
 Slice 1 is implemented: all twelve screens below, tested against a fake of

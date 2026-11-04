@@ -1,12 +1,14 @@
 import express from 'express';
 import type { Server } from 'node:http';
-import { PORT } from './config.js';
+import { appBaseUrlIsHttps, PORT } from './config.js';
 import { healthRouter } from './routes/health.js';
 import { landingRouter } from './routes/landing.js';
 import { coachRouter } from './routes/coach.js';
 import { publicRouter } from './routes/public.js';
 import { smsInboundRouter, smsStatusRouter } from './routes/webhooks.js';
 import { storeWebhookRouter } from './routes/store-webhook.js';
+import { siteRouter } from './routes/site.js';
+import { errorHandler, notFoundHandler } from './routes/errors.js';
 import { closeDb, getDb } from './db/client.js';
 import { runMigrations } from './db/migrate.js';
 import { runTick } from './jobs/tick.js';
@@ -34,6 +36,10 @@ export function createApp() {
   app.use(landingRouter);
   app.use(coachRouter);
   app.use(publicRouter);
+  app.use(siteRouter);
+  // Last: any address no route answered, then any error on the way.
+  app.use(notFoundHandler);
+  app.use(errorHandler);
 
   return app;
 }
@@ -153,7 +159,7 @@ async function main(): Promise<void> {
   tick();
   const timer = setInterval(tick, TICK_MS);
 
-  if ((process.env.APP_BASE_URL ?? '').startsWith('https://') && !(process.env.RELAY_INBOUND_SECRET ?? '').trim()) {
+  if (appBaseUrlIsHttps() && !(process.env.RELAY_INBOUND_SECRET ?? '').trim()) {
     console.warn('RELAY_INBOUND_SECRET is not set: inbound texts get 503 in production and are accepted unsigned elsewhere.');
   }
 
