@@ -4,7 +4,10 @@ import { getDb } from '../db/client.js';
 import {
   createCoach,
   createCoachSession,
+  emailTakenNotice,
   findCoachByPhone,
+  findCoachHoldingEmail,
+  normalizeEmail,
   normalizePhone,
   type CoachRow,
 } from '../domain/auth.js';
@@ -196,6 +199,13 @@ landingRouter.post('/start/:token', async (req, res) => {
     res.status(422).send(renderStartForm(token, { name, email, tz }, 'Enter your name.'));
     return;
   }
+  // The optional email stays unproved, and must not be on another account.
+  const extraEmail = existing ? null : normalizeEmail(email);
+  const holder = extraEmail ? await findCoachHoldingEmail(db, extraEmail) : null;
+  if (holder) {
+    res.status(422).send(renderStartForm(token, { name, email, tz }, emailTakenNotice(holder)));
+    return;
+  }
   const consumed = await consumeStartLink(db, token);
   if (!consumed) {
     res.status(410).send(gonePage());
@@ -206,7 +216,8 @@ landingRouter.post('/start/:token', async (req, res) => {
     coach = await createCoach(db, {
       phone: consumed.phone,
       name,
-      email,
+      email: extraEmail ?? '',
+      emailVerified: false,
       tz: isValidTimeZone(tz) ? tz : DEFAULT_TZ,
     });
   }

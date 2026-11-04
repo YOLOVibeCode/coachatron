@@ -7,7 +7,10 @@ import {
   parseContact,
   contactValue,
   findCoachByContact,
-  findCoachByEmail,
+  findCoachHoldingEmail,
+  emailTakenNotice,
+  markEmailVerified,
+  releaseUnprovedEmail,
   setCoachPhone,
   type Contact,
   createOtp,
@@ -151,12 +154,16 @@ function optedOutAtSignIn(): string {
 
 type CodeOutcome = SendOutcome | 'failed';
 
+function signInCodeText(code: string): string {
+  return `Coachatron: your sign-in code is ${code}. Expires in 10 minutes.`;
+}
+
 /** Sends a sign-in code and stores it only once it has gone out, so a
  * request the send limits refuse leaves no code behind. */
 async function sendCode(
   db: DbClient,
   contact: Contact,
-  opts: { coachId: number | null; smsConsent: boolean; text: (code: string) => string },
+  opts: { coachId: number | null; smsConsent: boolean; text?: (code: string) => string },
 ): Promise<CodeOutcome> {
   const code = newOtpCode();
   let outcome: SendOutcome;
@@ -172,7 +179,7 @@ async function sendCode(
           })
         : await sendText(db, {
             to: contact.phone,
-            body: opts.text(code),
+            body: (opts.text ?? signInCodeText)(code),
             coachId: opts.coachId,
             template: 'otp',
             perRecipientDailyMax: OTP_DAILY_MAX_PER_CONTACT,
@@ -244,7 +251,6 @@ coachRouter.post('/signin/otp', async (req, res) => {
   const outcome = await sendCode(db, contact, {
     coachId: null,
     smsConsent: contact.kind === 'phone' && smsConsentChecked(req.body),
-    text: (code) => `Coachatron: your sign-in code is ${code}. Expires in 10 minutes.`,
   });
   if (outcome === 'sent') {
     res.redirect(303, `/signin/verify?to=${encodeURIComponent(contactValue(contact))}`);
@@ -333,22 +339,37 @@ coachRouter.post('/signin/verify', async (req, res) => {
 
   let coach: CoachRow | null = await findCoachByContact(db, contact);
   if (!coach) {
+    // An email that only sits, unproved, on an account that signs in by
+    // text does not open that account.
+    const unproved = contact.kind === 'email' && (await findCoachHoldingEmail(db, contact.email)) !== null;
     if (!name) {
-      res.status(422).send(renderVerifyForm(contact, { code, name, email, tz }, 'Enter your name.'));
-      return;
-    }
-    // An optional email given on a phone join must not belong to another coach.
-    const extraEmail = contact.kind === 'phone' ? normalizeEmail(email) : null;
-    if (extraEmail && (await findCoachByEmail(db, extraEmail))) {
       res
         .status(422)
-        .send(renderVerifyForm(contact, { code, name, email, tz }, 'That email already has an account. Sign in with it instead.'));
+        .send(
+          renderVerifyForm(
+            contact,
+            { code, name, email, tz },
+            unproved
+              ? "That email isn't confirmed on an account yet. Sign in with your mobile, or enter your name to start a new account."
+              : 'Enter your name.',
+          ),
+        );
+      return;
+    }
+    // An optional email given on a phone join must not belong to another
+    // coach, and stays unproved until a code sent to it is entered.
+    const extraEmail = contact.kind === 'phone' ? normalizeEmail(email) : null;
+    const holder = extraEmail ? await findCoachHoldingEmail(db, extraEmail) : null;
+    if (holder) {
+      res.status(422).send(renderVerifyForm(contact, { code, name, email, tz }, emailTakenNotice(holder)));
       return;
     }
     await consumeOtp(db, otpId);
+    if (unproved) await releaseUnprovedEmail(db, contactValue(contact));
     coach = await createCoach(db, {
       phone: contact.kind === 'phone' ? contact.phone : null,
       email: contact.kind === 'email' ? contact.email : (extraEmail ?? ''),
+      emailVerified: contact.kind === 'email',
       name,
       tz: isValidTimeZone(tz) ? tz : DEFAULT_TZ,
     });
@@ -796,6 +817,7 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
         typeof req.query.phone === 'string' ? req.query.phone : '',
         typeof req.query.to === 'string' ? req.query.to : '',
       );
+  const emailCard = renderConfirmEmailCard(coach, typeof req.query.email === 'string' ? req.query.email : '');
   const sessions = await db.query<{
     id: number;
     starts_at_utc: string;
@@ -828,6 +850,7 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
           ${live}
           ${askCard}
           ${phoneCard}
+          ${emailCard}
           <p><a class="action ghost" href="/app/schedule?setup=1">Add more by talking</a></p>
           ${assistant.reply
             ? html`<div class="card ask-reply">
@@ -936,6 +959,80 @@ function renderAddPhoneCard(state: string, to: string) {
     ${notice ? html`<p class="error">${notice}</p>` : raw('')}
   </div>`;
 }
+
+const EMAIL_NOTICES: Record<string, string> = {
+  wrong: 'That code did not match. Try again.',
+  used: 'That code had too many wrong tries. Ask for a new one.',
+  slow: TOO_MANY_TRIES,
+  capped: 'Too many codes for that email today. Try again tomorrow.',
+  busy: "We can't send email right now. Try again in a few minutes.",
+  failed: SEND_FAILED,
+};
+
+/** For a coach whose email was typed, not proved: a code by email makes
+ * it a way to sign in. Until then only the mobile signs in. */
+function renderConfirmEmailCard(coach: CoachRow, state: string) {
+  if (state === 'done' && coach.email_verified) {
+    return html`<p class="muted">You can sign in with ${coach.email} too.</p>`;
+  }
+  if (!coach.email || coach.email_verified) return raw('');
+  const notice = Object.hasOwn(EMAIL_NOTICES, state) ? EMAIL_NOTICES[state] : null;
+  if (state === 'sent' || state === 'wrong' || state === 'slow') {
+    return html`<div class="card">
+      <p>We emailed a code to ${coach.email}.</p>
+      <form method="post" action="/app/email/verify">
+        <label for="email-code">Code</label>
+        <input id="email-code" name="code" inputmode="numeric" autocomplete="one-time-code" required />
+        <button type="submit" class="ghost">Confirm email</button>
+      </form>
+      ${notice ? html`<p class="error">${notice}</p>` : raw('')}
+    </div>`;
+  }
+  return html`<div class="card">
+    <p class="muted">Confirm ${coach.email} to sign in with it too.</p>
+    <form method="post" action="/app/email">
+      <button type="submit" class="ghost">Email me a code</button>
+    </form>
+    ${notice ? html`<p class="error">${notice}</p>` : raw('')}
+  </div>`;
+}
+
+coachRouter.post('/app/email', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coach = await findCoachById(db, res.locals.coachId as number);
+  if (!coach?.email || coach.email_verified) {
+    res.redirect(303, '/app/schedule');
+    return;
+  }
+  if (!(await takeRequest(db, SIGNIN_CODE_LIMITS, clientKey(req)))) {
+    res.redirect(303, '/app/schedule?email=slow');
+    return;
+  }
+  const outcome = await sendCode(db, { kind: 'email', email: coach.email }, { coachId: coach.id, smsConsent: false });
+  res.redirect(303, `/app/schedule?email=${outcome === 'refused' ? 'failed' : outcome}`);
+});
+
+coachRouter.post('/app/email/verify', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coach = await findCoachById(db, res.locals.coachId as number);
+  if (!coach?.email || coach.email_verified) {
+    res.redirect(303, '/app/schedule');
+    return;
+  }
+  const contact: Contact = { kind: 'email', email: coach.email };
+  if (!(await takeCodeCheck(db, req, contact))) {
+    res.redirect(303, '/app/schedule?email=slow');
+    return;
+  }
+  const check = await checkOtp(db, contact, field(req.body, 'code'));
+  if (!check.ok) {
+    res.redirect(303, `/app/schedule?email=${check.reason === 'used-up' ? 'used' : 'wrong'}`);
+    return;
+  }
+  await consumeOtp(db, check.id);
+  await markEmailVerified(db, coach.id, coach.email);
+  res.redirect(303, '/app/schedule?email=done');
+});
 
 coachRouter.post('/app/overflow/:sessionId', requireAuth, async (req, res) => {
   const db = getDb();

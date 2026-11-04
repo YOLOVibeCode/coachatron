@@ -172,35 +172,71 @@ export interface CoachRow {
   handle: string;
   name: string;
   email: string;
+  /** True once a code sent to the email was entered. Only a proved email
+   * signs in by email; one typed during a phone sign-up starts unproved. */
+  email_verified: boolean;
   /** Null for a coach who joined by email and has not added a mobile. */
   phone: string | null;
   tz: string;
   connect_recipient_key: string | null;
 }
 
+const COACH_COLUMNS =
+  'id, handle, name, email, email_verified_at is not null as email_verified, phone, tz, connect_recipient_key';
+
 export function getConnectRecipientKey(coach: Pick<CoachRow, 'handle' | 'connect_recipient_key'>): string {
   return coach.connect_recipient_key ?? coach.handle;
 }
 
 export async function findCoachByPhone(db: DbClient, phone: string): Promise<CoachRow | null> {
-  const result = await db.query<CoachRow>(
-    'select id, handle, name, email, phone, tz, connect_recipient_key from coach where phone = $1',
-    [phone],
-  );
+  const result = await db.query<CoachRow>(`select ${COACH_COLUMNS} from coach where phone = $1`, [phone]);
   return result.rows[0] ?? null;
 }
 
+/** The coach who signs in with this email: only a proved address counts. */
 export async function findCoachByEmail(db: DbClient, email: string): Promise<CoachRow | null> {
   const result = await db.query<CoachRow>(
-    `select id, handle, name, email, phone, tz, connect_recipient_key from coach
-     where email <> '' and lower(email) = lower($1)`,
+    `select ${COACH_COLUMNS} from coach
+     where email <> '' and lower(email) = lower($1) and email_verified_at is not null`,
     [email],
   );
   return result.rows[0] ?? null;
 }
 
+/** Any coach with this email on their account, proved or not. An email
+ * belongs to one coach at a time. */
+export async function findCoachHoldingEmail(db: DbClient, email: string): Promise<CoachRow | null> {
+  const result = await db.query<CoachRow>(`select ${COACH_COLUMNS} from coach where email <> '' and lower(email) = lower($1)`, [
+    email,
+  ]);
+  return result.rows[0] ?? null;
+}
+
+/** What a sign-up form says when its optional email is on another account. */
+export function emailTakenNotice(holder: Pick<CoachRow, 'email_verified'>): string {
+  return holder.email_verified
+    ? 'That email already has an account. Sign in with it instead.'
+    : 'That email is already on another account. Leave it out, or use a different one.';
+}
+
 export async function findCoachByContact(db: DbClient, contact: Contact): Promise<CoachRow | null> {
   return contact.kind === 'email' ? findCoachByEmail(db, contact.email) : findCoachByPhone(db, contact.phone);
+}
+
+/** Someone just proved this email with a code. If it sits unproved on
+ * another account, it comes off that account (which keeps signing in by
+ * text), so the address can go to the person who proved it. */
+export async function releaseUnprovedEmail(db: DbClient, email: string): Promise<void> {
+  await db.query(`update coach set email = '' where email <> '' and lower(email) = lower($1) and email_verified_at is null`, [email]);
+}
+
+/** Marks a coach's email proved, if it is still the one the code went to. */
+export async function markEmailVerified(db: DbClient, coachId: number, email: string): Promise<boolean> {
+  const result = await db.query<{ id: number }>(
+    'update coach set email_verified_at = now() where id = $1 and lower(email) = lower($2) returning id',
+    [coachId, email],
+  );
+  return result.rows.length > 0;
 }
 
 /** Adds a verified mobile to a coach. 'taken' when another coach has it. */
@@ -212,10 +248,7 @@ export async function setCoachPhone(db: DbClient, coachId: number, phone: string
 }
 
 export async function findCoachByHandle(db: DbClient, handle: string): Promise<CoachRow | null> {
-  const result = await db.query<CoachRow>(
-    'select id, handle, name, email, phone, tz, connect_recipient_key from coach where handle = $1',
-    [handle],
-  );
+  const result = await db.query<CoachRow>(`select ${COACH_COLUMNS} from coach where handle = $1`, [handle]);
   return result.rows[0] ?? null;
 }
 
@@ -247,23 +280,28 @@ export interface NewCoachInput {
   name: string;
   email: string;
   tz: string;
+  /** Whether the email was proved with a code. Defaults to true only for a
+   * coach with no phone, who can only have joined with an emailed code. */
+  emailVerified?: boolean;
 }
 
 export async function createCoach(db: DbClient, input: NewCoachInput): Promise<CoachRow> {
   const email = normalizeEmail(input.email) ?? '';
   if (!input.phone && !email) throw new Error('a coach needs a phone or an email');
+  const emailVerified = email !== '' && (input.emailVerified ?? !input.phone);
   const handle = await reserveHandle(db, input.name);
   const result = await db.query<{ id: number }>(
-    `insert into coach (handle, name, email, phone, tz, fee_bps, connect_recipient_key)
-     values ($1, $2, $3, $4, $5, 500, $1)
+    `insert into coach (handle, name, email, phone, tz, fee_bps, connect_recipient_key, email_verified_at)
+     values ($1, $2, $3, $4, $5, 500, $1, case when $6::boolean then now() end)
      returning id`,
-    [handle, input.name, email, input.phone, input.tz],
+    [handle, input.name, email, input.phone, input.tz, emailVerified],
   );
   return {
     id: result.rows[0].id,
     handle,
     name: input.name,
     email,
+    email_verified: emailVerified,
     phone: input.phone,
     tz: input.tz,
     connect_recipient_key: handle,
@@ -271,9 +309,6 @@ export async function createCoach(db: DbClient, input: NewCoachInput): Promise<C
 }
 
 export async function findCoachById(db: DbClient, id: number): Promise<CoachRow | null> {
-  const result = await db.query<CoachRow>(
-    'select id, handle, name, email, phone, tz, connect_recipient_key from coach where id = $1',
-    [id],
-  );
+  const result = await db.query<CoachRow>(`select ${COACH_COLUMNS} from coach where id = $1`, [id]);
   return result.rows[0] ?? null;
 }
