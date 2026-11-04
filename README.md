@@ -218,8 +218,10 @@ public page does not ask the relay on every view.
   try, and keeps one `refund` row per payment, so a second tap sends
   nothing. When the relay answers that it refunded, or
   `marketplace.purchase.refunded` arrives, the booking it bought is marked
-  refunded (its spot is free), the session credits it bought are withdrawn,
-  and the parent is told once, by text with consent and by email they gave.
+  refunded (its spot is free when the session is still to come), the session
+  credits it bought are withdrawn (and held from the moment the coach
+  confirms, so none is used while the refund is on its way), and the parent
+  is told once, by text with consent and by email they gave.
   A refund that fails, or one made outside the app for part of a payment, is
   listed under **Payments to resolve**. Card disputes are recorded and shown
   on Money with what they mean; they change no booking or credit.

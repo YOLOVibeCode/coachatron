@@ -1325,6 +1325,9 @@ Acceptance:
       refunded bookings leave Money's totals, credits are withdrawn (never
       below zero), failures and disputes show on Money
       (`test/refund-events.test.ts`)
+- [x] A purchase's credit is held while its refund is on its way and given
+      back if the refund fails; once refunded, a later cancel gives nothing
+      back to it (`test/refund-credits.test.ts`)
 - [x] The parent is told once, by text with consent and by email they gave
       (`test/refund-notice.test.ts`)
 - [x] SPEC §9.4, PLATFORM §2, README, and the legal drafts describe refunds

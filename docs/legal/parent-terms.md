@@ -158,8 +158,11 @@ choose to give the credit back.
 - **How:** ask the coach. The coach refunds a payment in Coachatron, and it
   goes back to the card you paid with, through Stripe. A refund is for the
   whole payment.
-- **What a refund ends:** the booking the payment was for is cancelled, and
-  the unused session credits it bought are removed. A package or one-time
+- **What a refund ends:** the booking the payment was for is cancelled (or,
+  for a session that already happened, marked refunded), and the unused
+  session credits it bought are removed. From the moment the coach confirms
+  the refund, those credits cannot be booked with; if the refund does not go
+  through, they can be used again. A package or one-time
   pack can be refunded this way only while none of its credits has been
   used; for anything else, the coach or support@coachatron.com can help.
 - **We tell you** when a refund is made: by text if you opted in to texts,

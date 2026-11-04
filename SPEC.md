@@ -407,8 +407,9 @@ out of the coach's Stripe balance and goes back to the card that paid.
   says what the refund changes. No new screen.
 - **Whole payments only.** A refund is the whole payment, and only while
   nothing it bought beyond its own booking has been used: a drop-in any
-  time (or, when the coach cancelled its session, while the credit it
-  became is unused), and a package or one-time pack while none of the
+  time, including one the parent cancelled (or, when the coach cancelled
+  its session, while the credit it became is unused), and a package or
+  one-time pack while none of the
   credits it added has been used. Otherwise the screen says how many
   sessions were used and refunds nothing; a partial refund goes through
   Coachatron support. The relay's route takes an amount, so a partial
@@ -417,10 +418,15 @@ out of the coach's Stripe balance and goes back to the card that paid.
   sends nothing. The relay is called with an idempotency key per payment
   and try: the same key again when its answer never came, a new one only
   after a refund failed.
+- **Held while on its way.** From the moment the coach confirms, the credit
+  the payment bought cannot be used, so nothing more is booked with it
+  while Stripe confirms. A refund that does not go through gives it back.
 - **What a refund does,** once, whether the relay confirms at once or by the
   `marketplace.purchase.refunded` event: the booking it bought is marked
-  refunded and its spot is free again; the session credits it bought are
-  withdrawn (any already used are counted and shown, never below zero); a
+  refunded, and when its session is still to come its spot is free again;
+  the session credits it bought are withdrawn for good (any already used are
+  counted and shown, never below zero, and a booking that used one and is
+  cancelled later gives nothing back); a
   payment under "Payments to resolve" leaves that list; and the parent is
   told once, by text if they chose texts and by email if they gave one.
 - **Refunds made elsewhere.** A refund event for a payment Coachatron did not
