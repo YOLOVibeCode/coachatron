@@ -50,6 +50,17 @@ import { coachNav, html, oneTimeCodeNote, page, raw, smsConsentCheckbox } from '
 import { cancelReach, cancelScheduledSession, dropInCreditNote, previewSessionCancel, type CancelReach } from '../domain/cancelSession.js';
 import { DEFAULT_TZ, formatCoachDollars, formatLocal, formatTimeRange, isValidTimeZone } from '../lib/time.js';
 import { getPackagesForCoach, getPlansForCoach, createPackage, createPlan } from '../domain/pricing.js';
+import {
+  canWaive,
+  CREDIT_WITHDRAWN_SQL,
+  getBookingPolicy,
+  MAX_CANCEL_WINDOW_HOURS,
+  MAX_CHILDREN_PER_BOOKING,
+  parseBookingPolicy,
+  setBookingPolicy,
+  waiveBooking,
+  type BookingPolicy,
+} from '../domain/policy.js';
 import { summarizeMoney } from '../domain/money.js';
 import { describeAttention, listPaymentAttention, type AttentionItem } from '../domain/paymentAttention.js';
 import {
@@ -1404,10 +1415,11 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
   
   // Get bookings for this session
   const bookings = await db.query<SessionBooking>(
-    `select id, athlete_name, status, manage_token, payment_source, gross_cents, charge_id, credit_id
-     from booking 
-     where session_id = $1 
-     order by id`,
+    `select b.id, b.athlete_name, b.status, b.manage_token, b.late_cancel, b.waived_at, b.payment_source, b.gross_cents, b.charge_id,
+            b.credit_id, ${CREDIT_WITHDRAWN_SQL}
+     from booking b
+     where b.session_id = $1
+     order by b.id`,
     [sessionId],
   );
   const refunds = await refundsByPayment(
@@ -1453,9 +1465,18 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
                 return html`<li class="card">
                   <strong>${b.athlete_name}</strong> — 
                   ${b.status === 'booked' ? html`<span>Ready to mark</span>` : 
+                    b.status === 'cancelled' && b.late_cancel ? html`<span class="muted">Cancelled late</span>` :
                     b.status === 'cancelled' ? html`<span class="muted">Cancelled</span>` :
                     b.status === 'refunded' ? html`<span class="muted">Refunded</span>` :
                     html`<span class="${statusClass}">${b.status}</span>`}
+                  ${b.waived_at
+                    ? html`<p class="muted">Credit given back.</p>`
+                    : canWaive(b)
+                      ? html`<form method="post" action="/app/sessions/${sessionId}/bookings/${b.id}/waive">
+                          <p class="muted">The credit was used${b.status === 'noshow' ? ' (no-show)' : ' (cancelled inside your window)'}.</p>
+                          <button type="submit" class="ghost">Give the credit back</button>
+                        </form>`
+                      : raw('')}
                   ${b.status === 'booked' ? html`
                     <form method="post" action="/app/sessions/${sessionId}/bookings/${b.id}/attendance">
                       <label><input type="radio" name="status" value="attended" checked /> Attended</label>
@@ -1483,6 +1504,9 @@ interface SessionBooking {
   athlete_name: string;
   status: string;
   manage_token: string;
+  late_cancel: boolean;
+  waived_at: string | null;
+  credit_withdrawn: boolean;
   payment_source: string | null;
   gross_cents: number | null;
   charge_id: string | null;
@@ -1670,6 +1694,21 @@ coachRouter.post('/app/sessions/:id/bookings/:bookingId/attendance', requireAuth
   res.redirect(303, `/app/sessions/${sessionId}`);
 });
 
+// A no-show or a late cancel uses the booking's credit (SPEC.md §9.5); the
+// coach can give it back, once.
+coachRouter.post('/app/sessions/:id/bookings/:bookingId/waive', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const sessionId = Number(req.params.id);
+  const bookingId = Number(req.params.bookingId);
+  if (!Number.isInteger(sessionId) || !Number.isInteger(bookingId) || !(await loadSessionForCoach(db, coachId, sessionId))) {
+    res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
+    return;
+  }
+  await waiveBooking(db, coachId, sessionId, bookingId);
+  res.redirect(303, `/app/sessions/${sessionId}`);
+});
+
 coachRouter.get('/app/sessions/:id/cancel', requireAuth, async (req, res) => {
   const db = getDb();
   const coachId = res.locals.coachId as number;
@@ -1746,11 +1785,40 @@ coachRouter.post('/app/sessions/:id/cancel', requireAuth, async (req, res) => {
 
 // ---- Screen 5: pricing (packages and plans) ----
 
+/** The booking policy on the Pricing screen (SPEC.md §9.5): what each
+ * rule does now, and a form to change the two numbers. */
+function renderPolicySection(policy: BookingPolicy, error?: string) {
+  const hours = policy.cancelWindowHours;
+  const window = hours === 0 ? 'up to the start' : `more than ${hours} ${hours === 1 ? 'hour' : 'hours'} before a session`;
+  const children = policy.childrenPerBooking;
+  return html`<h2 id="policy">Booking policy</h2>
+    <div class="card policy">
+      <p><strong>No-show:</strong> the booking's credit is used. You can give it back on the session's screen.</p>
+      <p><strong>Cancelling:</strong> a parent who cancels ${window} gets their credit back (a paid drop-in becomes a session credit).${hours === 0
+        ? ''
+        : ` Inside ${hours} ${hours === 1 ? 'hour' : 'hours'} it counts as a no-show, and you can give it back.`}</p>
+      <p><strong>Children:</strong> a parent can book up to ${children} ${children === 1 ? 'child' : 'children'} at once. Each takes a spot and uses a credit or a drop-in.</p>
+      <p class="muted">Card refunds are separate: they go through Coachatron support.</p>
+    </div>
+    <details${error ? raw(' open') : raw('')}>
+      <summary>Change the policy</summary>
+      <form method="post" action="/app/pricing/policy">
+        <label for="cancel_window_hours">Cancellation window (hours before a session)</label>
+        <input id="cancel_window_hours" name="cancel_window_hours" type="number" min="0" max="${MAX_CANCEL_WINDOW_HOURS}" required value="${hours}" />
+        <label for="children_per_booking">Children per booking</label>
+        <input id="children_per_booking" name="children_per_booking" type="number" min="1" max="${MAX_CHILDREN_PER_BOOKING}" required value="${children}" />
+        <button type="submit">Save policy</button>
+      </form>
+      ${error ? html`<p class="error">${error}</p>` : raw('')}
+    </details>`;
+}
+
 coachRouter.get('/app/pricing', requireAuth, async (_req, res) => {
   const db = getDb();
   const coachId = res.locals.coachId as number;
   const packagesList = await getPackagesForCoach(db, coachId);
   const plansList = await getPlansForCoach(db, coachId);
+  const policy = await getBookingPolicy(db, coachId);
 
   res.status(200).send(
     page(
@@ -1798,9 +1866,33 @@ coachRouter.get('/app/pricing', requireAuth, async (_req, res) => {
             <input id="plan_credits" name="credits_per_month" type="number" min="1" required placeholder="e.g. 4" />
             <button type="submit">Create pack</button>
           </form>
-        </details>`,
+        </details>
+        ${renderPolicySection(policy)}`,
     ),
   );
+});
+
+coachRouter.post('/app/pricing/policy', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const policy = parseBookingPolicy(field(req.body, 'cancel_window_hours'), field(req.body, 'children_per_booking'));
+  if (!policy) {
+    res.status(422).send(
+      page(
+        'Pricing',
+        html`${coachNav('pricing')}
+          <h1>Pricing & credits</h1>
+          ${renderPolicySection(
+            await getBookingPolicy(db, coachId),
+            `Use a window of 0 to ${MAX_CANCEL_WINDOW_HOURS} hours and 1 to ${MAX_CHILDREN_PER_BOOKING} children.`,
+          )}
+          <a class="action ghost" href="/app/pricing">Back</a>`,
+      ),
+    );
+    return;
+  }
+  await setBookingPolicy(db, coachId, policy);
+  res.redirect(303, '/app/pricing#policy');
 });
 
 coachRouter.post('/app/pricing/package', requireAuth, async (req, res) => {

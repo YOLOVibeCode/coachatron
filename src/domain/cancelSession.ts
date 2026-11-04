@@ -5,6 +5,7 @@ import { cancelledSessionCreditSource, createCredit, holdCreditForRefund, restor
 import { plain } from './bookingMessages.js';
 import { hasActiveConsent } from './sms-consent.js';
 import { endOverflowForSession } from './cascade.js';
+import { waiveBooking } from './policy.js';
 
 /** A coach's cancel of one session (web and text assistant). Each step can
  * be run again safely, so a cancel that stopped part way finishes on the
@@ -136,14 +137,17 @@ export async function cancelScheduledSession(
         gross_cents: number | null;
         contact_phone: string;
         charge_id: string | null;
+        waived_at: string | null;
       }>(
         `update booking set status = 'cancelled', cancel_notice = 'pending'
          where id = $1 and status in ${LIVE}
-         returning credit_id, payment_source, gross_cents, contact_phone, charge_id`,
+         returning credit_id, payment_source, gross_cents, contact_phone, charge_id, waived_at`,
         [booking.id],
       );
       const b = closed.rows[0];
       if (!b) return;
+      // A credit the coach already gave back is not given twice.
+      if (b.waived_at !== null) return;
       if (b.credit_id !== null) {
         await restoreCredit(tx, b.credit_id);
       } else if (paidDropIn(b)) {
@@ -154,6 +158,15 @@ export async function cancelScheduledSession(
       }
     });
   }
+
+  // A parent who cancelled inside the window used their credit because the
+  // spot was kept for them; the session is not running, so it comes back,
+  // the same way the coach gives one back on the session screen.
+  const late = await db.query<{ id: number }>(
+    'select id from booking where session_id = $1 and status = $2 and late_cancel and waived_at is null order by id',
+    [sessionId, 'cancelled'],
+  );
+  for (const booking of late.rows) await waiveBooking(db, coachId, sessionId, booking.id);
 
   // 3. Tell each parent. Claiming the booking first keeps a second run from
   // texting anyone twice; a failed send is recorded and the loop goes on.

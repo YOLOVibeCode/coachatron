@@ -98,12 +98,13 @@ async function aggregateSessionSlots(db: DbClient, coachId: number, from: Date, 
  * out of the coach's totals; a refund ('refunded') does. */
 export const EARNED_BOOKING_STATUSES = "('booked', 'attended', 'noshow')";
 
-/** A cancelled booking whose payment stayed with the coach as session
- * credit: the coach cancelled the session, before or after the payment
- * came in, and the parent got credit instead. The money reached the
- * coach's account, so it counts as collected. `b` is the booking alias. */
+/** A cancelled booking whose payment stayed with the coach: as session
+ * credit (the coach cancelled the session, before or after the payment
+ * came in, or the parent cancelled before the window), or used, because
+ * the parent cancelled inside the window (SPEC.md §9.5). The money reached
+ * the coach's account, so it counts as collected. `b` is the booking alias. */
 export function keptAsCreditSql(b: string): string {
-  return `(${b}.status = 'cancelled' and ${b}.gross_cents is not null and ${b}.credit_id is not null)`;
+  return `(${b}.status = 'cancelled' and ${b}.gross_cents is not null and (${b}.credit_id is not null or ${b}.late_cancel))`;
 }
 
 /** Counts live bookings (not session slots) on sessions in a window - used

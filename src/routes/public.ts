@@ -57,6 +57,7 @@ import { canText, sendText, type SendOutcome } from '../domain/outbound.js';
 import { paymentsOpen } from '../domain/payments.js';
 import { deliverableEmail, sendBookingConfirmation } from '../domain/bookingMessages.js';
 import { offerOpenSpots } from '../domain/waitlist.js';
+import { CREDIT_WITHDRAWN_SQL, cancelByParent, cancelCutoff, cancelTerms } from '../domain/policy.js';
 import { hasPaymentHeldForCoach } from '../domain/paymentAttention.js';
 import {
   BOOKING_HOLD_MINUTES,
@@ -1285,6 +1286,11 @@ interface BookingWithSession {
   phone_verified_at: string | null;
   status: string;
   credit_id: number | null;
+  payment_source: string | null;
+  gross_cents: number | null;
+  late_cancel: boolean;
+  waived_at: string | null;
+  credit_withdrawn: boolean;
   starts_at_utc: string;
   tz: string;
   location_text: string | null;
@@ -1292,13 +1298,15 @@ interface BookingWithSession {
   coach_id: number;
   coach_handle: string;
   coach_name: string;
+  cancel_window_hours: number;
 }
 
 async function loadBookingByToken(db: DbClient, token: string): Promise<BookingWithSession | null> {
   const result = await db.query<BookingWithSession>(
     `select b.id, b.session_id, b.athlete_name, b.contact_phone, b.contact_email, b.phone_verified_at, b.status, b.credit_id,
+            b.payment_source, b.gross_cents, b.late_cancel, b.waived_at, ${CREDIT_WITHDRAWN_SQL},
             s.starts_at_utc, s.tz, s.location_text, st.name as session_type_name, c.id as coach_id, c.handle as coach_handle,
-            c.name as coach_name
+            c.name as coach_name, c.cancel_window_hours
      from booking b
      join session s on s.id = b.session_id
      join session_type st on st.id = s.session_type_id
@@ -1313,6 +1321,40 @@ async function loadBookingByToken(db: DbClient, token: string): Promise<BookingW
 // directly against "now" - no SET timezone needed for this check.
 function cancellationAllowed(booking: BookingWithSession): boolean {
   return new Date(booking.starts_at_utc) > new Date();
+}
+
+function hoursWord(hours: number): string {
+  return `${hours} ${hours === 1 ? 'hour' : 'hours'}`;
+}
+
+/** What cancelling now does, said before the parent confirms (SPEC.md §9.5). */
+function cancelTermsNote(booking: BookingWithSession) {
+  const terms = cancelTerms(booking, booking.cancel_window_hours);
+  const cutoff = formatLocal(cancelCutoff(booking.starts_at_utc, booking.cancel_window_hours).toISOString(), booking.tz);
+  const until = booking.cancel_window_hours === 0 ? 'before it starts' : `by ${cutoff}`;
+  switch (terms) {
+    case 'returns-credit':
+      return html`<p class="muted cancel-terms">Cancel ${until} and your session credit comes back.</p>`;
+    case 'becomes-credit':
+      return html`<p class="muted cancel-terms">Cancel ${until} and your payment becomes a session credit with ${booking.coach_name}, for another session.</p>`;
+    case 'uses-credit':
+      return html`<p class="error cancel-terms">It's less than ${hoursWord(booking.cancel_window_hours)} before the session, so cancelling now uses this booking's ${
+        booking.credit_id !== null ? 'session credit' : 'payment'
+      }, the same as not showing up. ${booking.coach_name} can choose to give it back.</p>`;
+    default:
+      return raw('');
+  }
+}
+
+/** After a cancel: whether the credit came back. */
+function cancelledNote(booking: BookingWithSession) {
+  if (booking.late_cancel && !booking.waived_at) {
+    return html`<p class="muted">Cancelled inside ${booking.coach_name}'s ${hoursWord(booking.cancel_window_hours)} window, so the credit was used.</p>`;
+  }
+  if (booking.credit_id !== null && !booking.credit_withdrawn) {
+    return html`<p class="muted">Your session credit with ${booking.coach_name} is back.</p>`;
+  }
+  return raw('');
 }
 
 publicRouter.get('/booking/:token', async (req, res) => {
@@ -1336,7 +1378,7 @@ publicRouter.get('/booking/:token', async (req, res) => {
           ${booking.status === 'booked'
             ? html`<span class="good">Confirmed</span>`
             : booking.status === 'cancelled'
-              ? html`<span class="muted">Cancelled</span>`
+              ? html`<span class="muted">Cancelled</span>${cancelledNote(booking)}`
               : booking.status === 'refunded'
                 ? html`<span class="muted">Refunded. The payment went back to your card.</span>`
                 : held
@@ -1348,7 +1390,8 @@ publicRouter.get('/booking/:token', async (req, res) => {
 
         <h2>Action</h2>
         ${booking.status === 'booked' && cancellationAllowed(booking)
-          ? html`<form method="post" action="/booking/${req.params.token}/cancel">
+          ? html`${cancelTermsNote(booking)}
+            <form method="post" action="/booking/${req.params.token}/cancel">
               <button type="submit" class="action">Cancel this booking</button>
             </form>`
           : booking.status === 'cancelled' || booking.status === 'pending' || booking.status === 'refunded'
@@ -1369,7 +1412,11 @@ publicRouter.post('/booking/:token/cancel', async (req, res) => {
     return;
   }
 
-  if (booking.status !== 'cancelled' && !cancellationAllowed(booking)) {
+  // Idempotent: cancelling an already-cancelled booking succeeds without
+  // giving a credit back a second time. Whether the credit comes back is
+  // decided now, by the coach's window (SPEC.md §9.5).
+  const result = await cancelByParent(db, req.params.token);
+  if (result.kind === 'started') {
     res.status(409).send(
       page('Cannot cancel', html`<h1>Session already started</h1>
         <p class="error">This session has already passed and cannot be cancelled.</p>
@@ -1377,22 +1424,8 @@ publicRouter.post('/booking/:token/cancel', async (req, res) => {
     );
     return;
   }
-
-  // Idempotent: cancelling an already-cancelled booking succeeds without
-  // refunding a credit a second time. The WHERE clause only matches (and
-  // only refunds) on the transition that actually happens.
-  const result = await db.query<{ id: number }>(
-    `update booking set status = 'cancelled'
-     where manage_token = $1 and status in ('booked', 'attended', 'noshow')
-     returning id`,
-    [req.params.token],
-  );
-
-  if (result.rows.length > 0 && booking.credit_id) {
-    await restoreCredit(db, booking.credit_id);
-  }
   // The freed spot goes to the waitlist, in order.
-  if (result.rows.length > 0) await offerOpenSpots(db, booking.session_id);
+  if (result.kind === 'cancelled') await offerOpenSpots(db, result.sessionId);
 
   res.redirect(303, `/booking/${req.params.token}`);
 });
