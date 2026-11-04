@@ -65,10 +65,11 @@ a running tick finish, closes the database, and exits; anything still running
 after 10 seconds is cut off, and a database still in use 2 seconds after that
 is left to close on exit. Railway waits 15 seconds before it stops the process
 (`drainingSeconds` in `.railway/railway.ts`). The signal has to reach node
-itself: Railway starts `node dist/server.js` directly (`.railway/railway.ts`),
-and `npm start` runs `exec node dist/server.js`, so the shell npm starts is
-replaced by node rather than left in between to be stopped in its place
-(`test/start-signal.test.ts`).
+itself: `npm start` runs `exec node dist/server.js`, so the shell npm starts
+is replaced by node rather than left in between to be stopped in its place,
+and npm hands the signal to node (`test/start-signal.test.ts`). Once
+`.railway/railway.ts` is applied, Railway starts `node dist/server.js`
+directly; until then it runs `npm start`.
 
 Every response carries `X-Content-Type-Options: nosniff` and refuses to be
 framed; pages behind a private link or a session are not cached
@@ -79,7 +80,9 @@ production (`APP_ENV` other than `production`) every response says
 production it keeps crawlers off the coach's screens and every private link.
 An address nothing answers gets the app's Not found page, and a request the
 app cannot read (too large, a body that does not parse, a bad percent-escape)
-gets its branded error page with one warning line in the log.
+gets its branded error page with one warning line in the log. Any other
+error, the relay refusing a text included, logs its stack once at error level,
+and the visitor gets a branded 500 page that says nothing about it.
 
 ## Status
 

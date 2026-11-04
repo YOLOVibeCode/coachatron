@@ -63,7 +63,7 @@ interface Stopped {
 /** Starts the built server with `npm start`, waits until it listens, sends
  * SIGTERM to the npm process alone (as Railway does to the process it
  * started), and reports how npm exited. */
-async function startThenStop(extraNpmArgs: string[] = []): Promise<Stopped> {
+async function startThenStop(extraNpmArgs: string[]): Promise<Stopped> {
   const [cmd, args] = npmCommand();
   const child = spawn(cmd, [...args, 'start', ...extraNpmArgs], {
     cwd: dir,
@@ -126,23 +126,20 @@ async function startThenStop(extraNpmArgs: string[] = []): Promise<Stopped> {
   }
 }
 
-test('npm start hands SIGTERM to the server, which shuts down cleanly and exits 0', async () => {
-  const stopped = await startThenStop();
-  assert.match(stopped.output, /SIGTERM: finishing requests in flight, then stopping/, stopped.output);
-  assert.equal(stopped.signal, null, stopped.output);
-  assert.equal(stopped.code, 0, stopped.output);
-  assert.equal(stopped.leftBehind, false, 'nothing is left running');
-});
-
-test('the server still gets SIGTERM when npm\'s shell would otherwise stay in between', async () => {
+// npm's default shell (sh, dash, bash or zsh) already replaces itself with
+// a lone command, so a plain `npm start` shut down cleanly without the exec
+// too and would prove nothing. The shell used here stays in between, so the
+// signal reaches the server only because of the exec.
+test('npm start hands SIGTERM to the server, which shuts down cleanly and exits 0, even when npm\'s shell would stay in between', async () => {
   const stopped = await startThenStop(['--script-shell', path.join(dir, 'parent-shell.sh')]);
   assert.match(stopped.output, /SIGTERM: finishing requests in flight, then stopping/, stopped.output);
   assert.doesNotMatch(stopped.output, /signal SIGTERM/, 'npm does not report its child stopped by the signal');
+  assert.equal(stopped.signal, null, stopped.output);
   assert.equal(stopped.code, 0, stopped.output);
   assert.equal(stopped.leftBehind, false, 'the server did not outlive npm');
 });
 
-test('Railway starts node itself, and npm start replaces its shell with node', () => {
+test('the Railway config starts node itself, and npm start replaces its shell with node', () => {
   const start = (JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')) as { scripts: { start: string } }).scripts.start;
   assert.equal(start, 'exec node dist/server.js');
   assert.match(readFileSync(path.join(root, '.railway/railway.ts'), 'utf8'), /^\s+start: "node dist\/server\.js",$/m);
