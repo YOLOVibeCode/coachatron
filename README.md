@@ -47,6 +47,18 @@ npm run build      # compile to dist/
 npm run dev        # start the server on http://localhost:3000
 ```
 
+`npm test` is `scripts/run-tests.mjs`: `node --import tsx --test` over
+`test/*.test.ts` and `test/pg/*.test.ts`, with one addition for a Node 24 bug
+(nodejs/node#66366) that PGlite's WebAssembly sometimes hits. On Node 24 it
+turns off V8's WebAssembly code GC. If V8 still aborts a test file's process
+partway through, and no failure was reported before the crash, it runs that
+whole file once more, says so, and the rerun must pass. A crash cuts off
+results the runner had not received yet, so each test file's process also
+writes its failures to disk as they happen (`scripts/test-failure-recorder.mjs`),
+and a file with one there is not rerun. A failed test, any other crash, or a
+second crash fails the run. To run one file:
+`node --import tsx --test test/tick.test.ts`.
+
 End-to-end test: `test/north-star.test.ts` runs in `npm test` and follows one
 coach from a texted week to a parent's paid booking through the real routes
 (text in, start link, preview, Publish, the texted page and payments links,
