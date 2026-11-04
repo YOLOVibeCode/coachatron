@@ -17,7 +17,7 @@ jobs:
   ci:
     name: CI
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
         with:
@@ -54,7 +54,7 @@ jobs:
   next-node:
     name: Next Node (${{ matrix.node }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     continue-on-error: true
     strategy:
       fail-fast: false
