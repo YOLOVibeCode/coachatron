@@ -7,11 +7,11 @@ import { normalizeEmail } from './auth.js';
 import { OPT_OUT_LINE, canText, sendEmailMessage, sendText, toOneSegment, type OutboundText, type SendOutcome } from './outbound.js';
 import { hasActiveConsent } from './sms-consent.js';
 
-/** What a parent is told about their own booking: that it is booked, that
- * a payment for a cancelled session became credit, or that a payment was
- * refunded. Texts go only to a phone with SMS consent, and email only to an
- * address the parent typed. A failed send is logged and never undoes the
- * booking. */
+/** What a parent is told about their own booking: that it is booked or
+ * moved, that a payment for a cancelled session became credit, or that a
+ * payment was refunded. Texts go only to a phone with SMS consent, and email
+ * only to an address the parent typed. A failed send is logged and never
+ * undoes the booking. */
 
 export type MessageOutcome = SendOutcome | 'skipped' | 'failed';
 
@@ -143,32 +143,41 @@ function emailHtml(paragraphs: string[], link: string, linkLabel: string): strin
 <p style="font-family:system-ui,sans-serif;font-size:16px"><a href="${escapeHtml(link)}">${escapeHtml(linkLabel)}</a></p>`;
 }
 
-/** Sent when a booking becomes booked, by any way of paying: what, when,
- * where, and the manage link. A booking nobody paid for (a free session)
- * was set off by a form anyone can fill in, so its text to a number never
- * texted before counts against the app-wide visitor ceiling. */
-export async function sendBookingConfirmation(db: DbClient, bookingId: number): Promise<ParentMessageResult> {
+/** Sent when a booking becomes booked, by any way of paying, or when the
+ * parent moves it to another session (`movedFrom`, the time it left): what,
+ * when, where, and the manage link. A booking nobody paid for (a free
+ * session) was set off by a form anyone can fill in, so its text to a
+ * number never texted before counts against the app-wide visitor ceiling. */
+export async function sendBookingConfirmation(
+  db: DbClient,
+  bookingId: number,
+  opts: { movedFrom?: string | Date } = {},
+): Promise<ParentMessageResult> {
   const d = await loadDetails(db, bookingId);
   if (!d) return { text: 'skipped', email: 'skipped' };
   const { when, place, athlete } = describe(d);
   const link = manageUrl(d.manage_token);
+  const moved = opts.movedFrom === undefined ? null : formatConfirmWhen(new Date(opts.movedFrom).toISOString(), d.tz);
+  const template = moved ? 'booking-moved' : 'booking-confirmation';
   const text = await textParent(
     db,
     d,
-    textWithLink(`Coachatron: ${athlete} is booked: ${d.session_name} ${shortWhen(when)}${place}.`, link),
-    'booking-confirmation',
+    textWithLink(`Coachatron: ${athlete} ${moved ? 'moved to' : 'is booked:'} ${d.session_name} ${shortWhen(when)}${place}.`, link),
+    template,
     d.charge_id ? undefined : 'new-number',
   );
-  const line = `${d.athlete_name} is booked for ${d.session_name} with ${d.coach_name}: ${when}${place}.`;
+  const line = moved
+    ? `${d.athlete_name}'s ${d.session_name} with ${d.coach_name} moved from ${moved} to ${when}${place}.`
+    : `${d.athlete_name} is booked for ${d.session_name} with ${d.coach_name}: ${when}${place}.`;
   const email = await emailParent(
     db,
     d,
     {
-      subject: `Booked: ${d.session_name}, ${when}`,
-      text: `${line}\n\nSee or cancel this booking: ${link}\n\nCoachatron`,
-      html: emailHtml([line, 'See or cancel this booking here:'], link, 'Manage this booking'),
+      subject: `${moved ? 'Moved' : 'Booked'}: ${d.session_name}, ${when}`,
+      text: `${line}\n\nSee, move or cancel this booking: ${link}\n\nCoachatron`,
+      html: emailHtml([line, 'See, move or cancel this booking here:'], link, 'Manage this booking'),
     },
-    'booking-confirmation',
+    template,
   );
   return { text, email };
 }

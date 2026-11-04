@@ -231,6 +231,21 @@ SPEC.md §8.1.
 - **Confirmations.** A booked parent gets one confirmation with the manage
   link: a text when they ticked the texts box, an email when they gave an
   address. The page they return to after paying shows the link as well.
+- **Moving a booking** *(2026-11-04, SPEC.md §7.2;
+  `src/domain/moveBooking.ts`)*. Until the coach's cancellation window
+  closes, `/booking/:token` lists the other upcoming sessions of the same
+  session type with room, and `POST /booking/:token/move` moves the booking.
+  Both sessions are locked in id order (`lockSession`), then the booking
+  rows, and room is counted as a booking counts it (`countTakenSpots`,
+  `countKeptForWaitlist`). Only `booking.session_id` changes: the manage
+  link, payment and credit stay, and nothing goes to the relay but the
+  confirmation (template `booking-moved`). The bookings carrying one payment
+  in the session (`booking.charge_id`), the set a refund of it covers, move
+  together; a booking whose refund is `requested` or `pending`, or whose
+  payment's other bookings are not all booked, does not move. Each move is a
+  `booking_move` row (migration 0031), shown on Session detail of both
+  sessions; the booking's `reminder_sent` row is cleared so the new time
+  gets its 24-hour reminder, and the freed spot is offered to the waitlist.
 - **A coach's cancel** returns a credit for every paid booking, including a
   paid drop-in, which becomes one session credit with the coach with no
   expiry. Each step can run again, so a cancel that stopped part way

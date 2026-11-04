@@ -202,6 +202,25 @@ one-field-per-screen.
    the coach's cancellation window, §9.5). *(Implemented 2026-11-03: a text
    when the parent chose texts, an email when they gave an address, and the
    manage link on the page they return to after paying.)*
+   *(Reschedule implemented 2026-11-04: until the coach's window closes, the
+   manage page lists the other upcoming sessions of the same session type
+   with room, and the parent moves the booking to one of them. The booking
+   keeps its manage link and its payment or credit: nothing is charged,
+   refunded or drawn, and a later cancel follows the window from the new
+   time. Room is counted the way a booking counts it, under the same session
+   locks (both sessions', in id order), after the people waiting there, who
+   keep their first claim; the spot the booking leaves goes to that
+   session's waitlist in order. The children one payment paid for move
+   together, so a refund of it still covers each of them (§9.4); children
+   who each used their own credit move one at a time. A booking does not
+   move once it is refunded or cancelled, while a refund of its payment is on
+   its way, or when a child its payment also paid for is no longer booked.
+   The parent gets the confirmation again with the new time (a text with
+   their consent, an email to an address they gave), the 24-hour reminder
+   follows the new time, and the coach sees the move on Session detail of
+   both sessions, where a parent's cancel shows too. Inside the window the
+   page says why the booking cannot move and keeps the cancel the policy
+   allows. These are states of screen 11, not a new screen.)*
 
 ### 7.3 Capacity overflow — the differentiating flow
 
@@ -644,7 +663,7 @@ message_log(id, to_phone, template, body, provider_id, sent_at, status)
 `credit.contact_phone` is the join key for a buyer, by design (§9.2). Normalize
 to E.164 on write.
 
-Added since the sketch (migrations 0013–0030): `request_limit` (fixed-window
+Added since the sketch (migrations 0013–0031): `request_limit` (fixed-window
 counts per client address, phone, or email) and `otp_code.attempts`;
 `coach.email_verified_at`; `coach_payments` (whether the coach can take
 charges, and the payment texts owed) and `payments_link`;
@@ -675,6 +694,8 @@ reads), and records a plan purchase as payment source `Pack` with no
 app-wide visitor ceiling; such a text is logged `reserved` before it goes,
 and counts from then on), and 0030 `coach_payments.test_mode` (whether the
 coach's payment account is a test one; production takes only live ones).
+Migration 0031 adds `booking_move` (each move a parent made from a manage
+link: the booking, the session it left and the one it joined).
 
 Two column names predate the move to Stripe and were kept: `square_merchant_id`
 is unused (a coach reaches their Stripe account through

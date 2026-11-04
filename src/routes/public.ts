@@ -69,6 +69,7 @@ import {
   MAX_CHILDREN_PER_BOOKING,
 } from '../domain/policy.js';
 import { hasPaymentHeldForCoach } from '../domain/paymentAttention.js';
+import { moveByParent, moveChoice, type MoveChoice, type MoveState } from '../domain/moveBooking.js';
 import {
   BOOKING_HOLD_MINUTES,
   OTP_DAILY_MAX_PER_CONTACT,
@@ -1566,6 +1567,55 @@ function cancelledNote(booking: BookingWithSession) {
   return raw('');
 }
 
+/** Why a booking cannot move, in the parent's words. */
+function cannotMoveNote(booking: BookingWithSession, state: Exclude<MoveState, 'open'>, together: string[]): string {
+  switch (state) {
+    case 'too-late':
+      return !cancellationAllowed(booking) || booking.cancel_window_hours === 0
+        ? "This session has already started, so this booking can't move."
+        : `Bookings can move until ${hoursWord(booking.cancel_window_hours)} before the session, so this one can't move now.`;
+    case 'refund-pending':
+      return "A refund of this booking's payment is on its way, so it can't move.";
+    case 'paid-together': {
+      const others = together.filter((name) => name !== booking.athlete_name);
+      return `This booking was paid for together with ${namesList(others.length > 0 ? others : together)}'s, and not all of them are still booked for this session, so it can't move.`;
+    }
+    default:
+      return booking.status === 'refunded'
+        ? "This booking was refunded, so it can't move."
+        : booking.status === 'cancelled'
+          ? "This booking was cancelled, so it can't move."
+          : "Only a confirmed booking for a session still to come can move.";
+  }
+}
+
+/** Screen 11's move state (SPEC.md §7.2): the other sessions of the same
+ * kind with room, each a button, or why this booking cannot move now. */
+function moveSection(token: string, booking: BookingWithSession, move: MoveChoice | null) {
+  if (!move || move.state === 'not-booked') return raw('');
+  if (move.state !== 'open') return html`<p class="muted move-terms">${cannotMoveNote(booking, move.state, move.together)}</p>`;
+  const cutoff = formatLocal(cancelCutoff(booking.starts_at_utc, booking.cancel_window_hours).toISOString(), booking.tz);
+  const until = booking.cancel_window_hours === 0 ? 'until it starts' : `until ${cutoff}`;
+  const keeps =
+    booking.credit_id !== null
+      ? ' The session credit it used moves with it.'
+      : (booking.gross_cents ?? 0) > 0
+        ? ' Your payment moves with it: nothing more is charged or refunded.'
+        : '';
+  return html`<p class="muted move-terms">You can move this booking to another ${booking.session_type_name} session ${until}.${keeps}</p>
+    ${move.together.length > 1
+      ? html`<p class="muted">${namesList(move.together)} were paid for together, so they move together.</p>`
+      : raw('')}
+    ${move.sessions.length === 0
+      ? html`<p class="muted">No other ${booking.session_type_name} session has room right now.</p>`
+      : move.sessions.map(
+          (s) => html`<form method="post" action="/booking/${token}/move">
+            <input type="hidden" name="session_id" value="${s.id}" />
+            <button type="submit" class="ghost">Move to ${formatLocal(s.starts_at_utc, s.tz)}${s.location_text ? ` · ${s.location_text}` : ''}</button>
+          </form>`,
+        )}`;
+}
+
 publicRouter.get('/booking/:token', async (req, res) => {
   const db = getDb();
   const booking = await loadBookingByToken(db, req.params.token);
@@ -1574,12 +1624,15 @@ publicRouter.get('/booking/:token', async (req, res) => {
     return;
   }
   const held = booking.status === 'pending' && (await hasPaymentHeldForCoach(db, booking.id));
+  const move = booking.status === 'booked' && cancellationAllowed(booking) ? await moveChoice(db, req.params.token) : null;
+  const moved = req.query.moved === '1' && booking.status === 'booked';
 
   res.status(200).send(
     page(
       'Manage booking',
       html`<h1>${booking.session_type_name}</h1>
         <p class="muted">${formatLocal(booking.starts_at_utc, booking.tz)}${booking.location_text ? ` · ${booking.location_text}` : ''}</p>
+        ${moved ? html`<p class="good">Moved. This is ${booking.athlete_name}'s session now.</p>` : raw('')}
 
         <p class="card">
           <strong>Athlete:</strong> ${booking.athlete_name}<br />
@@ -1598,6 +1651,7 @@ publicRouter.get('/booking/:token', async (req, res) => {
         </p>
 
         <h2>Action</h2>
+        ${moveSection(req.params.token, booking, move)}
         ${booking.status === 'booked' && cancellationAllowed(booking)
           ? html`${cancelTermsNote(booking)}
             <form method="post" action="/booking/${req.params.token}/cancel">
@@ -1637,4 +1691,60 @@ publicRouter.post('/booking/:token/cancel', async (req, res) => {
   if (result.kind === 'cancelled') await offerOpenSpots(db, result.sessionId);
 
   res.redirect(303, `/booking/${req.params.token}`);
+});
+
+/** A move the booking could not make, on screen 11 in its move state. */
+function renderCannotMove(token: string, heading: string, text: string) {
+  return page(
+    'Cannot move',
+    html`<h1>${heading}</h1>
+      <p class="error">${text}</p>
+      <a class="action" href="/booking/${token}">Back to booking detail</a>`,
+  );
+}
+
+publicRouter.post('/booking/:token/move', async (req, res) => {
+  const db = getDb();
+  const token = req.params.token;
+  const booking = await loadBookingByToken(db, token);
+  if (!booking) {
+    res.status(404).send(notFound());
+    return;
+  }
+  const sessionId = rowId(field(req.body, 'session_id'));
+  if (sessionId === null) {
+    res.status(422).send(renderCannotMove(token, 'Choose a session', 'Choose the session to move this booking to.'));
+    return;
+  }
+
+  // The move is decided under both sessions' locks, by the coach's window
+  // (SPEC.md §9.5) and the room left after the waitlist's first claim.
+  const result = await moveByParent(db, token, sessionId);
+  switch (result.kind) {
+    case 'moved':
+      // Each child moved gets the usual confirmation, with the new time.
+      for (const id of result.bookingIds) await sendBookingConfirmation(db, id, { movedFrom: booking.starts_at_utc });
+      // The freed spot goes to the waitlist, in order, as after a cancel.
+      await offerOpenSpots(db, result.fromSessionId);
+      void checkOverflow(db, result.toSessionId);
+      res.redirect(303, `/booking/${token}?moved=1`);
+      return;
+    case 'already':
+      res.redirect(303, `/booking/${token}`);
+      return;
+    case 'not-found':
+      res.status(404).send(notFound());
+      return;
+    case 'full':
+      res
+        .status(409)
+        .send(renderCannotMove(token, 'That session is full', 'Someone took the last spot first. Pick another time from your booking.'));
+      return;
+    case 'no-session':
+      res.status(409).send(renderCannotMove(token, 'That session is not open', 'Pick another time from your booking.'));
+      return;
+    case 'cannot':
+      res.status(409).send(renderCannotMove(token, 'Cannot move', cannotMoveNote(booking, result.state, result.together)));
+      return;
+  }
 });

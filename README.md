@@ -136,7 +136,7 @@ The twelve screens of Coachatron (Slice 1):
 | 8 | Public page | `/c/:handle` | Athlete |
 | 9 | Booking form | `/c/:handle/sessions/:sessionId/book`, `/c/:handle/sessions/:sessionId/waitlist` | Athlete |
 | 10 | Checkout | `/c/:handle/checkout/:token` | Athlete |
-| 11 | Manage booking | `/booking/:token`, `/booking/:token/cancel` | Athlete |
+| 11 | Manage booking (and moving a booking) | `/booking/:token`, `/booking/:token/move`, `/booking/:token/cancel` | Athlete |
 | 12 | Offer response (and a roster member's opt-in link) | `/offer/:token` | Assistant coach |
 
 All routes are server-rendered HTML. No SPA.
@@ -248,6 +248,13 @@ before.
 - **Confirmations.** A booked parent gets a confirmation with the manage
   link, by text when they ticked the texts box and by email when they gave an
   address; the page they return to after paying shows the link too.
+- **Moving a booking.** Until the coach's cancellation window closes, the
+  manage page offers the other upcoming sessions of the same session type
+  that have room, after the people waiting there, and the parent moves the
+  booking to one. Its payment or credit stays as it is: nothing is charged,
+  refunded or drawn. The children one payment paid for move together. The
+  parent gets the confirmation with the new time, the freed spot goes to the
+  waitlist, and Session detail shows the move on both sessions.
 - **A coach's cancel** returns a credit for every paid booking: a package or
   pack credit comes back, keeping the expiry it had, and a paid drop-in
   becomes one session credit with the coach, with no expiry. Each parent who

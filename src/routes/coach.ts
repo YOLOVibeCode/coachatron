@@ -1496,6 +1496,7 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
      order by b.id`,
     [sessionId],
   );
+  const moves = await sessionMoves(db, sessionId);
   const refunds = await refundsByPayment(
     db,
     bookings.rows.flatMap((b) => (b.charge_id ? [b.charge_id] : [])),
@@ -1531,7 +1532,7 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
         ${reach ? renderCancelReach(reach) : raw('')}
         
         <h2>Booked (${bookings.rows.filter((b) => b.status === 'booked').length})</h2>
-        ${bookings.rows.length === 0
+        ${bookings.rows.length === 0 && moves.out.length === 0
           ? html`<p class="muted">No bookings yet.</p>`
           : html`<ul>
               ${bookings.rows.map((b) => {
@@ -1543,6 +1544,7 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
                     b.status === 'cancelled' ? html`<span class="muted">Cancelled</span>` :
                     b.status === 'refunded' ? html`<span class="muted">Refunded</span>` :
                     html`<span class="${statusClass}">${b.status}</span>`}
+                  ${movedHereNote(moves.into.get(b.id))}
                   ${b.waived_at
                     ? html`<p class="muted">Credit given back.</p>`
                     : canWaive(b)
@@ -1561,6 +1563,11 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
                   ${renderBookingPayment(b, refunds, refundable.get(b.id) ?? null, `/app/sessions/${sessionId}?refund=${b.id}#refund`)}
                 </li>`;
               })}
+              ${moves.out.map(
+                (m) => html`<li class="card">
+                  <strong>${m.athlete_name}</strong> — <span class="muted">Moved to ${formatLocal(m.starts_at_utc, m.tz)}</span>
+                </li>`,
+              )}
             </ul>`}
         
         <h2>Action</h2>
@@ -1572,6 +1579,38 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
     ),
   );
 });
+
+interface MoveRow {
+  booking_id: number;
+  athlete_name: string;
+  starts_at_utc: string;
+  tz: string;
+}
+
+/** Bookings a parent moved out of this session from their manage page, with
+ * the time each went to, and where each booking moved into it came from
+ * (SPEC.md §7.2). Screen 3 lists them the way it lists a parent's cancel. */
+async function sessionMoves(db: DbClient, sessionId: number): Promise<{ out: MoveRow[]; into: Map<number, MoveRow> }> {
+  const out = await db.query<MoveRow>(
+    `select m.booking_id, b.athlete_name, t.starts_at_utc, t.tz
+     from booking_move m join booking b on b.id = m.booking_id join session t on t.id = m.to_session_id
+     where m.from_session_id = $1
+     order by m.id`,
+    [sessionId],
+  );
+  const into = await db.query<MoveRow>(
+    `select distinct on (m.booking_id) m.booking_id, b.athlete_name, f.starts_at_utc, f.tz
+     from booking_move m join booking b on b.id = m.booking_id join session f on f.id = m.from_session_id
+     where m.to_session_id = $1
+     order by m.booking_id, m.id desc`,
+    [sessionId],
+  );
+  return { out: out.rows, into: new Map(into.rows.map((r) => [r.booking_id, r])) };
+}
+
+function movedHereNote(from: MoveRow | undefined) {
+  return from ? html`<p class="muted">Moved here by the parent from ${formatLocal(from.starts_at_utc, from.tz)}.</p>` : raw('');
+}
 
 interface SessionBooking {
   id: number;
