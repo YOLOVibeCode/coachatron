@@ -18,9 +18,15 @@ export const REMINDER_MAX_FAILURES = 5;
 /** Texts each booked athlete once, inside 24h of the session and outside
  * quiet hours. A session too early in the morning for the 24h mark is
  * reminded at 8am the day before instead. A reminder is claimed before it
- * is sent, so it never goes twice; a send the relay fails or turns away as
- * busy gives the claim back for the next tick, and the next athlete is
- * still reminded this tick. */
+ * is sent, so two ticks never send it together; a send the relay fails,
+ * cannot be reached for, or turns away as busy gives the claim back for the
+ * next tick, and the next athlete is still reminded this tick.
+ *
+ * At least once, not exactly once: the relay's /sms/send takes no
+ * idempotency key, and it can answer 502 after Twilio has taken the text,
+ * so in that rare case a parent gets the reminder twice. A missed reminder
+ * costs more than a repeated one. Each failure is logged, and after
+ * REMINDER_MAX_FAILURES in a day a number is not tried again. */
 export async function sendDueReminders(db: DbClient, now: Date): Promise<number> {
   const due = await db.query<{
     booking_id: number;

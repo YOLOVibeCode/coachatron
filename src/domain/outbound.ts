@@ -1,5 +1,5 @@
 import type { DbClient } from '../db/client.js';
-import { sendSms } from '../relay/sms.js';
+import { sendSms, type SendSmsResult } from '../relay/sms.js';
 import { sendEmail } from '../relay/email.js';
 import { RelayHttpError } from '../relay/http.js';
 import { zonedParts, zonedTimeToUtc } from './scheduling.js';
@@ -173,12 +173,15 @@ export function composeText(body: string, template: string): string {
 
 /** True when this body goes out whole as one segment, with nothing cut to
  * make room for the brand or the opt-out line. Texts that carry a link use
- * it to pick a shorter wording instead of losing the end of the link. */
+ * it to pick a shorter wording instead of losing the end of the link, and
+ * the assistant's questions to keep their "Reply Y." */
 export function fitsOneSegment(body: string, template: string): boolean {
   const branded = withBrand(body.trim());
   const reserve = NO_OPT_OUT_LINE_TEMPLATES.has(template) || /\bSTOP\b/.test(branded) ? 0 : OPT_OUT_LINE.length + 1;
-  const length = gsmLength(plainText(branded));
-  return length !== null && length + reserve <= GSM_SEGMENT;
+  const text = plainText(branded);
+  const length = gsmLength(text);
+  if (length !== null) return length + reserve <= GSM_SEGMENT;
+  return text.length + reserve <= UCS2_SEGMENT;
 }
 
 type Channel = 'sms' | 'email';
@@ -268,7 +271,15 @@ export async function sendText(db: DbClient, msg: OutboundText, now: Date = new 
     console.warn(`sms: ${hit} ceiling reached, not sending ${msg.template} (coach ${msg.coachId ?? '-'})`);
     return 'capped';
   }
-  const sent = await sendSms({ to: msg.to, body });
+  let sent: SendSmsResult;
+  try {
+    sent = await sendSms({ to: msg.to, body });
+  } catch (err) {
+    // The relay was not reached. Logged like any failed send, so a limit
+    // on failures (reminders) counts it.
+    await log(db, msg, body, 'failed', null, now);
+    throw err;
+  }
   if (sent.ok) {
     await log(db, msg, body, 'sent', sent.id, now);
     return 'sent';

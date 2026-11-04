@@ -16,7 +16,7 @@ import {
 } from '../llm/schema.js';
 import { clipSms, formatConfirmWhen, isValidInstant } from '../lib/time.js';
 import { cancelScheduledSession, dropInCreditNote, previewSessionCancel } from './cancelSession.js';
-import { sendText } from './outbound.js';
+import { fitsOneSegment, sendText } from './outbound.js';
 import {
   consumePending,
   createPending,
@@ -462,13 +462,20 @@ function athleteBroadcastBody(session: SessionBrief, classified: ClassifiedInten
   return clipSms(`Coachatron: ${session.name} on ${when} has an update from your coach.`);
 }
 
-/** A question that ends "Reply Y." whatever is cut: the overlap note gives
- * way first, then the start of the question. */
-function confirmQuestion(question: string, note: string | null): string {
+/** A question that still ends "Reply Y." once it is sent: the brand goes in
+ * front and the text is fitted to one segment (`composeText`), so it is
+ * measured that way. The overlap note gives way first, then the end of the
+ * question. The schedule screen shows the same words. */
+function confirmQuestion(question: string, note: string | null = null): string {
   const tail = ' Reply Y.';
-  if (note && question.length + note.length + tail.length <= 160) return `${question}${note}${tail}`;
+  const fits = (text: string) => fitsOneSegment(text, 'assistant');
+  if (note && fits(`${question}${note}${tail}`)) return `${question}${note}${tail}`;
   const shortNote = note ? ' Overlaps another session.' : '';
-  return `${clipSms(question, 160 - shortNote.length - tail.length)}${shortNote}${tail}`;
+  let text = `${question}${shortNote}${tail}`;
+  for (let max = question.length - 1; max > 1 && !fits(text); max -= 1) {
+    text = `${clipSms(question, max)}${shortNote}${tail}`;
+  }
+  return text;
 }
 
 async function renderConfirm(
@@ -493,7 +500,7 @@ async function renderConfirm(
         : preview.textable === preview.total
           ? `${athletes}, all will be texted.`
           : `${athletes}, ${preview.textable} can be texted.`;
-    return clipSms(`Cancel ${when}, ${session.durationMin}-min ${session.name}? ${who} Reply Y.`);
+    return confirmQuestion(`Cancel ${when}, ${session.durationMin}-min ${session.name}? ${who}`);
   }
   if (classified.intent === 'session.add') {
     const type = types.find((t) => t.id === classified.session_type_id);
@@ -513,13 +520,13 @@ async function renderConfirm(
     const session = sessionById(sessions, classified.session_id);
     if (!session) return null;
     const body = athleteBroadcastBody(session, classified);
-    return clipSms(`Text ${session.booked} athletes: "${body}" Reply Y.`);
+    return confirmQuestion(`Text ${session.booked} athletes: "${body}"`);
   }
   if (classified.intent === 'roster.offer') {
     const session = sessionById(sessions, classified.session_id);
     if (!session) return null;
     const when = formatConfirmWhen(session.startsAtUtc, session.tz);
-    return clipSms(`Ask your roster for a backup coach for ${when} ${session.name}? Reply Y.`);
+    return confirmQuestion(`Ask your roster for a backup coach for ${when} ${session.name}?`);
   }
   return null;
 }

@@ -512,9 +512,14 @@ When the relay's own caps answer 429, the send path returns `busy` and the
 page asks to try again later. *(Added 2026-11-04: a letter outside GSM-7
 whose plain form is inside it, as in "García", is written plain, so a name
 never turns a text into UCS-2 and cuts it to 70 characters; the HELP reply
-is one segment too. A reminder the relay fails or turns away as busy is
-tried again on later ticks, up to 5 failures a number a day, and never
-holds up the other reminders.)*
+is one segment too. A reminder the relay fails, cannot be reached for, or
+turns away as busy is tried again on later ticks, up to 5 failures a number
+a day, and never holds up the other reminders. That makes a reminder at
+least once, not exactly once: `/sms/send` takes no idempotency key, and the
+relay can answer 502 after Twilio has taken the text, so in that case the
+parent gets it twice. A missed reminder was judged to cost more. An
+idempotency key on `/sms/send` (SPEC.md §11, "every SMS send carries an
+idempotency key") would make it exactly once; that is a relay change.)*
 
 The full assistant fits inside those ceilings. Scheduling by text, setting a
 session up, asking before a change, confirmations, reminders, and the overflow

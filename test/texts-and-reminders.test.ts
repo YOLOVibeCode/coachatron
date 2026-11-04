@@ -93,3 +93,28 @@ test('a reminder the relay fails to send is sent on a later tick, and the others
     assert.equal(Number(tries.rows[0].n), REMINDER_MAX_FAILURES, 'a number that keeps failing is tried a fixed number of times');
   });
 });
+
+test('a reminder the relay cannot be reached for is logged, and tried only up to the same limit', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 4 });
+    await pinSession(db, seed.sessionId, new Date(MORNING.getTime() + 23 * 60 * 60 * 1000));
+    await seedBookedSession(db, seed.sessionId, 'Sam Reyes', '+15550000001');
+    const relayUrl = process.env.RELAY_BASE_URL;
+    process.env.RELAY_BASE_URL = 'http://127.0.0.1:1'; // nothing listens there
+    try {
+      for (let minute = 0; minute <= REMINDER_MAX_FAILURES + 2; minute += 1) {
+        await runTick(db, new Date(MORNING.getTime() + minute * 60_000));
+      }
+    } finally {
+      process.env.RELAY_BASE_URL = relayUrl;
+    }
+    const tries = await db.query<{ n: string }>(
+      "select count(*)::text as n from message_log where to_phone = '+15550000001' and template = 'reminder' and status = 'failed'",
+    );
+    assert.equal(Number(tries.rows[0].n), REMINDER_MAX_FAILURES);
+    const claimed = await db.query<{ n: string }>('select count(*)::text as n from reminder_sent');
+    assert.equal(claimed.rows[0].n, '0', 'not marked as sent');
+    assert.equal(relay.sms.length, 0);
+  });
+});

@@ -13,6 +13,7 @@ import { checkOverflow } from '../src/domain/cascade.js';
 import { APP_BASE_URL } from '../src/config.js';
 import type { ClassifiedIntent } from '../src/llm/schema.js';
 import { postSignedSms } from './helpers/sms-webhook.js';
+import { composeText, segmentCount } from '../src/domain/outbound.js';
 
 async function smsTo(base: string, from: string, body: string): Promise<Response> {
   return postSignedSms(base, { From: from, Body: body });
@@ -596,6 +597,61 @@ test('an add that overlaps another session says so in the question, and a Y afte
       assert.equal(late.kind, 'done');
       assert.equal(late.text, 'That time has already passed.');
       assert.equal(await countSessions(db, seed.sessionTypeId), 2);
+    } finally {
+      resetComplete();
+    }
+  });
+});
+
+test('a long add question still ends "Reply Y." once the brand is put in front and it is fitted to one text', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db);
+    const existing = tomorrowAt(seed.coach.tz, 18, 0);
+    await pinSession(db, seed.sessionId, existing);
+    const overlapping = new Date(existing.getTime() + 30 * 60_000).toISOString();
+    const clear = tomorrowAt(seed.coach.tz, 9, 0).toISOString();
+    try {
+      // Places from short to long, so the question passes every length near
+      // one segment, with and without the overlap note.
+      for (const when of [clear, overlapping]) {
+        for (let n = 30; n <= 130; n += 2) {
+          // Each question is one model call; keep under the daily cap.
+          await db.query('delete from assistant_model_call');
+          const location = `the far field by the ${'l'.repeat(n - 26)}ake path`;
+          setComplete(fakeComplete(addIntent(seed.sessionTypeId, when, { location })));
+          const ask = await handleCoachMessage(db, seed.coach, 'add a group there', 'sms');
+          assert.equal(ask.kind, 'confirm', `${n}`);
+          const sent = composeText(ask.text, 'assistant');
+          assert.equal(segmentCount(sent), 1, `${n}: ${sent.length} characters`);
+          assert.match(sent, /^Coachatron: Add 60-min Goalkeeper Group /);
+          assert.match(sent, / Reply Y\.$/, `${n}: ${sent}`);
+          if (when === overlapping) assert.match(sent, /Overlaps (Goalkeeper Group at 6:00pm|another session)\. Reply Y\.$/);
+          assert.equal((await handleCoachMessage(db, seed.coach, 'N', 'sms')).kind, 'dropped');
+        }
+      }
+
+      // A place written in letters outside GSM-7 makes the text UCS-2, 70
+      // characters; the question still ends "Reply Y."
+      await db.query('delete from assistant_model_call');
+      setComplete(fakeComplete(addIntent(seed.sessionTypeId, clear, { location: '体育场 north field, the one past the gate' })));
+      const wide = await handleCoachMessage(db, seed.coach, 'add a group there', 'sms');
+      const wideSent = composeText(wide.text, 'assistant');
+      assert.equal(segmentCount(wideSent), 1, wideSent);
+      assert.match(wideSent, / Reply Y\.$/);
+      await handleCoachMessage(db, seed.coach, 'N', 'sms');
+
+      // The same, end to end: the text the coach gets.
+      await db.query('delete from assistant_model_call');
+      setComplete(fakeComplete(addIntent(seed.sessionTypeId, overlapping, { location: `the far field by the ${'l'.repeat(100)}ake` })));
+      await withServer(async (base) => {
+        const res = await smsTo(base, seed.coach.phone as string, 'add a group there');
+        assert.equal(res.status, 200);
+      });
+      const reply = relay.sms.filter((m) => m.to === seed.coach.phone).pop();
+      assert.ok(reply, 'the question was texted');
+      assert.equal(segmentCount(reply.body), 1);
+      assert.match(reply.body, /^Coachatron: Add .*Overlaps another session\. Reply Y\.$/);
     } finally {
       resetComplete();
     }
