@@ -70,6 +70,9 @@ test('pages opened by a private link are not cached and do not pass the link on 
         `/Booking/${token}`,
         `/START/${start}`,
         '/Signin/Verify?to=pat%40example.com',
+        // Opened from a booking's manage page, with its link along as ?from=.
+        `/c/${seed.coach.handle}?from=${token}`,
+        `/c/${seed.coach.handle}/sessions/${seed.sessionId}/book?from=${token}`,
       ]) {
         const res = await fetch(`${base}${path}`, { redirect: 'manual' });
         assert.equal(res.headers.get('cache-control'), 'no-store', path);
@@ -77,6 +80,9 @@ test('pages opened by a private link are not cached and do not pass the link on 
       }
       const home = await fetch(`${base}/c/${seed.coach.handle}`);
       assert.equal(home.headers.get('referrer-policy'), null, 'a public page keeps the default');
+      const form = await fetch(`${base}/c/${seed.coach.handle}/sessions/${seed.sessionId}/book`);
+      assert.equal(form.headers.get('cache-control'), null, 'the booking form without a manage link is public');
+      assert.equal(form.headers.get('referrer-policy'), null);
 
       const cookie = `cx_session=${await createCoachSession(db, seed.coach.id)}`;
       const schedule = await fetch(`${base}/app/schedule`, { headers: { cookie } });

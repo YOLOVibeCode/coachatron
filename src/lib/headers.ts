@@ -9,6 +9,13 @@ export function isPrivateLinkPath(path: string): boolean {
   return PRIVATE_LINK.test(path);
 }
 
+/** A page that carries a booking's manage link along as ?from= (the coach's
+ * page and the booking form, opened from that booking) is as private as the
+ * link: the form is filled in with that booking's phone and email. */
+function carriesPrivateLink(req: Request): boolean {
+  return req.query.from !== undefined;
+}
+
 /** Headers on every response. No page may be framed by another site,
  * nothing is sniffed as a different type, and pages behind a private link
  * or a session are neither cached nor named in a Referer. */
@@ -17,7 +24,7 @@ export function pageHeaders(req: Request, res: Response, next: NextFunction): vo
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
   const path = req.path.toLowerCase();
-  if (isPrivateLinkPath(path)) {
+  if (isPrivateLinkPath(path) || carriesPrivateLink(req)) {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Referrer-Policy', 'no-referrer');
   } else if (path === '/app' || path.startsWith('/app/')) {
