@@ -112,3 +112,73 @@ export async function postSellerEvent(
     body,
   });
 }
+
+export type PaymentEventType =
+  | 'marketplace.purchase.refunded'
+  | 'marketplace.purchase.refund_failed'
+  | 'marketplace.purchase.disputed'
+  | 'marketplace.purchase.dispute_won'
+  | 'marketplace.purchase.dispute_lost';
+
+/** A refund or dispute event on a seller's payment, shaped as the relay's
+ * event v1 (store/event-v1.js): `money.amountCents` is what the refund or
+ * dispute is for, and the payment is named by its ref. */
+export async function postPaymentEvent(
+  base: string,
+  args: {
+    type: PaymentEventType;
+    paymentId: string;
+    amountCents: number | null;
+    refundId?: string | null;
+    disputeId?: string | null;
+    eventId?: string;
+    sellerKey?: string;
+  },
+): Promise<Response> {
+  const callbackUrl = `${base}/webhooks/store`;
+  const refund = args.type === 'marketplace.purchase.refunded' || args.type === 'marketplace.purchase.refund_failed';
+  const disputeState =
+    args.type === 'marketplace.purchase.disputed' ? 'open' : args.type === 'marketplace.purchase.dispute_won' ? 'won' : args.type === 'marketplace.purchase.dispute_lost' ? 'lost' : null;
+  const event = {
+    id: args.eventId ?? `rel_evt_${args.type}_${args.refundId ?? args.disputeId ?? args.paymentId}`,
+    type: args.type,
+    version: 1,
+    store: `coachatron@${args.sellerKey ?? 'seller'}`,
+    product: 'coachatron',
+    mode: 'test',
+    occurredAt: new Date().toISOString(),
+    buyer: { userId: null, email: null },
+    item: null,
+    money: {
+      amountCents: args.amountCents,
+      currency: 'USD',
+      refundedCents: refund && args.amountCents !== null ? args.amountCents : 0,
+      feeCents: null,
+      discountCents: null,
+      taxCents: null,
+    },
+    discount: null,
+    refs: {
+      orderId: null,
+      paymentId: args.paymentId,
+      subscriptionId: null,
+      refundId: refund ? (args.refundId ?? null) : null,
+      disputeId: disputeState ? (args.disputeId ?? null) : null,
+      checkoutId: null,
+      paymentMethodRef: null,
+    },
+    subscription: null,
+    refund: refund ? { status: args.type === 'marketplace.purchase.refunded' ? 'succeeded' : 'failed' } : null,
+    dispute: disputeState ? { state: disputeState } : null,
+    paymentMethod: null,
+    seller: { ref: 'acct_test', key: args.sellerKey ?? 'seller' },
+    action: null,
+    entitlements: {},
+  };
+  const body = JSON.stringify(event);
+  return fetch(callbackUrl, {
+    method: 'POST',
+    headers: storeEventHeaders(callbackUrl, body),
+    body,
+  });
+}

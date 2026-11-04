@@ -22,6 +22,7 @@ import { recordChargesEnabled, refreshPaymentsStatus } from '../domain/payments.
 import { connectProduct } from '../relay/seller.js';
 import { sendBookingConfirmation, sendPaymentCredited } from '../domain/bookingMessages.js';
 import { recordPaymentAttention, type AttentionReason } from '../domain/paymentAttention.js';
+import { applyRefundFailed, applyRefunded, recordDispute, type DisputeState, type RefundReport } from '../domain/refunds.js';
 
 export const storeWebhookRouter = Router();
 
@@ -299,27 +300,90 @@ async function onSellerEvent(event: StoreEvent): Promise<void> {
   else await refreshPaymentsStatus(db, coach);
 }
 
-/** Every paid event is claimed in the database first, so a redelivery or a
- * restart never handles it twice, and is either booked or kept for the
- * coach with a reason. */
-async function onPaid(event: StoreEvent, context: { headers: unknown }): Promise<void> {
-  const db = getDb();
-  const paymentRef = event.refs?.paymentId || event.refs?.orderId || null;
-  const eventId =
-    event.id || headerValue(context.headers, 'x-relay-event-id') || (paymentRef ? `payment:${paymentRef}` : `unidentified:${randomUUID()}`);
-  const claim = await claimEvent(db, eventId, String(event.type ?? ''));
-  if (claim === 'done') return;
-  // Not a 2xx, so the relay delivers it again later: by then it is either
-  // handled, or its unfinished claim can be taken over.
-  if (claim === 'busy') throw new Error(`store event ${eventId} is being handled by another delivery`);
-  try {
-    await handlePaid(db, event, eventId);
-    await finishEvent(db, eventId);
-  } catch (err) {
-    await releaseEvent(db, eventId);
-    throw err;
-  }
+/** Runs a store event's handler once: the event is claimed in the
+ * database first (`store_event`), so a redelivery or a restart never
+ * handles it twice. While another delivery is handling it, the app answers
+ * with an error so the relay retries; a handler that fails releases the
+ * claim for the retry. */
+function handledOnce(
+  handle: (db: DbClient, event: StoreEvent, eventId: string) => Promise<void>,
+  fallbackId: (event: StoreEvent) => string | null,
+): (event: StoreEvent, context: { headers: unknown }) => Promise<void> {
+  return async (event, context) => {
+    const db = getDb();
+    const eventId = event.id || headerValue(context.headers, 'x-relay-event-id') || fallbackId(event) || `unidentified:${randomUUID()}`;
+    const claim = await claimEvent(db, eventId, String(event.type ?? ''));
+    if (claim === 'done') return;
+    // Not a 2xx, so the relay delivers it again later: by then it is either
+    // handled, or its unfinished claim can be taken over.
+    if (claim === 'busy') throw new Error(`store event ${eventId} is being handled by another delivery`);
+    try {
+      await handle(db, event, eventId);
+      await finishEvent(db, eventId);
+    } catch (err) {
+      await releaseEvent(db, eventId);
+      throw err;
+    }
+  };
 }
+
+/** Every paid event is either booked or kept for the coach with a reason. */
+const onPaid = handledOnce(handlePaid, (event) => {
+  const paymentRef = event.refs?.paymentId || event.refs?.orderId || null;
+  return paymentRef ? `payment:${paymentRef}` : null;
+});
+
+function refundReport(event: StoreEvent): RefundReport | null {
+  const paymentRef = event.refs?.paymentId || null;
+  if (!paymentRef) return null;
+  const money = event.money;
+  const refunded = typeof money?.refundedCents === 'number' && money.refundedCents > 0 ? money.refundedCents : null;
+  return {
+    paymentRef,
+    refundRef: event.refs?.refundId || null,
+    amountCents: refunded ?? (typeof money?.amountCents === 'number' ? money.amountCents : null),
+    sellerKey: event.seller?.key ?? null,
+  };
+}
+
+const refundEventId = (event: StoreEvent): string | null =>
+  event.refs?.refundId ? `${String(event.type ?? '')}:${event.refs.refundId}` : null;
+
+/** The money went back: the booking it bought is refunded, its credits are
+ * withdrawn, and the parent is told (src/domain/refunds.ts). */
+const onRefunded = handledOnce(async (db, event) => {
+  const report = refundReport(event);
+  if (report) await applyRefunded(db, report);
+}, refundEventId);
+
+/** The refund did not go through: the coach sees it on Money. */
+const onRefundFailed = handledOnce(async (db, event) => {
+  const report = refundReport(event);
+  if (report) await applyRefundFailed(db, report);
+}, refundEventId);
+
+const DISPUTE_STATES: Record<string, DisputeState> = {
+  'purchase.disputed': 'open',
+  'purchase.dispute_won': 'won',
+  'purchase.dispute_lost': 'lost',
+};
+
+/** A card dispute opened or was decided. Stripe handles it; the coach sees
+ * it on Money. */
+const onDispute = handledOnce(
+  async (db, event) => {
+    const state = DISPUTE_STATES[String(event.type ?? '').replace(/^marketplace\./, '')];
+    if (!state) return;
+    await recordDispute(db, {
+      disputeRef: event.refs?.disputeId || null,
+      paymentRef: event.refs?.paymentId || null,
+      state,
+      amountCents: typeof event.money?.amountCents === 'number' ? event.money.amountCents : null,
+      sellerKey: event.seller?.key ?? null,
+    });
+  },
+  (event) => (event.refs?.disputeId ? `${String(event.type ?? '')}:${event.refs.disputeId}` : null),
+);
 
 storeWebhookRouter.post('/', (req, res) => {
   const secret = process.env.RELAY_WEBHOOK_SECRET ?? '';
@@ -335,6 +399,16 @@ storeWebhookRouter.post('/', (req, res) => {
     on: {
       'marketplace.purchase.paid': onPaid,
       'purchase.paid': onPaid,
+      'marketplace.purchase.refunded': onRefunded,
+      'purchase.refunded': onRefunded,
+      'marketplace.purchase.refund_failed': onRefundFailed,
+      'purchase.refund_failed': onRefundFailed,
+      'marketplace.purchase.disputed': onDispute,
+      'purchase.disputed': onDispute,
+      'marketplace.purchase.dispute_won': onDispute,
+      'purchase.dispute_won': onDispute,
+      'marketplace.purchase.dispute_lost': onDispute,
+      'purchase.dispute_lost': onDispute,
       'seller.updated': onSellerEvent,
       'seller.disconnected': onSellerEvent,
     },
