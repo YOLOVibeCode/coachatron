@@ -19,6 +19,7 @@ function sendInbound(base: string, form: string, signature?: string): Promise<Re
     method: 'POST',
     headers: {
       'content-type': 'application/x-www-form-urlencoded',
+      'x-relay-twilio-verified': '1',
       ...(signature ? { 'x-relay-signature': signature } : {}),
     },
     body: form,

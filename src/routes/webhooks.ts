@@ -107,9 +107,27 @@ async function replyOnce(db: DbClient, phone: string, body: string, now: Date): 
   return true;
 }
 
+/** The relay checks Twilio's own signature on every inbound text and says
+ * so here: "1" when it checked out, "0" when not. The relay may forward a
+ * text whose Twilio signature failed (its log-only mode), still signed with
+ * our secret, so a valid relay signature alone does not prove Twilio sent
+ * it. Nothing is done for a text without "1"; local testing without a
+ * secret has to send the header too. */
+const TWILIO_VERIFIED_HEADER = 'x-relay-twilio-verified';
+
+function sentByTwilio(req: Request): boolean {
+  return req.header(TWILIO_VERIFIED_HEADER) === '1';
+}
+
 smsInboundRouter.post('/', async (req, res) => {
   const form = verifyOrRespond(req, res, inboundSmsUrl());
   if (!form) return;
+  if (!sentByTwilio(req)) {
+    const value = req.header(TWILIO_VERIFIED_HEADER);
+    console.warn(`sms inbound: ignored, ${TWILIO_VERIFIED_HEADER} is ${value === undefined ? 'missing' : value === '0' ? '0' : 'not 1'}`);
+    twimlEmpty(res);
+    return;
+  }
 
   const db = getDb();
   const now = new Date();
