@@ -257,7 +257,7 @@ export async function sendText(db: DbClient, msg: OutboundText, now: Date = new 
     return 'refused';
   }
   await log(db, msg, body, 'failed', null, now);
-  throw new Error(`relay sms send failed: ${sent.code} ${sent.message}`);
+  throw new RelayHttpError(`relay sms send failed: ${sent.code} ${sent.message}`, sent.status);
 }
 
 export interface OutboundEmail {

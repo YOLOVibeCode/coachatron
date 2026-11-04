@@ -422,6 +422,51 @@ test('the tick expires an offer at its time and moves on; a Y after that claims 
   });
 });
 
+test('a Y to an offer that has closed is told so once, and nothing else happens', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await fullSession(db);
+    const first = await seedRosterMember(db, seed.coach.id, 'First Choice', 0);
+    const second = await seedRosterMember(db, seed.coach.id, 'Second Choice', 1);
+    await checkOverflow(db, seed.sessionId);
+    await answerAsk(db, seed.coach.id, 'backup');
+    await runTick(db, new Date(Date.now() + 21 * 60 * 1000));
+    await withServer(async (base) => {
+      assert.equal((await smsTo(base, first.phone, 'Y')).status, 200);
+      assert.equal((await smsTo(base, first.phone, 'yes')).status, 200);
+    });
+    const toFirst = relay.sms.filter((m) => m.to === first.phone).map((m) => m.body);
+    assert.equal(toFirst.length, 2, 'the offer, then one answer');
+    assert.match(toFirst[1], /^Coachatron: that offer has closed, so nothing changed\./);
+    assert.ok(!toFirst.some((b) => /\/start\//.test(b)), 'no sign-up link');
+    assert.deepEqual(
+      (await offers(db, seed.sessionId)).map((o) => [o.roster_member_id, o.state]),
+      [
+        [first.id, 'expired'],
+        [second.id, 'sent'],
+      ],
+    );
+  });
+});
+
+test('a second Y from the member who took the job is told it is theirs', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await fullSession(db);
+    const member = await seedRosterMember(db, seed.coach.id, 'First Choice', 0);
+    await checkOverflow(db, seed.sessionId);
+    await answerAsk(db, seed.coach.id, 'backup');
+    await withServer(async (base) => {
+      await smsTo(base, member.phone, 'Y');
+      await smsTo(base, member.phone, 'Y');
+    });
+    assert.deepEqual((await offers(db, seed.sessionId)).map((o) => o.state), ['accepted']);
+    const answers = relay.sms.filter((m) => m.to === member.phone && /you took this one/.test(m.body));
+    assert.equal(answers.length, 1);
+    assert.match(answers[0].body, /\/offer\/[0-9a-f]{32}/);
+  });
+});
+
 test('an offer past its time cannot be accepted even before the tick runs', async () => {
   await withRelay(async () => {
     const db = await freshDb();

@@ -311,6 +311,43 @@ test('a free session stays bookable while payments are not set up', async () => 
   });
 });
 
+test('a free session books at checkout, with no payment page, for each child', async () => {
+  for (const paymentsReady of [true, false]) {
+    await withRelay(async () => {
+      const db = await freshDb();
+      const seed = await seedCoachWithSession(db, { paymentsReady, priceCents: 0, capacity: 3 });
+      await withServer(async (base) => {
+        const started = await form(base, `/c/${seed.coach.handle}/sessions/${seed.sessionId}/book`, {
+          athlete_name: 'Mia Ortiz',
+          athlete_name_2: 'Leo Ortiz',
+          contact_phone: '5550008888',
+        });
+        assert.equal(started.status, 303);
+        const checkoutPath = started.headers.get('location') ?? '';
+        const checkout = await (await fetch(`${base}${checkoutPath}`)).text();
+        assert.match(checkout, /Book 2 spots — free/);
+        assert.doesNotMatch(checkout, /Pay \$/);
+
+        const booked = await form(base, checkoutPath, { mode: 'dropin' });
+        assert.equal(booked.status, 303, `payments ready: ${paymentsReady}`);
+        assert.equal(booked.headers.get('location'), checkoutPath, 'back to checkout, not to a payment page');
+        assert.match(await (await fetch(`${base}${checkoutPath}`)).text(), /You(?:'|&#39;)re booked/);
+      });
+      const rows = await db.query<{ athlete_name: string; status: string; payment_source: string; gross_cents: number }>(
+        'select athlete_name, status, payment_source, gross_cents from booking where session_id = $1 order by id',
+        [seed.sessionId],
+      );
+      assert.deepEqual(
+        rows.rows.map((b) => [b.athlete_name, b.status, b.payment_source, b.gross_cents]),
+        [
+          ['Mia Ortiz', 'booked', 'DropIn', 0],
+          ['Leo Ortiz', 'booked', 'DropIn', 0],
+        ],
+      );
+    });
+  }
+});
+
 test('a family with session credits can still book with them while payments are paused', async () => {
   await withRelay(async (relay) => {
     const db = await freshDb();

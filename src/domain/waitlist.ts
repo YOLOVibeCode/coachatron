@@ -6,7 +6,8 @@ import { lockSession, newBookingToken, takesSpotSql } from './pricing.js';
 import { canText, sendEmailMessage, sendText } from './outbound.js';
 import { hasActiveConsent } from './sms-consent.js';
 import { deliverableEmail, plain, textWithLink } from './bookingMessages.js';
-import { inQuietHours } from './scheduling.js';
+import { inQuietHours, nextQuietHoursEnd } from './scheduling.js';
+import { RelayHttpError } from '../relay/http.js';
 
 /** The waitlist (SPEC.md §7.3 step 5). A spot that opens in a session (a
  * backup coach's spots, a second group, a parent's cancel, a hold that ran
@@ -25,10 +26,8 @@ function poolSql(s: string): string {
 /** Quiet hours (SPEC.md §10) hold spot offers until 8am in the coach's
  * zone, so a parent asleep does not lose their turn. A session that starts
  * before then is offered now, or never. */
-const QUIET_HOURS_SPAN_MS = 11 * 60 * 60 * 1000;
-
 function waitsForMorning(now: Date, coachTz: string, startsAtUtc: string): boolean {
-  return inQuietHours(now, coachTz) && new Date(startsAtUtc).getTime() > now.getTime() + QUIET_HOURS_SPAN_MS;
+  return inQuietHours(now, coachTz) && new Date(startsAtUtc).getTime() > nextQuietHoursEnd(now, coachTz).getTime();
 }
 
 interface HeldSpot {
@@ -45,7 +44,9 @@ interface HeldSpot {
  * be told, in the order they joined. Run inside a transaction that holds
  * the session's lock (or that created the session), so nothing else counts
  * or takes its spots meanwhile. Someone with neither texts nor an email
- * cannot be told and is passed over. */
+ * cannot be told and is passed over. Someone whose last offer did not go
+ * out is still first in line: until their retry time nobody behind them is
+ * offered a spot. */
 export async function holdSpotsForWaitlist(tx: DbClient, sessionId: number): Promise<HeldSpot[]> {
   const sessions = await tx.query<{ status: string; starts_at_utc: string | Date; pool: number; capacity: number }>(
     `select s.status, s.starts_at_utc, ${poolSql('s')} as pool, coalesce(s.capacity_override, st.capacity) as capacity
@@ -61,8 +62,14 @@ export async function holdSpotsForWaitlist(tx: DbClient, sessionId: number): Pro
   let free = session.capacity - Number(taken.rows[0]?.n ?? '0');
   if (free <= 0) return [];
 
-  const waiting = await tx.query<{ id: number; athlete_name: string; contact_phone: string; contact_email: string | null }>(
-    `select id, athlete_name, contact_phone, contact_email from waitlist
+  const waiting = await tx.query<{
+    id: number;
+    athlete_name: string;
+    contact_phone: string;
+    contact_email: string | null;
+    resting: boolean;
+  }>(
+    `select id, athlete_name, contact_phone, contact_email, coalesce(retry_at > now(), false) as resting from waitlist
      where session_id = $1 and state = 'waiting'
      order by created_at asc, id asc
      for update skip locked`,
@@ -70,7 +77,7 @@ export async function holdSpotsForWaitlist(tx: DbClient, sessionId: number): Pro
   );
   const held: HeldSpot[] = [];
   for (const w of waiting.rows) {
-    if (free <= 0) break;
+    if (free <= 0 || w.resting) break;
     const textable = canText(w.contact_phone) && (await hasActiveConsent(tx, w.contact_phone));
     if (!textable && !deliverableEmail(w.contact_email)) {
       await tx.query("update waitlist set state = 'unreachable' where id = $1", [w.id]);
@@ -146,12 +153,26 @@ function appBaseUrl(): string {
   return (process.env.APP_BASE_URL ?? APP_BASE_URL).replace(/\/$/, '');
 }
 
+/** sent: they were told. later: nothing went out just now (the relay was
+ * busy or down, or a sending limit was reached), so they keep their place
+ * and are tried again. unreachable: their number takes no texts (an
+ * opt-out, or no consent) and there is no email that works. */
+type TellOutcome = 'sent' | 'later' | 'unreachable';
+
+/** A send the relay refused for this address will not go later either: an
+ * HTTP 400, 404 or 422 answer. Anything else (a 5xx, no answer, a key the
+ * relay did not take) is the relay's, and may. */
+function refusedAddress(err: unknown): boolean {
+  return err instanceof RelayHttpError && [400, 404, 422].includes(err.status);
+}
+
 /** Tells one person their spot is held: a text when they chose texts, an
- * email otherwise (or when the text could not go). True when one went. */
-async function tellWaitingParent(db: DbClient, ctx: SpotContext, spot: HeldSpot): Promise<boolean> {
+ * email otherwise (or when the text could not go). */
+async function tellWaitingParent(db: DbClient, ctx: SpotContext, spot: HeldSpot): Promise<TellOutcome> {
   const link = `${appBaseUrl()}/c/${ctx.handle}/checkout/${spot.checkoutToken}`;
   const when = formatConfirmWhen(ctx.startsAtUtc, ctx.tz);
   const athlete = plain(spot.athleteName) || 'your athlete';
+  let later = false;
   if (spot.textable) {
     try {
       const outcome = await sendText(db, {
@@ -165,13 +186,17 @@ async function tellWaitingParent(db: DbClient, ctx: SpotContext, spot: HeldSpot)
         coachId: ctx.coachId,
         template: 'waitlist-spot',
       });
-      if (outcome === 'sent') return true;
+      if (outcome === 'sent') return 'sent';
+      // 'refused' means this number takes no texts now; 'busy' and
+      // 'capped' mean not yet.
+      if (outcome !== 'refused') later = true;
     } catch (err) {
+      if (!refusedAddress(err)) later = true;
       console.error('waitlist: spot text failed:', err instanceof Error ? err.message : err);
     }
   }
   const email = deliverableEmail(spot.contactEmail);
-  if (!email) return false;
+  if (!email) return later ? 'later' : 'unreachable';
   const place = ctx.locationText ? `, ${ctx.locationText}` : '';
   const line = `A spot opened for ${spot.athleteName} in ${ctx.sessionName} with ${ctx.coachName}: ${when}${place}. We're holding it for ${BOOKING_HOLD_MINUTES} minutes. After that it goes to the next person waiting.`;
   try {
@@ -184,56 +209,86 @@ async function tellWaitingParent(db: DbClient, ctx: SpotContext, spot: HeldSpot)
       coachId: ctx.coachId,
       template: 'waitlist-spot',
     });
-    return outcome === 'sent';
+    return outcome === 'sent' ? 'sent' : 'later';
   } catch (err) {
     console.error('waitlist: spot email failed:', err instanceof Error ? err.message : err);
-    return false;
+    return later || !refusedAddress(err) ? 'later' : 'unreachable';
   }
+}
+
+export interface SentSpots {
+  /** The parents told, by phone: one each, however many children they put on the waitlist. */
+  told: Set<string>;
+  /** Spots let go because their person cannot be reached; the next one in line can have them. */
+  passedOver: number;
+  /** Spots let go because nothing went out just now; their person keeps their place. */
+  later: number;
 }
 
 /** Sends the held spots' links. A spot whose person could not be told is
- * let go at once, and they are passed over. Returns how many were told. */
-export async function sendHeldSpots(db: DbClient, sessionId: number, spots: HeldSpot[]): Promise<number> {
-  if (spots.length === 0) return 0;
+ * let go at once. Someone who cannot be reached is passed over; someone
+ * whose text or email did not go out just now goes back to waiting, first
+ * in line, and is tried again from their retry time. */
+export async function sendHeldSpots(db: DbClient, sessionId: number, spots: HeldSpot[]): Promise<SentSpots> {
+  const sent: SentSpots = { told: new Set(), passedOver: 0, later: 0 };
+  if (spots.length === 0) return sent;
   const ctx = await loadSpotContext(db, sessionId);
-  let told = 0;
   for (const spot of spots) {
-    if (ctx && (await tellWaitingParent(db, ctx, spot))) {
-      told += 1;
+    const outcome: TellOutcome = ctx ? await tellWaitingParent(db, ctx, spot) : 'later';
+    if (outcome === 'sent') {
+      sent.told.add(spot.contactPhone);
       continue;
     }
     await db.query("update booking set hold_expires_at = now() where id = $1 and status = 'pending'", [spot.bookingId]);
-    await db.query("update waitlist set state = 'unreachable' where id = $1 and state = 'offered'", [spot.waitlistId]);
+    if (outcome === 'unreachable') {
+      await db.query("update waitlist set state = 'unreachable' where id = $1 and state = 'offered'", [spot.waitlistId]);
+      sent.passedOver += 1;
+      continue;
+    }
+    // Tried again in 5 minutes, then 10, 20, 40, and then every hour.
+    await db.query(
+      `update waitlist set state = 'waiting', offer_booking_id = null, offered_at = null, send_tries = send_tries + 1,
+              retry_at = now() + make_interval(mins => least(60, 5 * power(2, least(send_tries, 4))::int))
+       where id = $1 and state = 'offered'`,
+      [spot.waitlistId],
+    );
+    sent.later += 1;
   }
-  return told;
+  return sent;
 }
 
 export interface SpotOffers {
-  /** People told a spot is held for them. */
+  /** Parents told a spot is held for them: one each, however many children. */
   offered: number;
   /** True when quiet hours hold the offers until morning. */
   waitingForMorning: boolean;
 }
 
 /** Offers a session's open spots to the people waiting, now or, in quiet
- * hours, from 8am. A spot whose person could not be told goes on to the
- * next one. */
-export async function offerOpenSpots(db: DbClient, sessionId: number, now: Date = new Date()): Promise<SpotOffers> {
+ * hours, from 8am. A spot whose person cannot be reached goes on to the
+ * next one; one whose text or email did not go out just now stays theirs
+ * to be offered again, and the rest of the line waits. Parents already
+ * told (by phone) can be passed in `told`, so each is counted once. */
+export async function offerOpenSpots(
+  db: DbClient,
+  sessionId: number,
+  now: Date = new Date(),
+  told: Set<string> = new Set(),
+): Promise<SpotOffers> {
   const ctx = await loadSpotContext(db, sessionId);
-  if (!ctx) return { offered: 0, waitingForMorning: false };
-  if (waitsForMorning(now, ctx.coachTz, ctx.startsAtUtc)) return { offered: 0, waitingForMorning: true };
-  let offered = 0;
+  if (!ctx) return { offered: told.size, waitingForMorning: false };
+  if (waitsForMorning(now, ctx.coachTz, ctx.startsAtUtc)) return { offered: told.size, waitingForMorning: true };
   for (let round = 0; round < 50; round += 1) {
     const spots = await inTransaction(db, async (tx) => {
       if ((await lockSession(tx, sessionId)) !== 'scheduled') return [];
       return holdSpotsForWaitlist(tx, sessionId);
     });
     if (spots.length === 0) break;
-    const told = await sendHeldSpots(db, sessionId, spots);
-    offered += told;
-    if (told === spots.length) break;
+    const sent = await sendHeldSpots(db, sessionId, spots);
+    for (const phone of sent.told) told.add(phone);
+    if (sent.later > 0 || sent.passedOver === 0) break;
   }
-  return { offered, waitingForMorning: false };
+  return { offered: told.size, waitingForMorning: false };
 }
 
 /** Whether spots opened now in this session wait for the morning. */

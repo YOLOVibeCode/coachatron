@@ -219,6 +219,20 @@ export async function countTakenSpots(db: DbClient, sessionId: number, exceptBoo
   return Number(result.rows[0]?.count ?? '0');
 }
 
+/** People waiting for a spot in this session (or, for a second group, in
+ * the full session it was opened for) who have not been offered one yet,
+ * other than `exceptPhone`'s own children. They have first claim on a spot
+ * that opens, so a new or lapsed hold takes only what is left after them. */
+async function countKeptForWaitlist(db: DbClient, sessionId: number, exceptPhone: string): Promise<number> {
+  const kept = await db.query<{ count: string }>(
+    `select count(*)::text as count from waitlist w
+     where w.state = 'waiting' and w.contact_phone <> $2
+       and w.session_id = (select coalesce(s.overflow_of, s.id) from session s where s.id = $1)`,
+    [sessionId, exceptPhone],
+  );
+  return Number(kept.rows[0]?.count ?? '0');
+}
+
 export interface PendingBooking {
   id: number;
   checkoutToken: string;
@@ -272,13 +286,8 @@ export async function createPendingBooking(
     );
     // People on the waitlist have first claim on a spot that opens; a new
     // booking takes only what is left after them.
-    const kept = await tx.query<{ count: string }>(
-      `select count(*)::text as count from waitlist w
-       where w.state = 'waiting' and w.contact_phone <> $2
-         and w.session_id = (select coalesce(s.overflow_of, s.id) from session s where s.id = $1)`,
-      [args.sessionId, args.contactPhone],
-    );
-    if (Number(others.rows[0]?.count ?? '0') + Number(kept.rows[0]?.count ?? '0') + names.length > args.capacity) return null;
+    const kept = await countKeptForWaitlist(tx, args.sessionId, args.contactPhone);
+    if (Number(others.rows[0]?.count ?? '0') + kept + names.length > args.capacity) return null;
     await tx.query(
       `update booking set hold_expires_at = now()
        where session_id = $1 and contact_phone = $2 and status = 'pending' and hold_expires_at > now()`,
@@ -336,14 +345,15 @@ export type HoldResult = 'held' | 'full' | 'closed' | 'not_pending';
  * parent who is about to pay: the holds run BOOKING_HOLD_MINUTES from now,
  * so a parent who picks a way to pay near the end of their hold still has
  * time to pay. Lapsed holds are renewed only while the session still has
- * room for every child. */
+ * room for every child after the people waiting for a spot, who have first
+ * claim on it. */
 export async function renewHold(db: DbClient, booking: Pick<BookingRow, 'id' | 'session_id'>, capacity: number): Promise<HoldResult> {
   return inTransaction(db, async (tx) => {
     if ((await lockSession(tx, booking.session_id)) !== 'scheduled') {
       return (await isPending(tx, booking.id)) ? 'closed' : 'not_pending';
     }
-    const pass = await tx.query<{ id: number; live: boolean }>(
-      `select b.id, coalesce(b.hold_expires_at > now(), false) as live from booking b
+    const pass = await tx.query<{ id: number; live: boolean; contact_phone: string }>(
+      `select b.id, coalesce(b.hold_expires_at > now(), false) as live, b.contact_phone from booking b
        where ${inPassSql('b', '$1')} and b.status = 'pending'`,
       [booking.id],
     );
@@ -354,7 +364,8 @@ export async function renewHold(db: DbClient, booking: Pick<BookingRow, 'id' | '
          where o.session_id = $2 and ${takesSpotSql('o')} and not ${inPassSql('o', '$1')}`,
         [booking.id, booking.session_id],
       );
-      if (Number(others.rows[0]?.n ?? '0') + pass.rows.length > capacity) return 'full';
+      const kept = await countKeptForWaitlist(tx, booking.session_id, pass.rows[0].contact_phone);
+      if (Number(others.rows[0]?.n ?? '0') + kept + pass.rows.length > capacity) return 'full';
     }
     await tx.query(
       `update booking b set hold_expires_at = now() + make_interval(mins => $2::int)
@@ -387,13 +398,23 @@ export interface PassRowPayment {
  * takes those spots and the unpaid hold ends. 'closed' when the session was
  * cancelled, 'full' when there is no room, 'not_pending' when the booking
  * was already settled. Without `rows`, the first booking gets the credit and
- * the payment, and the others the same credit and no payment. */
+ * the payment, and the others the same credit and no payment.
+ *
+ * Before anything is paid (a credit, a free session), a lapsed hold also
+ * leaves room for the people waiting for a spot, who have first claim on
+ * it. A payment that has already been taken (`paid`) books whenever there
+ * is room, so a parent who paid is not turned away for a spot nobody has
+ * been offered yet.
+ *
+ * Booking a child also takes that child, under the same phone, off the
+ * session's waitlist, so the next spot that opens is not offered to them. */
 export async function bookPendingBooking(
   db: DbClient,
   booking: Pick<BookingRow, 'id' | 'session_id'>,
   capacity: number,
   fields: { paymentSource: string; creditId: number | null; chargeId: string | null; grossCents: number | null },
   rows?: PassRowPayment[],
+  opts: { paid?: boolean } = {},
 ): Promise<BookResult> {
   return inTransaction(db, async (tx) => {
     if ((await lockSession(tx, booking.session_id)) !== 'scheduled') {
@@ -414,7 +435,8 @@ export async function bookPendingBooking(
            and not (o.status = 'pending' and o.contact_phone = $3)`,
         [booking.id, booking.session_id, phone],
       );
-      if (Number(others.rows[0]?.n ?? '0') + pass.rows.length > capacity) return 'full';
+      const kept = opts.paid ? 0 : await countKeptForWaitlist(tx, booking.session_id, phone);
+      if (Number(others.rows[0]?.n ?? '0') + kept + pass.rows.length > capacity) return 'full';
     }
     for (const [i, row] of pass.rows.entries()) {
       const pay = rows?.[i] ?? { creditId: fields.creditId, grossCents: i === 0 ? fields.grossCents : null };
@@ -430,6 +452,13 @@ export async function bookPendingBooking(
          and b.hold_expires_at > now()
          and (select count(*) from booking o where o.session_id = $2 and ${takesSpotSql('o')}) > $4`,
       [booking.id, booking.session_id, phone, capacity],
+    );
+    await tx.query(
+      `update waitlist w set state = 'booked'
+       where w.state = 'waiting' and w.contact_phone = $2
+         and w.session_id = (select coalesce(s.overflow_of, s.id) from session s where s.id = $1)
+         and lower(btrim(w.athlete_name)) in (select lower(btrim(b.athlete_name)) from booking b where ${inPassSql('b', '$3')})`,
+      [booking.session_id, phone, booking.id],
     );
     return 'booked';
   });

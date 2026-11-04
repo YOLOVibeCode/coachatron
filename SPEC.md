@@ -235,19 +235,27 @@ one question at a time: the next full session is asked about after that. 1,
 2 and N answer only the coach's own open question, from the coach's phone or
 the Schedule screen's three buttons; a Y gets the choices again. One offer is
 out at a time, and the first acceptance is decided in one transaction holding
-the offer's and the session's rows, so it happens once. A second group is a
-new session linked to the full one. A roster member who cannot get texts is
+the ask's, the offer's and the session's rows, so it happens once. A roster
+member who answers an offer that has closed is told so, once. A second group
+is a new session linked to the full one. A roster member who cannot get texts is
 not offered anything, and the coach is told who, once, with a link to send
 them: screen 12 in its opt-in state, which records consent by the same rules
 as the other forms. The new spots go to the waitlist in the order people
 joined: a text when the parent chose texts, an email otherwise, each with a
 link that holds the spot for 15 minutes, and a spot nobody claims in that
-time goes to the next person. The waitlist also gets a spot freed by a
-parent's cancel or a hold that ran out, and keeps first claim on free spots
-until each person waiting has been offered one. In quiet hours the offers
-wait until 8am in the coach's zone, unless the session starts first. The
-coach is told who took the job and how many waitlisted parents were offered
-a spot. A coach's cancel, or the session starting, ends its question and
+time goes to the next person. A text or email that does not go out just
+then (the relay busy or down, or a sending limit reached) keeps that parent
+first in line, and it is tried again after 5 minutes, then 10, 20 and 40,
+then every hour; only someone with no texts and no working email is passed
+over. The waitlist also gets a spot freed by a parent's cancel or a hold that
+ran out, and keeps first claim on free spots until each person waiting has
+been offered one: a hold that ran out is renewed only after them, unless its
+payment was already made. A full session's card on the coach's page leads to
+the booking form in its waitlist state, and a parent who books a spot
+themselves leaves the line for that child. In quiet hours the offers wait
+until 8am in the coach's zone, unless the session starts first. The coach is
+told who took the job and how many waitlisted parents (one each, however many
+children) were offered a spot. A coach's cancel, or the session starting, ends its question and
 withdraws any offer still out.)*
 
 ### 7.4 Coach gets paid
@@ -617,7 +625,7 @@ message_log(id, to_phone, template, body, provider_id, sent_at, status)
 `credit.contact_phone` is the join key for a buyer, by design (§9.2). Normalize
 to E.164 on write.
 
-Added since the sketch (migrations 0013–0024): `request_limit` (fixed-window
+Added since the sketch (migrations 0013–0025): `request_limit` (fixed-window
 counts per client address, phone, or email) and `otp_code.attempts`;
 `coach.email_verified_at`; `coach_payments` (whether the coach can take
 charges, and the payment texts owed) and `payments_link`;
@@ -627,13 +635,13 @@ store event, handled once) and `payment_attention` (payments kept for the
 coach to resolve). Migration 0019 adds `refund` (one row per refunded
 payment: its status, try, and what it withdrew) and `payment_dispute`, and a
 booking's status can be `refunded`. Migration 0020 adds `credit.refund_id`
-(held while a refund is on its way) and `withdrawn_at`. Migrations 0021–0024 add
+(held while a refund is on its way) and `withdrawn_at`. Migrations 0021–0025 add
 `overflow_ask.kind`, `closed_at` and `outcome`, `offer.kind` and `ask_id`,
 `session.overflow_of` (a second group's full session), and
-`roster_member.optin_token`; `waitlist.contact_email`, `state` and
-`offer_booking_id`; `coach.cancel_window_hours` and `children_per_booking`,
-`booking.late_cancel` and `waived_at`; and `booking.pass_id` (the children of
-one booking pass).
+`roster_member.optin_token`; `waitlist.contact_email`, `state`,
+`offer_booking_id`, `send_tries` and `retry_at`; `coach.cancel_window_hours`
+and `children_per_booking`, `booking.late_cancel` and `waived_at`; and
+`booking.pass_id` (the children of one booking pass).
 
 Two column names predate the move to Stripe and were kept: `square_merchant_id`
 is unused (a coach reaches their Stripe account through

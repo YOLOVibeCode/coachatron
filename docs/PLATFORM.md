@@ -202,7 +202,14 @@ SPEC.md §8.1.
 - **Waitlist spots** *(2026-11-04, SPEC.md §7.3)*. A spot that opens goes to
   the waitlist in order: a held booking with its checkout link, sent by text
   or email, for 15 minutes, then to the next person (the tick's
-  `moveWaitlists`).
+  `moveWaitlists`). When neither goes out just then (a relay 5xx or 429, a
+  sending limit), the hold is let go and the parent stays first in line
+  (`waitlist.send_tries`, `retry_at`: 5, 10, 20, 40 minutes, then hourly);
+  only a relay 400, 404 or 422, an opt-out, or no consent and no email passes
+  them over. People waiting count against new holds and against renewing a
+  lapsed one; a paid event for a lapsed hold books whenever there is room.
+- **Free sessions** book at checkout (`mode=dropin`, `gross_cents` 0) with
+  no buy link: the relay's Connect charge needs at least 50 cents.
 - **Checkout** is reached by `booking.checkout_token`, never the booking's
   serial id. Session credits are used only once the booking's phone is
   proven (`booking.phone_verified_at`): a code texted to it at checkout, or

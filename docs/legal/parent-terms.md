@@ -153,9 +153,11 @@ a card refund. Decide whether a parent may ask for a card refund instead.]
 opens, people waiting are offered it in the order they joined: we hold it for
 you for 15 minutes and send you a link to book it, by text if you opted in to
 texts, or by email if you gave one. If you do not book it in that time, it goes
-to the next person. Spots do not open overnight: between 9pm and 8am in the
-coach's time zone we wait until morning, unless the session starts first.
-Nothing is charged until you book.
+to the next person. If our text or email cannot go out at that moment, you
+keep your place and we try again shortly. Spots do not open overnight:
+between 9pm and 8am in the coach's time zone we wait until morning, unless
+the session starts first. If you book a spot yourself, that child leaves the
+waitlist. Nothing is charged until you book.
 
 ## 5. No-shows
 

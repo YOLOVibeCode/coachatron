@@ -96,6 +96,31 @@ async function findSentOfferForPhone(
   return result.rows[0] ?? null;
 }
 
+/** The roster member's latest offer from the last day that is no longer
+ * open: it expired, was withdrawn, or someone (perhaps they) took the job.
+ * A late Y or N answers it. */
+async function findClosedOfferForPhone(
+  db: DbClient,
+  phone: string,
+): Promise<{ state: string; token: string | null } | null> {
+  const result = await db.query<{ state: string; token: string | null }>(
+    `select o.state, o.token
+     from offer o
+     join roster_member rm on rm.id = o.roster_member_id
+     where rm.phone = $1 and o.state <> 'unsent' and o.sent_at > now() - interval '1 day'
+     order by o.sent_at desc, o.id desc
+     limit 1`,
+    [phone],
+  );
+  return result.rows[0] ?? null;
+}
+
+const OFFER_CLOSED_REPLY = 'Coachatron: that offer has closed, so nothing changed. Thanks for answering.';
+
+function offerLink(token: string | null): string {
+  return token ? `${APP_BASE_URL}/offer/${token}` : APP_BASE_URL;
+}
+
 async function replyOnce(db: DbClient, phone: string, body: string, now: Date): Promise<boolean> {
   const ok = await takeDailyReplySlot(db, phone, now);
   if (!ok) return false;
@@ -180,7 +205,8 @@ smsInboundRouter.post('/', async (req, res) => {
   const offer = await findSentOfferForPhone(db, from);
   if (offer) {
     if (kw === 'Y') {
-      await acceptOffer(db, offer.id);
+      // Someone else may have taken it a moment before.
+      if (!(await acceptOffer(db, offer.id))) await replyOnce(db, from, OFFER_CLOSED_REPLY, now);
       twimlEmpty(res);
       return;
     }
@@ -189,8 +215,7 @@ smsInboundRouter.post('/', async (req, res) => {
       twimlEmpty(res);
       return;
     }
-    const link = offer.token ? `${APP_BASE_URL}/offer/${offer.token}` : APP_BASE_URL;
-    await replyOnce(db, from, `Coachatron: reply Y or ${link}`, now);
+    await replyOnce(db, from, `Coachatron: reply Y or ${offerLink(offer.token)}`, now);
     twimlEmpty(res);
     return;
   }
@@ -226,6 +251,22 @@ smsInboundRouter.post('/', async (req, res) => {
     await sendText(db, { to: from, body: answer.text, coachId: coach.id, template: 'assistant' }, now);
     twimlEmpty(res);
     return;
+  }
+
+  // A roster member answering an offer that has closed hears so once,
+  // instead of the reply for a number we do not know.
+  if (kw === 'Y' || kw === 'N') {
+    const closed = await findClosedOfferForPhone(db, from);
+    if (closed) {
+      await replyOnce(
+        db,
+        from,
+        closed.state === 'accepted' ? `Coachatron: you took this one. Details: ${offerLink(closed.token)}` : OFFER_CLOSED_REPLY,
+        now,
+      );
+      twimlEmpty(res);
+      return;
+    }
   }
 
   if (await phoneHasBooking(db, from)) {

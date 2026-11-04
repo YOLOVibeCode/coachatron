@@ -626,16 +626,33 @@ interface Claimed {
 }
 
 /** The first acceptance takes the job, once. Everything is decided inside
- * one transaction holding the offer's row and the session's row (the same
- * lock every booking takes), so of two replies at the same moment only one
- * can win, and an offer that expired, was withdrawn, or belongs to a session
- * that was cancelled or started cannot be accepted. A second group is a new
- * session at the same time and place, with the same type and capacity, run
- * by the member; a backup coach joins the session, and its capacity grows by
- * its type's capacity. Every other offer for the session is withdrawn,
- * without a text. Returns true if this call took the job. */
+ * one transaction holding the ask's row, the offer's row and the session's
+ * row (the same lock every booking takes), so of two replies at the same
+ * moment only one can win, and an offer that expired, was withdrawn, or
+ * belongs to a session that was cancelled or started cannot be accepted.
+ * The ask's row is taken first, as the cascade's next step takes it before
+ * it touches any offer, so the two wait for each other in the same order.
+ * A second group is a new session at the same time and place, with the
+ * same type and capacity, run by the member; a backup coach joins the
+ * session, and its capacity grows by its type's capacity. Every other offer
+ * for the session is withdrawn, without a text. Returns true if this call
+ * took the job. */
 export async function acceptOffer(db: DbClient, offerId: number): Promise<boolean> {
   const claimed = await inTransaction(db, async (tx): Promise<Claimed | null> => {
+    // Which ask the offer belongs to never changes, so it is read before
+    // any lock is taken.
+    const belongs = await tx.query<{ session_id: number; ask_id: number | null }>('select session_id, ask_id from offer where id = $1', [
+      offerId,
+    ]);
+    if (!belongs.rows[0]) return null;
+    const { ask_id: askId, session_id: askSessionId } = belongs.rows[0];
+    const asks = await tx.query<{ id: number; closed_at: string | null }>(
+      askId !== null
+        ? 'select id, closed_at from overflow_ask where id = $1 for update'
+        : 'select id, closed_at from overflow_ask where session_id = $1 and closed_at is null for update',
+      [askId ?? askSessionId],
+    );
+
     const found = await tx.query<{
       session_id: number;
       roster_member_id: number;
@@ -677,12 +694,6 @@ export async function acceptOffer(db: DbClient, offerId: number): Promise<boolea
       offer.session_id,
     ]);
     if (taken.rows.length > 0) return withdraw();
-    const asks = await tx.query<{ id: number; closed_at: string | null }>(
-      offer.ask_id !== null
-        ? 'select id, closed_at from overflow_ask where id = $1 for update'
-        : 'select id, closed_at from overflow_ask where session_id = $1 and closed_at is null for update',
-      [offer.ask_id ?? offer.session_id],
-    );
     if (offer.ask_id !== null && (!asks.rows[0] || asks.rows[0].closed_at)) return withdraw();
 
     await tx.query("update offer set state = 'accepted', accepted_at = now() where id = $1", [offerId]);
@@ -740,8 +751,14 @@ export async function acceptOffer(db: DbClient, offerId: number): Promise<boolea
     };
   });
   if (!claimed) return false;
-  let offered = await sendHeldSpots(db, claimed.targetSessionId, claimed.held);
-  if (offered < claimed.held.length) offered += (await offerOpenSpots(db, claimed.targetSessionId)).offered;
+  // Spots let go because their person cannot be reached go on down the
+  // line; one whose text or email did not go out just now stays theirs, and
+  // the tick tries it again.
+  const sent = await sendHeldSpots(db, claimed.targetSessionId, claimed.held);
+  const offered =
+    sent.passedOver > 0 && sent.later === 0
+      ? (await offerOpenSpots(db, claimed.targetSessionId, new Date(), sent.told)).offered
+      : sent.told.size;
   await tellCoachClaimed(db, claimed, { offered, waitingForMorning: claimed.waitingForMorning });
   return true;
 }
@@ -819,8 +836,13 @@ export async function advanceCascade(db: DbClient, now: Date): Promise<void> {
     await endOverflowForSession(db, row.session_id, row.status === 'cancelled' ? 'cancelled' : 'ended');
     await askAboutNextFullSession(db, row.coach_id);
   }
+  // An offer being accepted at this moment is left to that accept, which
+  // holds its row: it either takes the job or finds it closed, and a later
+  // tick expires it if it is still out.
   const expired = await db.query<{ session_id: number }>(
-    "update offer set state = 'expired' where state = 'sent' and expires_at <= $1 returning session_id",
+    `update offer set state = 'expired'
+     where id in (select id from offer where state = 'sent' and expires_at <= $1 for update skip locked)
+     returning session_id`,
     [now.toISOString()],
   );
   for (const sessionId of new Set(expired.rows.map((r) => r.session_id))) {

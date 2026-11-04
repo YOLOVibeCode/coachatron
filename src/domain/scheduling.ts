@@ -73,6 +73,14 @@ export function inQuietHours(now: Date, tz: string): boolean {
   return hour < QUIET_END_HOUR || hour >= QUIET_START_HOUR;
 }
 
+/** The next 8am in `tz` after `now`: today's before 8am, otherwise
+ * tomorrow's. In quiet hours, that is when they end. */
+export function nextQuietHoursEnd(now: Date, tz: string): Date {
+  const local = zonedParts(now, tz);
+  const day = local.hour < QUIET_END_HOUR ? local : addCalendarDays(local.year, local.month, local.day, 1);
+  return zonedTimeToUtc(day.year, day.month, day.day, QUIET_END_HOUR, 0, tz);
+}
+
 export function addCalendarDays(
   year: number,
   month: number,

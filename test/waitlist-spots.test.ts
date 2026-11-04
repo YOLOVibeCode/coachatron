@@ -3,11 +3,13 @@ import assert from 'node:assert/strict';
 import { freshDb } from './helpers/db.js';
 import { withServer } from './helpers/server.js';
 import { withRelay } from './helpers/relay.js';
-import { bookOnline, expireHolds } from './helpers/booking.js';
+import { bookOnline, countSold, expireHolds, postCheckout } from './helpers/booking.js';
+import { buyerFromLocation, postStorePaid } from './helpers/store-event.js';
 import { seedBookedSession, seedCoachWithSession, seedRosterMember } from './helpers/fixtures.js';
 import { acceptOffer, answerAsk, checkOverflow } from '../src/domain/cascade.js';
 import { grantSmsConsent } from '../src/domain/sms-consent.js';
 import { runTick } from '../src/jobs/tick.js';
+import { offerOpenSpots } from '../src/domain/waitlist.js';
 import type { DbClient } from '../src/db/client.js';
 import { zoneAt } from './helpers/clock.js';
 
@@ -247,5 +249,214 @@ test('the waitlist page promises what will happen, and keeps the email for it', 
     });
     const stored = await db.query<{ contact_email: string | null }>('select contact_email from waitlist order by id');
     assert.deepEqual(stored.rows.map((r) => r.contact_email), [null, 'em@example.com', null]);
+  });
+});
+
+/** A full session with one booking and the given line, at midday for the
+ * coach; `open` cancels the booking, freeing its spot. */
+async function oneSpotWithLine(db: DbClient, waiters: Waiter[]) {
+  const seed = await seedCoachWithSession(db, { capacity: 1 });
+  await db.query('update coach set tz = $2 where id = $1', [seed.coach.id, zoneAt(12)]);
+  const bookingId = await seedBookedSession(db, seed.sessionId, 'Booked One', '+15550000201');
+  for (const w of waiters) await join(db, seed.sessionId, w);
+  return {
+    seed,
+    open: async () => {
+      await db.query("update booking set status = 'cancelled' where id = $1", [bookingId]);
+    },
+  };
+}
+
+for (const [why, stop, start] of [
+  [
+    'the relay is down',
+    (relay: { failSmsTo: Set<string> }) => relay.failSmsTo.add(ANN.phone),
+    (relay: { failSmsTo: Set<string> }) => relay.failSmsTo.clear(),
+  ],
+  [
+    "the relay's limits say not now",
+    (relay: { limited: { sms: boolean } }) => {
+      relay.limited.sms = true;
+    },
+    (relay: { limited: { sms: boolean } }) => {
+      relay.limited.sms = false;
+    },
+  ],
+] as const) {
+  test(`when ${why}, the first person waiting keeps their place and is offered the spot once texts go again`, async () => {
+    await withRelay(async (relay) => {
+      const db = await freshDb();
+      const { seed, open } = await oneSpotWithLine(db, [ANN, CAL]);
+      stop(relay);
+      await open();
+      assert.deepEqual(await offerOpenSpots(db, seed.sessionId), { offered: 0, waitingForMorning: false });
+      assert.deepEqual(await line(db, seed.sessionId), [
+        ['Ann First', 'waiting'],
+        ['Cal Third', 'waiting'],
+      ]);
+      assert.equal(relay.sms.filter((m) => m.to === CAL.phone).length, 0, 'nobody behind Ann is offered her spot');
+      await withServer(async (base) => {
+        const walkIn = await bookOnline(base, seed.coach.handle, seed.sessionId, 'Walk In', '+15550003999');
+        assert.equal(walkIn.status, 409, 'the spot stays kept for the line');
+      });
+
+      start(relay);
+      await runTick(db, new Date());
+      assert.equal(relay.sms.filter((m) => m.to === ANN.phone).length, 0, 'tried again after a pause, not at once');
+
+      await db.query("update waitlist set retry_at = now() - interval '1 second' where retry_at is not null");
+      await runTick(db, new Date());
+      assert.deepEqual(await line(db, seed.sessionId), [
+        ['Ann First', 'offered'],
+        ['Cal Third', 'waiting'],
+      ]);
+      assert.equal(relay.sms.filter((m) => m.to === ANN.phone && /spot opened/.test(m.body)).length, 1);
+      assert.equal(relay.sms.filter((m) => m.to === CAL.phone).length, 0);
+    });
+  });
+}
+
+test('a text that does not go out falls back to the email the parent gave', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const both = { name: 'Bo Both', phone: '+15550003005', texts: true, email: 'bo@example.com' };
+    const { seed, open } = await oneSpotWithLine(db, [both]);
+    relay.failSmsTo.add(both.phone);
+    await open();
+    assert.deepEqual(await offerOpenSpots(db, seed.sessionId), { offered: 1, waitingForMorning: false });
+    assert.deepEqual(await line(db, seed.sessionId), [['Bo Both', 'offered']]);
+    assert.ok(relay.emails.some((e) => e.to === 'bo@example.com' && /A spot opened/.test(e.subject)));
+  });
+});
+
+test('at 1am a spot in a session after 8am waits for 8am, and one in a session before 8am is offered at once', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const startingIn = async (hours: number, w: Waiter) => {
+      const seed = await seedCoachWithSession(db, { capacity: 1 });
+      await db.query('update coach set tz = $2 where id = $1', [seed.coach.id, zoneAt(1)]);
+      await db.query('update session set starts_at_utc = now() + make_interval(hours => $2::int) where id = $1', [seed.sessionId, hours]);
+      await join(db, seed.sessionId, w);
+      return seed.sessionId;
+    };
+    const atTen = await startingIn(9, ANN);
+    const atSix = await startingIn(5, CAL);
+
+    assert.deepEqual(await offerOpenSpots(db, atTen), { offered: 0, waitingForMorning: true });
+    assert.equal(relay.sms.filter((m) => m.to === ANN.phone).length, 0, 'no text at 1am');
+    assert.deepEqual(await offerOpenSpots(db, atSix), { offered: 1, waitingForMorning: false });
+    assert.equal(relay.sms.filter((m) => m.to === CAL.phone && /spot opened/.test(m.body)).length, 1, 'it starts before 8am');
+
+    await runTick(db, new Date(Date.now() + 7 * 60 * 60 * 1000));
+    assert.equal(relay.sms.filter((m) => m.to === ANN.phone && /spot opened/.test(m.body)).length, 1, 'offered at 8am');
+  });
+});
+
+test('the coach hears how many parents were offered a spot, once for a parent with two children', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const amy = { name: 'Amy First', phone: ANN.phone, texts: true };
+    const { seed } = await fullWithLine(db, [ANN, amy], { capacity: 2 });
+    await answerAsk(db, seed.coach.id, 'backup');
+    await acceptFirstOffer(db, seed.sessionId);
+    assert.deepEqual(await line(db, seed.sessionId), [
+      ['Ann First', 'offered'],
+      ['Amy First', 'offered'],
+    ]);
+    const told = relay.sms.find((m) => m.to === seed.coach.phone && /is your backup coach/.test(m.body));
+    assert.match(told!.body, /1 waitlisted parent was offered a spot\./);
+  });
+});
+
+test('a parent who books a spot themselves leaves the line, so the next spot goes to the next person', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 2, priceCents: 0 });
+    await db.query('update coach set tz = $2 where id = $1', [seed.coach.id, zoneAt(12)]);
+    await seedBookedSession(db, seed.sessionId, 'Booked One', '+15550000201');
+    await join(db, seed.sessionId, ANN);
+    await withServer(async (base) => {
+      const own = await bookOnline(base, seed.coach.handle, seed.sessionId, 'ann first', ANN.phone);
+      assert.equal(own.status, 303);
+      assert.equal((await postCheckout(base, seed.coach.handle, own.key!, { mode: 'dropin' })).status, 303);
+    });
+    assert.equal(await countSold(db, seed.sessionId), 2);
+    assert.deepEqual(await line(db, seed.sessionId), [['Ann First', 'booked']]);
+
+    await join(db, seed.sessionId, CAL);
+    await db.query('update session set capacity_override = 3 where id = $1', [seed.sessionId]);
+    await runTick(db, new Date());
+    assert.deepEqual(await line(db, seed.sessionId), [
+      ['Ann First', 'booked'],
+      ['Cal Third', 'offered'],
+    ]);
+    assert.equal(relay.sms.filter((m) => m.to === ANN.phone && /spot opened/.test(m.body)).length, 0, 'Ann is not offered a second spot');
+  });
+});
+
+test('a hold that ran out is not renewed while someone is waiting, but a payment already made still books', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const unpaid = await seedCoachWithSession(db, { capacity: 1 });
+    const paid = await seedCoachWithSession(db, { capacity: 1 });
+    for (const seed of [unpaid, paid]) await db.query('update coach set tz = $2 where id = $1', [seed.coach.id, zoneAt(12)]);
+    await withServer(async (base) => {
+      const late = await bookOnline(base, unpaid.coach.handle, unpaid.sessionId, 'Late Choice', '+15550003990');
+      assert.equal(late.status, 303);
+      await join(db, unpaid.sessionId, ANN);
+      await expireHolds(db, unpaid.sessionId);
+      const again = await postCheckout(base, unpaid.coach.handle, late.key!, { mode: 'dropin' });
+      assert.equal(again.status, 409);
+      assert.match(await again.text(), /wait for one to open/);
+
+      const payer = await bookOnline(base, paid.coach.handle, paid.sessionId, 'Paid Already', '+15550003991');
+      const pay = await postCheckout(base, paid.coach.handle, payer.key!, { mode: 'dropin' });
+      assert.equal(pay.status, 303);
+      await join(db, paid.sessionId, CAL);
+      await expireHolds(db, paid.sessionId);
+      await postStorePaid(base, { userId: buyerFromLocation(pay.headers.get('location')), amountCents: 3500, paymentId: 'ch_paid_already' });
+    });
+    assert.equal(await countSold(db, unpaid.sessionId), 0);
+    assert.equal(await countSold(db, paid.sessionId), 1, 'the payment was taken, and nobody had been offered the spot');
+  });
+});
+
+test('a full session’s card leads to the booking form in its waitlist state, and joining from it puts the parent in line', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 1 });
+    await seedBookedSession(db, seed.sessionId, 'Booked One', '+15550000201');
+    const bookPath = `/c/${seed.coach.handle}/sessions/${seed.sessionId}/book`;
+    const waitlistPath = `/c/${seed.coach.handle}/sessions/${seed.sessionId}/waitlist`;
+    await withServer(async (base) => {
+      const list = await (await fetch(`${base}/c/${seed.coach.handle}`)).text();
+      assert.match(list, /Full/);
+      assert.match(list, new RegExp(`href="${bookPath}">Join the waitlist<`));
+
+      const form = await fetch(`${base}${bookPath}`);
+      assert.equal(form.status, 200);
+      const formHtml = await form.text();
+      assert.match(formHtml, new RegExp(`<form method="post" action="${waitlistPath}">`));
+      assert.match(formHtml, /name="sms_consent"/);
+      assert.match(formHtml, /hold it for you for 15 minutes/);
+      assert.doesNotMatch(formHtml, /Continue to payment/);
+
+      const post = (fields: Record<string, string>) =>
+        fetch(`${base}${waitlistPath}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams(fields),
+        });
+      const missing = await post({ contact_phone: '(555) 000-4010' });
+      assert.equal(missing.status, 422);
+      const missingHtml = await missing.text();
+      assert.match(missingHtml, /Enter the athlete/);
+      assert.match(missingHtml, /value="\(555\) 000-4010"/, 'what was typed stays');
+
+      const joined = await post({ athlete_name: 'Jo Line', contact_phone: '(555) 000-4010', sms_consent: '1' });
+      assert.equal(joined.status, 200);
+      assert.match(await joined.text(), /on the waitlist/);
+    });
+    assert.deepEqual(await line(db, seed.sessionId), [['Jo Line', 'waiting']]);
   });
 });

@@ -417,7 +417,9 @@ publicRouter.get('/c/:handle', async (req, res) => {
                   <span>${spotsLeft > 0 ? `${spotsLeft} spot${spotsLeft === 1 ? '' : 's'} left · $${(s.price_cents / 100).toFixed(2)}` : 'Full'}</span>
                 </div>
                 ${spotsLeft <= 0
-                  ? raw('')
+                  ? open || !needsPayment(s) || creditsWork
+                    ? html`<a class="action ghost" href="/c/${coach.handle}/sessions/${s.id}/book${bookQuery}">Join the waitlist</a>`
+                    : raw('')
                   : open || !needsPayment(s)
                     ? html`<a class="action" href="/c/${coach.handle}/sessions/${s.id}/book${bookQuery}">Book</a>`
                     : html`<p class="muted">Booking opens soon</p>
@@ -454,20 +456,81 @@ publicRouter.get('/c/:handle/sessions/:sessionId/book', async (req, res) => {
   const values = earlier
     ? { contact_phone: earlier.contact_phone, contact_email: earlier.contact_email ?? undefined, from: fromToken(req.query.from) ?? undefined }
     : {};
-  if (needsPayment(session) && !(await paymentsOpen(db, coach))) {
-    // Only a family holding credits can book now; the form stays for them.
-    if (!(await coachHasOpenCredits(db, coach.id))) {
-      res.status(200).send(bookingOpensSoon(coach));
-      return;
-    }
-    res.status(200).send(renderBookingForm(coach, session, values, undefined, { creditsOnly: true, children: await childrenAllowed(db, coach) }));
+  const creditsOnly = needsPayment(session) && !(await paymentsOpen(db, coach));
+  // Only a family holding credits can book now; the form stays for them.
+  if (creditsOnly && !(await coachHasOpenCredits(db, coach.id))) {
+    res.status(200).send(bookingOpensSoon(coach));
     return;
   }
-  res.status(200).send(renderBookingForm(coach, session, values, undefined, { children: await childrenAllowed(db, coach) }));
+  const children = await childrenAllowed(db, coach);
+  // A full session's form joins the waitlist instead (screen 9 in its
+  // waitlist state).
+  if ((await spotsLeftToBook(db, session)) <= 0) {
+    res.status(200).send(renderWaitlistForm(coach, session, values, undefined, children));
+    return;
+  }
+  res.status(200).send(renderBookingForm(coach, session, values, undefined, { creditsOnly, children }));
 });
 
 async function childrenAllowed(db: DbClient, coach: CoachRow): Promise<number> {
   return (await getBookingPolicy(db, coach.id)).childrenPerBooking;
+}
+
+/** Spots a new booking could take: the capacity, less live bookings and
+ * holds, less the people waiting for a spot, who have first claim. The
+ * same count as the coach's page. */
+async function spotsLeftToBook(db: DbClient, session: SessionForBooking): Promise<number> {
+  const result = await db.query<{ n: string }>(
+    `select (coalesce((select count(*) from booking b where b.session_id = $1 and ${takesSpotSql('b')}), 0)
+             + coalesce((select count(*) from waitlist w where w.session_id = $2 and w.state = 'waiting'), 0))::text as n`,
+    [session.id, session.overflow_of ?? session.id],
+  );
+  return session.capacity - Number(result.rows[0]?.n ?? '0');
+}
+
+/** The optional extra children on a booking or waitlist form, up to the
+ * coach's limit. */
+function moreChildrenFields(children: number, more: string[] = [], text: { summary: string; note?: string }) {
+  const extra = Array.from({ length: Math.max(0, children - 1) }, (_, i) => i + 2);
+  if (extra.length === 0) return raw('');
+  return html`<details class="more-children"${more.length > 0 ? raw(' open') : raw('')}>
+    <summary>${text.summary}</summary>
+    ${text.note ? html`<p class="muted">${text.note}</p>` : raw('')}
+    ${extra.map(
+      (n) => html`<label for="athlete_name_${n}">Child ${n} (optional)</label>
+        <input id="athlete_name_${n}" name="athlete_name_${n}" value="${more[n - 2] ?? ''}" />`,
+    )}
+  </details>`;
+}
+
+/** Screen 9 in its waitlist state: the session is full, so the form puts
+ * the parent in line for a spot instead of holding one. */
+function renderWaitlistForm(
+  coach: CoachRow,
+  session: SessionForBooking,
+  values: { athlete_name?: string; contact_phone?: string; contact_email?: string; more?: string[] },
+  error?: string,
+  children = 1,
+) {
+  return page(
+    'Join the waitlist',
+    html`<h1>${session.name}</h1>
+      <p class="muted">${formatLocal(session.starts_at_utc, session.tz)} — Full</p>
+      <p>Join the waitlist. When a spot opens, we hold it for you for ${BOOKING_HOLD_MINUTES} minutes and send you a link to book it: by text if you tick the box, otherwise by email.</p>
+      <form method="post" action="/c/${coach.handle}/sessions/${session.id}/waitlist">
+        <label for="athlete_name">Athlete name</label>
+        <input id="athlete_name" name="athlete_name" value="${values.athlete_name ?? ''}" required />
+        ${moreChildrenFields(children, values.more, { summary: `More than one child? Up to ${children} at once` })}
+        <label for="contact_phone">Your phone</label>
+        <input id="contact_phone" name="contact_phone" type="tel" value="${values.contact_phone ?? ''}" required />
+        ${smsConsentCheckbox()}
+        <label for="waitlist_email">Your email (optional), to hear by email instead</label>
+        <input id="waitlist_email" name="contact_email" type="email" value="${values.contact_email ?? ''}" />
+        <button type="submit">Join the waitlist</button>
+      </form>
+      ${error ? html`<p class="error">${error}</p>` : raw('')}
+      <a class="action ghost" href="/c/${coach.handle}">See other times</a>`,
+  );
 }
 
 function renderBookingForm(
@@ -478,7 +541,6 @@ function renderBookingForm(
   opts: { creditsOnly?: boolean; children?: number } = {},
 ) {
   const children = opts.children ?? 1;
-  const extra = Array.from({ length: Math.max(0, children - 1) }, (_, i) => i + 2);
   return page(
     'Book a session',
     html`<h1>${session.name}</h1>
@@ -490,16 +552,10 @@ function renderBookingForm(
         ${values.from ? html`<input type="hidden" name="from" value="${values.from}" />` : raw('')}
         <label for="athlete_name">Athlete name</label>
         <input id="athlete_name" name="athlete_name" value="${values.athlete_name ?? ''}" required />
-        ${extra.length > 0
-          ? html`<details class="more-children"${(values.more ?? []).length > 0 ? raw(' open') : raw('')}>
-              <summary>Booking for more than one child? Up to ${children} at once</summary>
-              <p class="muted">Each child takes a spot and is paid for separately: one credit, or one drop-in each.</p>
-              ${extra.map(
-                (n) => html`<label for="athlete_name_${n}">Child ${n} (optional)</label>
-                  <input id="athlete_name_${n}" name="athlete_name_${n}" value="${values.more?.[n - 2] ?? ''}" />`,
-              )}
-            </details>`
-          : raw('')}
+        ${moreChildrenFields(children, values.more, {
+          summary: `Booking for more than one child? Up to ${children} at once`,
+          note: 'Each child takes a spot and is paid for separately: one credit, or one drop-in each.',
+        })}
         <label for="contact_phone">Your phone</label>
         <input id="contact_phone" name="contact_phone" type="tel" value="${values.contact_phone ?? ''}" required />
         ${smsConsentCheckbox()}
@@ -632,11 +688,19 @@ publicRouter.post('/c/:handle/sessions/:sessionId/waitlist', async (req, res) =>
   }
 
   const athleteName = field(req.body, 'athlete_name');
-  const names = athleteNames(req.body).slice(0, await childrenAllowed(db, coach));
-  const contactPhone = normalizePhone(field(req.body, 'contact_phone'));
+  const children = await childrenAllowed(db, coach);
+  const names = athleteNames(req.body).slice(0, children);
+  const rawPhone = field(req.body, 'contact_phone');
+  const contactPhone = normalizePhone(rawPhone);
   const contactEmail = field(req.body, 'contact_email') || null;
   if (!athleteName || !contactPhone) {
-    res.status(422).send(notFound());
+    const typed = {
+      athlete_name: athleteName,
+      contact_phone: rawPhone,
+      contact_email: contactEmail ?? undefined,
+      more: athleteNames(req.body).slice(athleteName ? 1 : 0),
+    };
+    res.status(422).send(renderWaitlistForm(coach, session, typed, 'Enter the athlete’s name and a valid phone number.', children));
     return;
   }
   if (!(await takeRequest(db, WAITLIST_LIMITS, clientKey(req)))) {
@@ -924,9 +988,11 @@ function renderCheckout(
       ${canPay || !needsPayment(session)
         ? html`<form method="post" action="${action}">
             <input type="hidden" name="mode" value="dropin" />
-            <button type="submit">${children > 1
-              ? `Pay $${((session.price_cents * children) / 100).toFixed(2)} — this session, ${spotsWord(children)}`
-              : `Pay $${(session.price_cents / 100).toFixed(2)} — this session only`}</button>
+            <button type="submit">${!needsPayment(session)
+              ? `Book ${children > 1 ? spotsWord(children) : 'it'} — free`
+              : children > 1
+                ? `Pay $${((session.price_cents * children) / 100).toFixed(2)} — this session, ${spotsWord(children)}`
+                : `Pay $${(session.price_cents / 100).toFixed(2)} — this session only`}</button>
           </form>`
         : raw('')}
 
@@ -1155,6 +1221,26 @@ publicRouter.post('/c/:handle/checkout/:token', async (req, res) => {
       );
       if (booked !== 'booked') {
         for (const id of creditIds) await restoreCredit(db, id);
+        await notBooked(booked);
+        return;
+      }
+      for (const child of ctx.pass) await sendBookingConfirmation(db, child.id);
+      void checkOverflow(db, ctx.session.id);
+      res.redirect(303, `/c/${coach.handle}/checkout/${checkoutToken}`);
+      return;
+    }
+
+    if (mode === 'dropin' && !needsPayment(ctx.session)) {
+      // A free session books here: there is nothing to pay, so nothing goes
+      // to the payment page.
+      const booked = await bookPendingBooking(
+        db,
+        ctx.booking,
+        ctx.session.capacity,
+        { paymentSource: 'DropIn', creditId: null, chargeId: null, grossCents: 0 },
+        ctx.pass.map(() => ({ creditId: null, grossCents: 0 })),
+      );
+      if (booked !== 'booked') {
         await notBooked(booked);
         return;
       }

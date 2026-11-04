@@ -284,9 +284,10 @@ async function handlePaid(db: DbClient, event: StoreEvent, eventId: string): Pro
     return;
   }
 
-  // Books while the hold stands, or after it lapsed while there is still room.
-  // A drop-in for several children is one payment, recorded as each
-  // child's share, so each child's cancel or no-show is one session.
+  // Books while the hold stands, or after it lapsed while there is still room:
+  // the payment is already taken, so a spot nobody has been offered yet is
+  // the payer's. A drop-in for several children is one payment, recorded as
+  // each child's share, so each child's cancel or no-show is one session.
   const rows = item.mode === 'dropin' ? pass.map(() => ({ creditId: null, grossCents: session.price_cents })) : undefined;
   const result = await bookPendingBooking(
     db,
@@ -294,6 +295,7 @@ async function handlePaid(db: DbClient, event: StoreEvent, eventId: string): Pro
     session.capacity,
     { paymentSource: item.paymentSource, creditId: null, chargeId: paymentRef, grossCents: amount },
     rows,
+    { paid: true },
   );
   if (result === 'closed') {
     // Cancelled since it was read above.

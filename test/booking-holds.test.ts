@@ -36,7 +36,8 @@ test('a pending booking holds the last spot, so a second parent is offered the w
 
       const publicPage = await (await fetch(`${base}/c/${seed.coach.handle}`)).text();
       assert.match(publicPage, /Full/);
-      assert.doesNotMatch(publicPage, /sessions\/\d+\/book/);
+      assert.doesNotMatch(publicPage, />Book</, 'no Book button while the spot is held');
+      assert.match(publicPage, /sessions\/\d+\/book">Join the waitlist</);
     });
     const held = await db.query<{ hold_expires_at: string }>('select hold_expires_at from booking where session_id = $1', [seed.sessionId]);
     assert.equal(held.rows.length, 1, 'the refused booking left nothing behind');
