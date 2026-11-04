@@ -78,7 +78,8 @@ interface SessionAggregate {
 
 /** Counts session *slots* the coach has scheduled in a window, regardless
  * of whether anyone has booked them yet - used for "next week's
- * projected," which is about capacity the coach has put up, not demand. */
+ * projected," which is about capacity the coach has put up, not demand.
+ * Nothing in it is sold yet, so it is priced at each type's price now. */
 async function aggregateSessionSlots(db: DbClient, coachId: number, from: Date, to: Date): Promise<SessionAggregate> {
   const result = await db.query<{ count: string; total_cents: string }>(
     `select count(*)::text as count, coalesce(sum(st.price_cents), 0)::text as total_cents
@@ -110,11 +111,17 @@ export function keptAsCreditSql(b: string): string {
 /** Counts live bookings (not session slots) on sessions in a window - used
  * for "booked this week," which is about demand actually realized: three
  * athletes booked into one session slot is 3 booked, not 1. Cents is the
- * booked session type's nominal price per booking (what was booked),
- * distinct from `collected`, which is what was actually charged. */
+ * session's price recorded on each booking when it was booked (what was
+ * booked), never the session type's price now, and distinct from
+ * `collected`, which is what was actually charged. A booking with no
+ * recorded price (the previous release can still book one while a deploy is
+ * under way) is valued the way migration 0027 values older ones: a
+ * drop-in's own charge, or else the type's price. */
 async function aggregateBookings(db: DbClient, coachId: number, from: Date, to: Date): Promise<SessionAggregate> {
   const result = await db.query<{ count: string; total_cents: string }>(
-    `select count(*)::text as count, coalesce(sum(st.price_cents), 0)::text as total_cents
+    `select count(*)::text as count,
+            coalesce(sum(coalesce(b.price_cents, case when b.payment_source = 'DropIn' then b.gross_cents end, st.price_cents)), 0)::text
+              as total_cents
      from booking b
      join session s on s.id = b.session_id
      join session_type st on st.id = s.session_type_id

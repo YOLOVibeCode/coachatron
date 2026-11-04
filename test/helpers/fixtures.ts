@@ -100,12 +100,14 @@ export async function seedRosterMember(
 }
 
 /** Books a session directly (bypassing checkout) so cascade tests can set
- * up a full session without exercising the whole M3 payment flow. */
+ * up a full session without exercising the whole M3 payment flow. The
+ * booking keeps the session's price, as a booking made at checkout does. */
 export async function seedBookedSession(db: DbClient, sessionId: number, athleteName: string, contactPhone: string): Promise<number> {
   const manageToken = crypto.randomBytes(32).toString('hex');
   const result = await db.query<{ id: number }>(
-    `insert into booking (session_id, athlete_name, contact_phone, payment_source, gross_cents, status, manage_token)
-     values ($1, $2, $3, 'DropIn', 0, 'booked', $4)
+    `insert into booking (session_id, athlete_name, contact_phone, payment_source, gross_cents, status, manage_token, price_cents)
+     values ($1, $2, $3, 'DropIn', 0, 'booked', $4,
+             (select st.price_cents from session s join session_type st on st.id = s.session_type_id where s.id = $1))
      returning id`,
     [sessionId, athleteName, contactPhone, manageToken],
   );

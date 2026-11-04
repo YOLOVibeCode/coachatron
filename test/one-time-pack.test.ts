@@ -4,7 +4,7 @@ import { freshDb } from './helpers/db.js';
 import { withServer } from './helpers/server.js';
 import { withRelay } from './helpers/relay.js';
 import { seedCoachWithSession } from './helpers/fixtures.js';
-import { createPlan } from '../src/domain/pricing.js';
+import { createPackage, createPlan } from '../src/domain/pricing.js';
 import { createCoachSession } from '../src/domain/auth.js';
 import { renderSetupPreview, setupSystemPrompt, validateSetupPlan } from '../src/domain/setup.js';
 
@@ -77,5 +77,27 @@ test('the setup model is told a plan is a one-time pack', async () => {
     const prompt = setupSystemPrompt(seed.coach, [], null, new Date());
     assert.match(prompt, /Plans are one-time packs, charged once/);
     assert.doesNotMatch(prompt, /subscri|recurring/i);
+  });
+});
+
+test('checkout says how long a package lasts, and a pack, whose sessions do not expire, promises no period', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 3 });
+    await createPackage(db, seed.coach.id, '10-pack', 10, 30000, 60);
+    await createPackage(db, seed.coach.id, '5-pack', 5, 16000);
+    await createPlan(db, seed.coach.id, 'Four pack', 12000, 4);
+    await withServer(async (base) => {
+      const book = await fetch(`${base}/c/${seed.coach.handle}/sessions/${seed.sessionId}/book`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ athlete_name: 'Rae', contact_phone: '5551112222' }),
+        redirect: 'manual',
+      });
+      const body = await (await fetch(new URL(book.headers.get('location') ?? '', base))).text();
+      assert.match(body, /Buy 10-pack — 10 sessions for \$300\.00, use within 60 days</);
+      assert.match(body, /Buy 5-pack — 5 sessions for \$160\.00</);
+      assert.match(body, /Buy Four pack — 4 sessions for \$120\.00, one-time</);
+    });
   });
 });

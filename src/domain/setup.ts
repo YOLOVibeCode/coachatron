@@ -219,7 +219,7 @@ export function setupSystemPrompt(
     'Durations are minutes: "an hour" is 60, "an hour and a half" is 90.',
     'weekday: 0 Sunday, 1 Monday, 2 Tuesday, 3 Wednesday, 4 Thursday, 5 Friday, 6 Saturday.',
     'time_local is 24-hour HH:MM. A bare hour from 1 to 11 means pm unless the coach says morning or am.',
-    '"Tuesdays and Thursdays at 6" is two weekly entries. "Saturday 9 to noon" in 45-minute slots is 9:00, 9:45, 10:30, 11:15.',
+    '"Tuesdays and Thursdays at 6" is two weekly entries. "Saturday 9am to noon" in 45-minute slots is 9:00, 9:45, 10:30, 11:15.',
     'Each weekly entry names its session type by key. Give every session type a short unique key.',
     'backup_pay_cents is what a backup coach is paid to run one session, if the coach says so.',
     'coach_timezone is an IANA zone only if the coach names a city or zone; otherwise null.',

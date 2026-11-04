@@ -1,4 +1,4 @@
-import type { DbClient } from '../db/client.js';
+import { inTransaction, type DbClient } from '../db/client.js';
 import { sendSms, type SendSmsResult } from '../relay/sms.js';
 import { sendEmail } from '../relay/email.js';
 import { RelayHttpError } from '../relay/http.js';
@@ -9,6 +9,7 @@ import {
   SMS_COACH_MONTHLY_CAP,
   SMS_PRODUCT_DAILY_FLOOR,
   SMS_PRODUCT_DAILY_PER_COACH,
+  visitorTextLimits,
 } from '../config.js';
 import { hasActiveConsent } from './sms-consent.js';
 import { isOptedOut } from './cascade.js';
@@ -132,7 +133,8 @@ export function canText(phone: string): boolean {
   return isDomesticDestination(phone) || (textsAreCaptured() && /^\+\d{8,15}$/.test(phone));
 }
 
-/** busy: the relay's own limits (HTTP 429) refused it; try again later. */
+/** busy: try again later. The relay's own limits (HTTP 429) refused it, or
+ * it is a visitor's text and the app-wide visitor ceiling is reached. */
 export type SendOutcome = 'sent' | 'capped' | 'refused' | 'busy';
 
 export interface OutboundText {
@@ -144,6 +146,11 @@ export interface OutboundText {
   template: string;
   /** Optional ceiling on this template to this number in 24 hours. */
   perRecipientDailyMax?: number;
+  /** Set off by someone who is not signed in, so it counts against the
+   * app-wide visitor ceiling (visitorTextLimits): 'always' (a sign-in code,
+   * a start link, an opt-in confirmation), or 'new-number' only when no
+   * text has been sent to this number before (a booking or waitlist text). */
+  visitor?: 'always' | 'new-number';
 }
 
 /** Texts that answer the person this moment and need no standing consent:
@@ -176,20 +183,41 @@ export function composeText(body: string, template: string): string {
  * it to pick a shorter wording instead of losing the end of the link, and
  * the assistant's questions to keep their "Reply Y." */
 export function fitsOneSegment(body: string, template: string): boolean {
+  return segmentRoom(body, template) >= 0;
+}
+
+/** How many more characters fit in this body's one segment once the brand
+ * and (where the template takes it) the opt-out line are in: GSM-7
+ * characters, or UTF-16 units against 70 when the body needs UCS-2.
+ * Negative when it is that many over. */
+export function segmentRoom(body: string, template: string): number {
   const branded = withBrand(body.trim());
   const reserve = NO_OPT_OUT_LINE_TEMPLATES.has(template) || /\bSTOP\b/.test(branded) ? 0 : OPT_OUT_LINE.length + 1;
   const text = plainText(branded);
   const length = gsmLength(text);
-  if (length !== null) return length + reserve <= GSM_SEGMENT;
-  return text.length + reserve <= UCS2_SEGMENT;
+  if (length !== null) return GSM_SEGMENT - reserve - length;
+  return UCS2_SEGMENT - reserve - text.length;
+}
+
+/** Plain words cut to at most `room` GSM-7 characters, ending in "..."
+ * when they are cut. */
+export function shortenTo(words: string, room: number): string {
+  return toOneSegment(words, GSM_SEGMENT - room);
 }
 
 type Channel = 'sms' | 'email';
 
 /** A text is logged 'sent'; Twilio's delivery reports (matched on the sid)
  * then move it to queued, delivered, undelivered and so on. Every one of
- * those left for the carrier, so every one still counts against a ceiling. */
-const SENT_STATUSES = "('sent', 'accepted', 'queued', 'sending', 'delivered', 'undelivered', 'read')";
+ * those left for the carrier, so every one still counts against a ceiling.
+ * A visitor's text is 'reserved' while it goes to the relay, and counts
+ * from then on (reserveVisitorText). */
+const SENT_STATUSES = "('reserved', 'sent', 'accepted', 'queued', 'sending', 'delivered', 'undelivered', 'read')";
+
+/** The transaction lock that lets one visitor's text at a time check the
+ * visitor ceiling and take its place under it. Any fixed number works; it
+ * only has to be the same everywhere. */
+const VISITOR_TEXT_LOCK = 7_316_001;
 
 /** Counts sent rows on one channel; SMS ceilings never count emails. */
 async function countSent(db: DbClient, where: string, params: unknown[], channel: Channel = 'sms'): Promise<number> {
@@ -198,6 +226,57 @@ async function countSent(db: DbClient, where: string, params: unknown[], channel
     params,
   );
   return Number(result.rows[0]?.n ?? '0');
+}
+
+/** Whether a text has ever gone out to this number. */
+async function textedBefore(db: DbClient, phone: string): Promise<boolean> {
+  return (await countSent(db, 'to_phone = $1', [phone])) > 0;
+}
+
+/** Whether this text counts against the visitor ceiling. */
+async function countsAsVisitor(db: DbClient, msg: OutboundText): Promise<boolean> {
+  if (msg.visitor === 'always') return true;
+  return msg.visitor === 'new-number' && !(await textedBefore(db, msg.to));
+}
+
+/** Which visitor ceiling, if any, this visitor's text would cross: the
+ * hour's or the day's, or the reserve kept from the product's day for
+ * everyone else's texts. */
+async function visitorCeilingHit(db: DbClient, now: Date): Promise<string | null> {
+  const limits = visitorTextLimits();
+  const hourAgo = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
+  if ((await countSent(db, 'visitor and sent_at > $1', [hourAgo])) >= limits.hourly) return 'visitor-hourly';
+  const utcDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
+  if ((await countSent(db, 'visitor and sent_at >= $1', [utcDay])) >= limits.daily) return 'visitor-daily';
+  if ((await countSent(db, 'sent_at >= $1', [utcDay])) + limits.reserve >= (await productDailyCeiling(db, now))) return 'visitor-reserve';
+  return null;
+}
+
+/** Checks the visitor ceiling and, when there is room, writes the text's
+ * row as 'reserved' before it goes, in one transaction under
+ * VISITOR_TEXT_LOCK. Texts asked for at the same moment (many addresses at
+ * once) then each see the ones before them, so no more than the ceiling go
+ * out. Returns the row to finish once the relay answers, or the ceiling it
+ * would cross. A process that stops before finishing leaves its row
+ * 'reserved', still counted, which errs on the side of fewer texts. */
+async function reserveVisitorText(
+  db: DbClient,
+  msg: OutboundText,
+  body: string,
+  now: Date,
+): Promise<{ rowId: number } | { hit: string }> {
+  return inTransaction(db, async (tx) => {
+    await tx.query('select pg_advisory_xact_lock($1)', [VISITOR_TEXT_LOCK]);
+    const hit = await visitorCeilingHit(tx, now);
+    if (hit) return { hit };
+    const row = await tx.query<{ id: number }>(
+      `insert into message_log (to_phone, template, body, provider_id, sent_at, status, coach_id, channel, visitor)
+       values ($1, $2, $3, null, $4, 'reserved', $5, 'sms', true)
+       returning id`,
+      [msg.to, msg.template, body, now.toISOString(), msg.coachId],
+    );
+    return { rowId: row.rows[0].id };
+  });
 }
 
 async function productDailyCeiling(db: DbClient, now: Date): Promise<number> {
@@ -243,11 +322,12 @@ async function log(
   providerId: string | null,
   now: Date,
   channel: Channel = 'sms',
+  visitor = false,
 ) {
   await db.query(
-    `insert into message_log (to_phone, template, body, provider_id, sent_at, status, coach_id, channel)
-     values ($1, $2, $3, $4, $5, $6, $7, $8)`,
-    [msg.to, msg.template, body, providerId, now.toISOString(), status, msg.coachId, channel],
+    `insert into message_log (to_phone, template, body, provider_id, sent_at, status, coach_id, channel, visitor)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [msg.to, msg.template, body, providerId, now.toISOString(), status, msg.coachId, channel, visitor],
   );
 }
 
@@ -271,31 +351,49 @@ export async function sendText(db: DbClient, msg: OutboundText, now: Date = new 
     console.warn(`sms: ${hit} ceiling reached, not sending ${msg.template} (coach ${msg.coachId ?? '-'})`);
     return 'capped';
   }
+  // A visitor's text past the app-wide visitor ceiling waits: 'busy', so
+  // the form says to try again later (or use email where there is one).
+  // Under it, the text takes its place before it goes.
+  let reservedRow: number | null = null;
+  if (await countsAsVisitor(db, msg)) {
+    const reserved = await reserveVisitorText(db, msg, body, now);
+    if ('hit' in reserved) {
+      await log(db, msg, body, `capped-${reserved.hit}`, null, now, 'sms', true);
+      console.warn(`sms: ${reserved.hit} ceiling reached, not sending ${msg.template} (coach ${msg.coachId ?? '-'})`);
+      return 'busy';
+    }
+    reservedRow = reserved.rowId;
+  }
+  // How the send ended: on the reserved row, or on a row of its own.
+  const record = async (status: string, providerId: string | null) => {
+    if (reservedRow === null) await log(db, msg, body, status, providerId, now);
+    else await db.query('update message_log set status = $2, provider_id = $3 where id = $1', [reservedRow, status, providerId]);
+  };
   let sent: SendSmsResult;
   try {
     sent = await sendSms({ to: msg.to, body });
   } catch (err) {
     // The relay was not reached. Logged like any failed send, so a limit
     // on failures (reminders) counts it.
-    await log(db, msg, body, 'failed', null, now);
+    await record('failed', null);
     throw err;
   }
   if (sent.ok) {
-    await log(db, msg, body, 'sent', sent.id, now);
+    await record('sent', sent.id);
     return 'sent';
   }
   if (sent.status === 429) {
-    await log(db, msg, body, 'capped-relay', null, now);
+    await record('capped-relay', null);
     console.warn(`sms: the relay's limits refused ${msg.template} (coach ${msg.coachId ?? '-'}); try later`);
     return 'busy';
   }
   if (sent.code === 21610) {
     await revokeConsent(db, msg.to);
-    await log(db, msg, body, 'failed-opt-out', null, now);
+    await record('failed-opt-out', null);
     console.warn(`sms: recipient opted out (21610), not sending ${msg.template} to ${msg.to}`);
     return 'refused';
   }
-  await log(db, msg, body, 'failed', null, now);
+  await record('failed', null);
   throw new RelayHttpError(`relay sms send failed: ${sent.code} ${sent.message}`, sent.status);
 }
 

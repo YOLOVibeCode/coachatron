@@ -369,6 +369,7 @@ publicRouter.post('/sms', async (req, res) => {
         coachId: null,
         template: 'opt-in-confirmation',
         perRecipientDailyMax: 1,
+        visitor: 'always',
       })) === 'sent';
   } catch (err) {
     console.error('sms opt-in confirmation not sent:', err instanceof Error ? err.message : err);
@@ -792,7 +793,7 @@ type CreditState =
   | { kind: 'hidden' };
 
 type CheckoutOptions = {
-  packages: Array<{ id: number; name: string; credits: number; price_cents: number }>;
+  packages: Array<{ id: number; name: string; credits: number; price_cents: number; expires_days: number | null }>;
   plans: Array<{ id: number; name: string; price_cents: number; credits_per_month: number }>;
   credit: CreditState;
   /** False while the coach cannot take payments: only credits and free sessions are offered. */
@@ -1013,7 +1014,9 @@ function renderCheckout(
         (p) => html`<form method="post" action="${action}">
           <input type="hidden" name="mode" value="package" />
           <input type="hidden" name="package_id" value="${p.id}" />
-          <button type="submit">Buy ${p.name} — ${p.credits} sessions for $${(p.price_cents / 100).toFixed(2)}</button>
+          <button type="submit">Buy ${p.name} — ${p.credits} sessions for $${(p.price_cents / 100).toFixed(2)}${p.expires_days
+            ? `, use within ${p.expires_days} days`
+            : ''}</button>
         </form>`,
       )}
 
@@ -1030,7 +1033,7 @@ function renderCheckout(
 
 const CODE_NOT_SENT: Record<Exclude<SendOutcome, 'sent'> | 'failed', [number, string]> = {
   capped: [429, 'Too many codes for this number today. Try again tomorrow.'],
-  busy: [429, "We can't send codes right now. Try again in a few minutes."],
+  busy: [429, "We can't send codes right now. Try again later."],
   failed: [502, "We couldn't send a code just now. Try again in a minute."],
   refused: [422, "We can't text that number."],
 };
@@ -1052,12 +1055,13 @@ async function sendCreditCode(db: DbClient, phone: string): Promise<SendOutcome 
       coachId: null,
       template: 'otp',
       perRecipientDailyMax: OTP_DAILY_MAX_PER_CONTACT,
+      visitor: 'always',
     });
   } catch (err) {
     console.error('checkout code not sent:', err instanceof Error ? err.message : err);
     return 'failed';
   }
-  if (outcome === 'sent') await createOtp(db, { kind: 'phone', phone }, { code });
+  if (outcome === 'sent') await createOtp(db, { kind: 'phone', phone }, { code, purpose: 'credits' });
   return outcome;
 }
 
@@ -1097,7 +1101,7 @@ publicRouter.post('/c/:handle/checkout/:token', async (req, res) => {
   const phone = ctx.booking.contact_phone;
   const recipientKey = getConnectRecipientKey(coach);
   const bookingId = ctx.booking.id;
-  const email = buyerEmail(phone, ctx.booking.contact_email, bookingId);
+  const email = buyerEmail(ctx.booking.contact_email, checkoutToken);
 
   // Every mode but a credit (or a free drop-in) goes to the payment page.
   const paying = mode === 'package' || mode === 'plan' || (mode === 'dropin' && needsPayment(ctx.session));
@@ -1116,8 +1120,9 @@ publicRouter.post('/c/:handle/checkout/:token', async (req, res) => {
   };
 
   try {
-    // Proving the phone, so its credits can be used: the same one-time codes,
-    // limits and wrong-try count as signing in.
+    // Proving the phone, so its credits can be used: one-time codes with the
+    // same limits and wrong-try count as signing in, kept apart from sign-in
+    // codes, so one never works as the other.
     if (mode === 'send_code') {
       if (ctx.booking.phone_verified_at) {
         res.redirect(303, `/c/${coach.handle}/checkout/${checkoutToken}`);
@@ -1161,12 +1166,14 @@ publicRouter.post('/c/:handle/checkout/:token', async (req, res) => {
       // Counted per address, and per number while it has a live code. Each
       // code also stops working after a few wrong tries.
       const byAddress = await takeRequest(db, CODE_CHECK_IP_LIMITS, clientKey(req));
-      const byNumber = (await hasLiveOtp(db, contact)) ? await takeRequest(db, CODE_CHECK_CONTACT_LIMITS, contactKey(contact)) : true;
+      const byNumber = (await hasLiveOtp(db, contact, 'credits'))
+        ? await takeRequest(db, CODE_CHECK_CONTACT_LIMITS, contactKey(contact))
+        : true;
       if (!byAddress || !byNumber) {
         await showCheckout(429, 'Too many tries. Try again in an hour.', { codeSent: true });
         return;
       }
-      const check = await checkOtp(db, contact, field(req.body, 'code'));
+      const check = await checkOtp(db, contact, field(req.body, 'code'), 'credits');
       if (!check.ok) {
         // A wrong code can be tried again; a code that is used up or gone
         // needs a new one, so the page offers to text one.
@@ -1400,6 +1407,7 @@ async function rosterOptIn(req: Request, res: Response, db: DbClient, member: Ro
       coachId: null,
       template: 'opt-in-confirmation',
       perRecipientDailyMax: 1,
+      visitor: 'always',
     });
   } catch (err) {
     console.error('roster opt-in confirmation not sent:', err instanceof Error ? err.message : err);

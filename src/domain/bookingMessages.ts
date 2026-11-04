@@ -4,7 +4,7 @@ import { escapeHtml } from '../lib/html.js';
 import { formatCoachDollars, formatConfirmWhen } from '../lib/time.js';
 import { PLACEHOLDER_EMAIL_DOMAIN } from '../relay/buy-link.js';
 import { normalizeEmail } from './auth.js';
-import { OPT_OUT_LINE, canText, sendEmailMessage, sendText, toOneSegment, type SendOutcome } from './outbound.js';
+import { OPT_OUT_LINE, canText, sendEmailMessage, sendText, toOneSegment, type OutboundText, type SendOutcome } from './outbound.js';
 import { hasActiveConsent } from './sms-consent.js';
 
 /** What a parent is told about their own booking: that it is booked, that
@@ -69,6 +69,8 @@ function shortWhen(when: string): string {
 }
 
 interface BookingDetails {
+  /** Set when the booking was paid for: a payment ref. */
+  charge_id: string | null;
   athlete_name: string;
   contact_phone: string;
   contact_email: string | null;
@@ -83,7 +85,7 @@ interface BookingDetails {
 
 async function loadDetails(db: DbClient, bookingId: number): Promise<BookingDetails | null> {
   const result = await db.query<BookingDetails>(
-    `select b.athlete_name, b.contact_phone, b.contact_email, b.manage_token, s.starts_at_utc, s.tz, s.location_text,
+    `select b.charge_id, b.athlete_name, b.contact_phone, b.contact_email, b.manage_token, s.starts_at_utc, s.tz, s.location_text,
             st.name as session_name, c.id as coach_id, c.name as coach_name
      from booking b
      join session s on s.id = b.session_id
@@ -103,10 +105,16 @@ function describe(d: BookingDetails): { when: string; place: string; athlete: st
   };
 }
 
-async function textParent(db: DbClient, d: BookingDetails, body: string, template: string): Promise<MessageOutcome> {
+async function textParent(
+  db: DbClient,
+  d: BookingDetails,
+  body: string,
+  template: string,
+  visitor?: OutboundText['visitor'],
+): Promise<MessageOutcome> {
   if (!canText(d.contact_phone) || !(await hasActiveConsent(db, d.contact_phone))) return 'skipped';
   try {
-    return await sendText(db, { to: d.contact_phone, body, coachId: d.coach_id, template });
+    return await sendText(db, { to: d.contact_phone, body, coachId: d.coach_id, template, ...(visitor ? { visitor } : {}) });
   } catch (err) {
     console.error(`booking-message: ${template} text failed:`, err instanceof Error ? err.message : err);
     return 'failed';
@@ -136,7 +144,9 @@ function emailHtml(paragraphs: string[], link: string, linkLabel: string): strin
 }
 
 /** Sent when a booking becomes booked, by any way of paying: what, when,
- * where, and the manage link. */
+ * where, and the manage link. A booking nobody paid for (a free session)
+ * was set off by a form anyone can fill in, so its text to a number never
+ * texted before counts against the app-wide visitor ceiling. */
 export async function sendBookingConfirmation(db: DbClient, bookingId: number): Promise<ParentMessageResult> {
   const d = await loadDetails(db, bookingId);
   if (!d) return { text: 'skipped', email: 'skipped' };
@@ -147,6 +157,7 @@ export async function sendBookingConfirmation(db: DbClient, bookingId: number): 
     d,
     textWithLink(`Coachatron: ${athlete} is booked: ${d.session_name} ${shortWhen(when)}${place}.`, link),
     'booking-confirmation',
+    d.charge_id ? undefined : 'new-number',
   );
   const line = `${d.athlete_name} is booked for ${d.session_name} with ${d.coach_name}: ${when}${place}.`;
   const email = await emailParent(
@@ -160,6 +171,34 @@ export async function sendBookingConfirmation(db: DbClient, bookingId: number): 
     'booking-confirmation',
   );
   return { text, email };
+}
+
+/** Sent when the coach cancels a session, to a parent the cancel's text did
+ * not reach (they chose no texts, opted out, or the text did not go out)
+ * who gave an email: what was cancelled and, when there is one, the session
+ * credit they now hold. 'skipped' when there is no address to send to. */
+export async function sendSessionCancelledEmail(
+  db: DbClient,
+  bookingId: number,
+  credit: 'drop-in' | 'credit-back' | null,
+): Promise<MessageOutcome> {
+  const d = await loadDetails(db, bookingId);
+  if (!d) return 'skipped';
+  const { when } = describe(d);
+  const lines = [`${d.coach_name} cancelled ${d.athlete_name}'s ${d.session_name} on ${when}.`];
+  if (credit === 'drop-in') lines.push(`Your payment is now 1 session credit with ${d.coach_name}, for another session.`);
+  if (credit === 'credit-back') lines.push(`Your session credit with ${d.coach_name} is back, for another session.`);
+  const link = manageUrl(d.manage_token);
+  return emailParent(
+    db,
+    d,
+    {
+      subject: `Cancelled: ${d.session_name}, ${when}`,
+      text: `${lines.join(' ')}\n\nYour booking: ${link}\n\nCoachatron`,
+      html: emailHtml(lines, link, 'See your booking'),
+    },
+    'session-cancelled',
+  );
 }
 
 function refundAmount(cents: number | null): string {

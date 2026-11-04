@@ -154,6 +154,15 @@ To exercise real Connect Hub, SMS, and email against Noctusoft `ns` (not used in
 | `STORE_BASE_URL` | Optional. Host for signed buy links (`/buy/connect/…`); defaults to `RELAY_BASE_URL`, then the relay's store host `https://store.noctusoft.com` |
 | `STORE_WEBHOOK_URL` | Optional. The URL store events are signed for, checked on `/webhooks/store`; defaults to `APP_BASE_URL` + `/webhooks/store` |
 | `RELAY_APP_ENV` | Set to `dev` so relay email is captured (smtp4dev) instead of delivered |
+| `APP_ENV` | `development`, `uat` or `production`; Railway's environment name when unset. Shown on `/health` |
+| `ALLOW_TEST_PAYMENTS` | Production only, default off. Off: a test-mode payment, refund or dispute event is not applied (no booking, no credit), and a coach whose payment account is a test one cannot take bookings. `1` or `true` lets production take test payments. Other environments always take them |
+| `SMS_VISITOR_HOURLY_CAP` | Texts set off by people who are not signed in, across the app, per hour (default 30): see [Texting ceilings](#texting-ceilings) |
+| `SMS_VISITOR_DAILY_CAP` | The same per UTC day (default 100) |
+| `SMS_DAILY_RESERVE` | Texts kept back from the product's day for everything else (default 100): visitor texts stop once fewer than this are left |
+
+Every variable in this table is listed in `.railway/railway.ts` as
+`preserve()`, because `railway config apply` deletes a web variable the file
+leaves out. Add a new one there before setting it in Railway.
 
 Do not commit secrets. `npm test` uses the in-process fake in `test/fakes/relay.ts`.
 
@@ -162,8 +171,10 @@ Do not commit secrets. `npm test` uses the in-process fake in `test/fakes/relay.
 - **Plans are one-time packs.** A plan is charged once: checkout charges the
   pack's price one time and grants its sessions as credits that do not
   expire, and nothing renews it, so the Pricing screen and checkout call it a
-  one-time pack. Monthly renewal would use the relay's seller subscriptions,
-  which this slice doesn't call (see `ROADMAP.md` M3).
+  one-time pack. Its purchase is recorded like a package's (payment source
+  `Pack`, and the credit it leaves), with no subscription row. Monthly
+  renewal would use the relay's seller subscriptions, which this slice
+  doesn't call (see `ROADMAP.md` M3).
 - **Refunds are whole payments.** A package or pack whose credits were
   partly used is not refunded in the app; a partial refund goes through
   Coachatron support (`SPEC.md §9.4`). A card dispute is shown on Money, but
@@ -204,6 +215,16 @@ link again about a day and about three days after publishing, two reminders
 at most. Whether a coach can take charges is saved (`coach_payments`), so the
 public page does not ask the relay on every view.
 
+The relay marks each payment and each coach's payment account test or live.
+In production (`APP_ENV=production`) only live money counts: a test-mode
+paid, refund or dispute event is not applied (it books nothing, gives no
+credit and shows nothing on Money; it is logged), and a coach
+whose account is a test one shows **Booking opens soon** and is told so on
+Money, until the account is live or `ALLOW_TEST_PAYMENTS` is set. The
+production relay row is test-only today, so production booking stays closed
+until it is switched to live. Development and uat take test payments as
+before.
+
 ## Booking and paying
 
 - **Spot holds.** Starting a booking holds the spot for 15 minutes while the
@@ -230,7 +251,9 @@ public page does not ask the relay on every view.
 - **A coach's cancel** returns a credit for every paid booking: a package or
   pack credit comes back, keeping the expiry it had, and a paid drop-in
   becomes one session credit with the coach, with no expiry. Each parent who
-  chose texts is told; the session screen shows who could not be reached. A
+  chose texts is told by text, and a parent the text does not reach who gave
+  an email is told by email; the session screen counts both and shows who
+  could not be reached. A
   payment that arrives for a session the coach cancelled while the parent was
   paying becomes credit the same way, and the parent is told by text or
   email.
@@ -285,8 +308,21 @@ near $0.0083 a segment); and stops at 300 texts per coach per local day,
 (never below 500), and 5 sign-in codes per number or email per day. Requests
 that send a code, opt in at `/sms`, join a waitlist, start a booking, or use
 the landing page's box are also limited per client address
-(`src/domain/requestLimits.ts`). Every attempt, sent or stopped, is written
-to `message_log`.
+(`src/domain/requestLimits.ts`). Texts set off by people who are not signed
+in (sign-in codes, start links, opt-in confirmations, and booking and
+waitlist texts to a number never texted before) also share an app-wide
+ceiling, whatever address they come from: 30 an hour and 100 a UTC day, and
+none once fewer than 100 of the product's day are left, so reminders and
+replies to people already texted still go (`SMS_VISITOR_HOURLY_CAP`,
+`SMS_VISITOR_DAILY_CAP`, `SMS_DAILY_RESERVE`). Each such text takes its
+place under the ceiling before it goes (its row is written `reserved`, under
+a lock, then marked sent or failed), so requests that arrive together cannot
+all pass the same count. A form that hits it says to try again later, or to
+use email where it can; a waitlist offer goes by email or waits for a later
+try; a start link it holds does not use up the number's one reply of the
+day, so their next text can get it. A signed-in coach's texts and paid
+bookings are not counted. Every attempt, sent or stopped, is written to
+`message_log`.
 
 ## Voice-setup eval (live model, opt-in)
 

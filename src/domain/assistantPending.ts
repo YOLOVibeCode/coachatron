@@ -204,3 +204,9 @@ export async function takeDailyReplySlot(db: DbClient, phone: string, now: Date)
   await db.query('insert into inbound_auto_reply (phone, day_utc) values ($1, $2)', [phone, dayUtc]);
   return true;
 }
+
+/** Gives back the number's reply for the UTC day when nothing went out,
+ * so a text after a ceiling clears (or the relay is back) is answered. */
+export async function releaseDailyReplySlot(db: DbClient, phone: string, now: Date): Promise<void> {
+  await db.query('delete from inbound_auto_reply where phone = $1 and day_utc = $2', [phone, now.toISOString().slice(0, 10)]);
+}

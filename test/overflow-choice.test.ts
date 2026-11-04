@@ -5,9 +5,11 @@ import { withServer } from './helpers/server.js';
 import { withRelay } from './helpers/relay.js';
 import { postSignedSms } from './helpers/sms-webhook.js';
 import { seedBookedSession, seedCoachWithSession, seedRosterMember, seedWaitlistEntry } from './helpers/fixtures.js';
-import { acceptOffer, answerAsk, checkOverflow, startCascade } from '../src/domain/cascade.js';
+import { acceptOffer, answerAsk, checkOverflow, claimedText, startCascade } from '../src/domain/cascade.js';
+import { composeText, segmentCount } from '../src/domain/outbound.js';
 import { cancelScheduledSession } from '../src/domain/cancelSession.js';
 import { createCoachSession } from '../src/domain/auth.js';
+import { revokeConsent } from '../src/domain/sms-consent.js';
 import { runTick } from '../src/jobs/tick.js';
 import { setComplete, resetComplete } from '../src/llm/complete.js';
 import { fakeComplete } from './fakes/llm.js';
@@ -529,5 +531,137 @@ test('the offer page names the job', async () => {
       ).text();
       assert.match(accepted, /no longer open \(accepted\)/);
     });
+  });
+});
+
+test('a member who takes a backup job by replying Y is texted that it is theirs, with when, where and the pay', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await fullSession(db, { capacity: 2, location: 'Field 3' });
+    await db.query('update session_type set backup_pay_cents = 8000 where id = $1', [seed.sessionTypeId]);
+    const member = await seedRosterMember(db, seed.coach.id, 'Bailey Backup', 0);
+    await checkOverflow(db, seed.sessionId);
+    await answerAsk(db, seed.coach.id, 'backup');
+    await withServer(async (base) => {
+      await smsTo(base, member.phone, 'Y');
+    });
+    const toMember = relay.sms.filter((m) => m.to === member.phone);
+    assert.equal(toMember.length, 2, 'the offer, then the confirmation');
+    assert.match(toMember[1].body, /^Coachatron: it's yours\. Backup coach for Goalkeeper Group \w{3} \w{3} \d{1,2} \d{1,2}(:\d\d)?[ap]m, Field 3, 2 athletes, pays \$80\. Reply STOP to opt out\.$/);
+    const logged = await db.query<{ template: string; coach_id: number }>("select template, coach_id from message_log where to_phone = $1 and status = 'sent' order by id", [
+      member.phone,
+    ]);
+    assert.deepEqual(logged.rows.map((r) => r.template), ['offer', 'offer-claimed']);
+    assert.equal(logged.rows[1].coach_id, seed.coach.id, 'counted against the coach like the offer');
+  });
+});
+
+test('the Y confirmation still says the job is theirs, with the time, size and pay, when the name and place are long', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await fullSession(db, { capacity: 2, location: 'Westside Community Park, North Field 3' });
+    await db.query("update session_type set name = 'Advanced Footwork and Finishing U14', backup_pay_cents = 8000 where id = $1", [seed.sessionTypeId]);
+    const member = await seedRosterMember(db, seed.coach.id, 'Bailey Backup', 0);
+    await checkOverflow(db, seed.sessionId);
+    await answerAsk(db, seed.coach.id, 'backup');
+    await withServer(async (base) => {
+      await smsTo(base, member.phone, 'Y');
+    });
+    const body = relay.sms.filter((m) => m.to === member.phone).at(-1)?.body ?? '';
+    assert.equal(segmentCount(body), 1, body);
+    assert.match(
+      body,
+      /^Coachatron: it's yours\. Backup coach for Advanced Footwork and Finishing U14 \w{3} \w{3} \d{1,2} \d{1,2}(:\d\d)?[ap]m, Westside[^,]*\.\.\., 2 athletes, pays \$80\. Reply STOP to opt out\.$/,
+      'the place is shortened, never the job, the time, the size or the pay',
+    );
+  });
+});
+
+test('the confirmation drops a place that would be cut too short, then shortens the name, for either job', () => {
+  const info = (name: string, locationText: string | null): Parameters<typeof claimedText>[0] => ({
+    sessionId: 1,
+    coachId: 1,
+    coachPhone: null,
+    coachEmail: null,
+    status: 'scheduled',
+    startsAtUtc: '2026-11-10T00:30:00.000Z',
+    tz: 'America/Chicago',
+    name,
+    locationText,
+    capacity: 12,
+    typeCapacity: 12,
+    overflowThreshold: 3,
+    label: name,
+    backupPayCents: 8050,
+  });
+  const longName = 'Saturday Morning Advanced Footwork and Finishing Clinic for the U14 and U15 Groups';
+  const longPlace = 'Westside Community Park, North Field 3, past the tennis courts';
+  for (const kind of ['backup', 'second_group'] as const) {
+    const size = kind === 'second_group' ? 'up to 12 athletes' : '11 athletes';
+    for (const [name, place] of [
+      ['Advanced Skills Group U12', 'Westside Community Park Field 3'],
+      [longName, longPlace],
+      [longName, null],
+    ] as const) {
+      const text = composeText(claimedText(info(name, place), kind, 11), 'offer-claimed');
+      assert.equal(segmentCount(text), 1, text);
+      assert.match(text, /^Coachatron: it's yours\. /, text);
+      assert.ok(text.includes(` Mon Nov 9 6:30pm`), text);
+      assert.ok(text.endsWith(`, ${size}, pays $80.50. Reply STOP to opt out.`), text);
+    }
+    const shortName = composeText(claimedText(info('Advanced Skills Group U12', 'Westside Community Park Field 3'), kind, 11), 'offer-claimed');
+    assert.ok(shortName.includes('Advanced Skills Group U12'), `the name stays whole while the place can give: ${shortName}`);
+    const both = composeText(claimedText(info(longName, longPlace), kind, 11), 'offer-claimed');
+    assert.ok(!both.includes('Westside'), `a place with too little room is left out: ${both}`);
+    assert.match(both, /Saturday Morning Advanced[^.]*\.\.\./, both);
+  }
+});
+
+test('a member who takes a second group by replying Y is texted its time, place and size; the page accept is not texted', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await fullSession(db, { capacity: 2, location: 'Field 3' });
+    const member = await seedRosterMember(db, seed.coach.id, 'Sam Second', 0);
+    await checkOverflow(db, seed.sessionId);
+    await answerAsk(db, seed.coach.id, 'second_group');
+    await withServer(async (base) => {
+      await smsTo(base, member.phone, 'Y');
+    });
+    const confirmation = relay.sms.filter((m) => m.to === member.phone).at(-1);
+    assert.match(confirmation?.body ?? '', /^Coachatron: it's yours\. Coach a second Goalkeeper Group group .*, Field 3, up to 2 athletes\./);
+
+    // On the offer page instead: the page says so, and no text follows.
+    const other = await fullSession(db, { capacity: 1 });
+    const viaPage = await seedRosterMember(db, other.coach.id, 'Page Person', 0);
+    await checkOverflow(db, other.sessionId);
+    await answerAsk(db, other.coach.id, 'backup');
+    const [offer] = await offers(db, other.sessionId);
+    await withServer(async (base) => {
+      const res = await fetch(`${base}/offer/${offer.token}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: 'action=accept',
+      });
+      assert.equal(res.status, 200);
+    });
+    assert.equal(relay.sms.filter((m) => m.to === viaPage.phone).length, 1, 'only the offer');
+  });
+});
+
+test('a member who opted out after the offer is not texted when their Y takes the job', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await fullSession(db);
+    const member = await seedRosterMember(db, seed.coach.id, 'Quiet Quinn', 0);
+    await checkOverflow(db, seed.sessionId);
+    await answerAsk(db, seed.coach.id, 'backup');
+    await revokeConsent(db, member.phone);
+    await withServer(async (base) => {
+      await smsTo(base, member.phone, 'Y');
+    });
+    assert.deepEqual((await offers(db, seed.sessionId)).map((o) => o.state), ['accepted']);
+    assert.equal(relay.sms.filter((m) => m.to === member.phone).length, 1, 'only the offer');
+    const refused = await db.query<{ status: string }>("select status from message_log where to_phone = $1 and template = 'offer-claimed'", [member.phone]);
+    assert.deepEqual(refused.rows.map((r) => r.status), ['refused-opt-out']);
   });
 });
