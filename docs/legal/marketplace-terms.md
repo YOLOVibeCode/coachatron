@@ -43,10 +43,11 @@ coach who accepted an older version.]
 
 ## 2. You are the merchant
 
-- You sell your sessions, packages, and monthly plans directly to the parents
-  and athletes who book you. **You are the seller and the merchant of record
-  for every payment.** Coachatron is not a party to that sale.
-- You set your prices and what each package or plan includes.
+- You sell your sessions, packages, and one-time packs directly to the
+  parents and athletes who book you. **You are the seller and the merchant of
+  record for every payment.** Coachatron is not a party to that sale.
+- You set your prices and what each package or pack includes. A one-time pack
+  is charged once and does not renew.
 - Coachatron is software: your public page, booking, checkout links, texts
   about bookings, and the Money screen. We do not employ you, we do not
   supervise how you coach, and we do not resell your sessions.
@@ -87,6 +88,16 @@ link to show coaches.]
   receive payouts, and what Stripe still needs from you). We show that on the
   Money screen.
 - Today Coachatron supports coaches in the United States, paid in US dollars.
+- **Booking opens when your account can take payments.** Until Stripe says it
+  can, your public page shows paid sessions as "Booking opens soon" and
+  takes no payment. Free sessions can still be booked, and families who hold
+  session credits with you can still book with them.
+- **Texts about setting up payments.** If your mobile has opted in to texts,
+  when you first publish we text you your page link and, until payments work,
+  a link that signs you in on the Money screen to set them up (it works once,
+  within 7 days). We text you once when your account can take payments, and
+  if setup is still unfinished we send the link again about one and about
+  three days after you publish, twice at most.
 
 ## 4. Fees
 
@@ -148,11 +159,22 @@ taxpayer details for it.]
 - We may issue a refund without your request only where the law, Stripe, or a
   card network requires it, or to correct a charge made in error by
   Coachatron.
+- **Payments that could not book.** A payment can arrive after its spot was
+  taken (a parent's spot is held for 15 minutes while they pay), after the
+  session started, for an amount that does not match the price, or as a
+  second payment for one booking. Coachatron does not book it. The payment is
+  in your Stripe account, and the Money screen lists it under "Payments to
+  resolve" with the athlete's name, the parent's mobile number, and the
+  reason. You agree to settle each one with the parent, for example by
+  booking another session, giving a credit, or asking support for a refund.
 
 [Attorney: refunds are not built in the app. The relay has a refund route that
 a later change will use; until then refunds go through support. Decide how
 support confirms that a refund request comes from the coach before acting on
 it.]
+
+[Attorney: decide how soon a coach must settle a payment listed under
+"Payments to resolve", and what Coachatron does if they do not.]
 
 [Attorney: until 2026-11-03, `SPEC.md` §9.4 said the platform keeps its fee
 on partial refunds. The relay returns the fee with any refund, and the Money screen tells
@@ -188,16 +210,19 @@ deadline we promise to pass it on by.]
 - **Deliver what you sell.** Hold each session at the published time and place,
   within the published capacity, at the published price.
 - **If you cancel a session,** Coachatron cancels its bookings, texts the
-  athletes who opted in to texts, and returns a session credit for each booking
-  that was paid with a credit. For a booking paid by card for that one session,
-  you owe the parent a refund or a replacement session.
-  [Attorney: today a cancelled card-paid drop-in gets nothing back
-  automatically, because refunds are not built. Decide whether these terms
-  require a refund, allow a credit instead, or leave it to the coach's
-  published policy.]
-- **Honor prepaid sessions.** Packages and plan credits you sell are sessions
-  you owe. The Money screen shows the credits outstanding. If you stop
-  coaching, you must deliver or refund the credits parents have paid for.
+  parents who opted in to texts, and gives each paid booking a session credit
+  with you: a package or pack credit comes back, and a booking paid by card
+  for that one session becomes one session credit. These credits do not
+  expire. The session screen shows which parents could not be texted, so you
+  can tell them yourself. If a parent's payment arrives after you cancelled
+  the session, the whole payment becomes credit with you, the parent is told,
+  and the Money screen lists it.
+  [Attorney: today the credit is automatic and a card refund goes through
+  support. Decide whether these terms let a parent ask for a refund instead
+  of the credit, or leave it to the coach's published policy.]
+- **Honor prepaid sessions.** Packages, packs, and the credits you give are
+  sessions you owe. The Money screen shows the credits outstanding. If you
+  stop coaching, you must deliver or refund the credits parents have paid for.
 - **No-shows and late cancellations** follow the policy the parent saw when
   they booked (see the parent terms).
 - **Be truthful** about who coaches, your qualifications, what a session
@@ -212,17 +237,19 @@ deadline we promise to pass it on by.]
   Coachatron. What you pay them is between you and them; Coachatron never moves
   that money.
 - **Your account.** Keep the email and mobile you sign in with under your
-  control, and tell us if someone else gets access.
+  control, and tell us if someone else gets access. Each sign-in code works
+  once, for 10 minutes, and stops working after a few wrong tries.
 
 ## 9. Texting and consent
 
 - Coachatron sends only transactional texts: sign-in codes, booking
-  confirmations, reminders, session updates, and offers to coach an extra
-  session. Every text starts with "Coachatron:". We send no marketing texts.
+  confirmations with the parent's manage link, reminders, session updates,
+  offers to coach an extra session, and texts to you about setting up
+  payments. Every text starts with "Coachatron:". We send no marketing texts.
 - Coachatron texts a number only after the person who owns it opts in, by
   checking the unchecked box at sign-in, booking, or the waitlist, or at
-  coachatron.com/sms. The exceptions are a sign-in code someone asks for and a
-  reply to a text someone sends us. Replying STOP opts out.
+  coachatron.com/sms. The exceptions are a sign-in or checkout code someone
+  asks for and a reply to a text someone sends us. Replying STOP opts out.
 - **Your duties for your athletes and roster:**
   - Add someone to your roster only if they have agreed to be on it. A number
     you add is not texted until its owner opts in themselves.
@@ -235,7 +262,8 @@ deadline we promise to pass it on by.]
     messages unrelated to your sessions.
 - When you text the Coachatron number, we read your text to carry out what you
   ask (for example, setting up your week), and we ask you to confirm before we
-  change anything.
+  change anything. We act on a text only when our SMS provider confirms it
+  delivered that text to us.
 
 [Attorney: TCPA and carrier rules for the coach's own messages. Coachatron
 keeps, for each opt-in, the consent text version, where it was given, the time,
@@ -245,7 +273,7 @@ and the IP address and browser.]
 
 Do not use Coachatron to:
 
-- sell anything other than coaching sessions, packages, and plans that you or
+- sell anything other than coaching sessions, packages, and packs that you or
   your roster deliver;
 - sell anything Stripe does not allow (Stripe's restricted and prohibited
   businesses list);
@@ -279,16 +307,18 @@ appeal.]
 ## 12. Data
 
 - **What we keep about your business:** your name, email, mobile, handle, and
-  time zone; your session types, schedule, prices, packages, and plans; your
-  roster; bookings, credits, and attendance; a log of the texts we send; and
-  the version of these terms you accepted.
+  time zone; your session types, schedule, prices, packages, and packs; your
+  roster; bookings, credits, and attendance; a log of the texts we send;
+  whether your Stripe account can take payments; and the version of these
+  terms you accepted.
 - **Athletes' and parents' details** (an athlete's name, a parent's phone, and
   an email if they give one) are collected to run bookings with you. We do not
   sell them and do not use them for marketing. You may use them only to run
   your sessions with those families, and must keep them secure.
 - **Payments data:** Stripe holds card and bank details. Coachatron stores the
   amount of each payment and an opaque payment reference, never card numbers.
-  See the payments section of our Privacy Policy.
+  It records each payment it is told about once, with whether it booked, so
+  no payment goes unseen. See the payments section of our Privacy Policy.
 - **Leaving with your data:** you can ask support for a CSV export of your
   athletes and bookings at any time.
   [Attorney: `SPEC.md` §13 promises a self-serve export; it is not built yet.]

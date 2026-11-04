@@ -36,8 +36,8 @@ later.
 When you choose to pay, Coachatron creates a signed payment link that carries:
 
 - the amount and currency;
-- a short description: the session name and time, or the package or plan name
-  and the coach's name;
+- a short description: the session name and time, or the package or pack
+  name and the coach's name;
 - a booking reference (a Coachatron booking number and how you chose to pay);
 - your email address, if you gave one; and
 - the Coachatron page to return you to.
@@ -50,14 +50,21 @@ number to the relay and Stripe in the email field.]
 ### What Coachatron stores about a payment
 
 - **The booking:** the athlete's name, the parent's mobile number and email (if
-  given), the session, how it was paid (drop-in, package credit, or plan), its
-  status (pending, booked, cancelled, attended, or no-show), the amount
-  charged, and when it was made.
+  given), the session, how it was paid (drop-in, package credit, or one-time
+  pack), its status (pending, booked, cancelled, attended, or no-show), the
+  amount charged, and when it was made; until it is paid, until when its spot
+  is held; whether a code texted to the mobile number showed it is yours; and,
+  if the coach cancelled the session, whether the cancel text reached you.
 - **A payment reference** that the relay issues for the Stripe payment.
   Coachatron does not store Stripe's own ids; the relay keeps the link between
   its reference and Stripe's payment.
 - **Credits:** how many credits are left on a mobile number with a coach, where
-  they came from (a package or a plan), and when they expire, if they do.
+  they came from (a package, a one-time pack, or a session the coach
+  cancelled), and when they expire, if they do.
+- **Each payment event** the relay reports, recorded once so it is never
+  handled twice. A payment that could not book (for example, the session
+  filled first) is kept with its amount, the reason, the athlete's name, and
+  the parent's mobile number, so the coach can sort it out with the parent.
 - **For coaches:** the key that ties the coach to their Stripe account at the
   relay (by default the coach's handle), the version of the marketplace terms
   they accepted, and the account status Stripe reports (whether it can take
@@ -93,11 +100,15 @@ Coachatron's bookings (tax and accounting rules may require several years).]
   fraud prevention.
 - **The coach you booked sees** the athlete's name, the session, the booking's
   status and attendance, and totals on their Money screen. Coaches do not see
-  your mobile number, email, or how you paid, and never see card details. When
-  a coach sends an update about a session, Coachatron texts it to you.
+  your email or how you paid, and never see card details. They see your mobile
+  number only where they need to reach you: on a payment of yours that could
+  not book, and after they cancel a session if the cancel text could not reach
+  you. When a coach sends an update about a session, Coachatron texts it to
+  you.
 
-[Attorney: this lists what the coach's screens show today. If a later screen
-shows coaches a parent's contact details or payment method, this notice needs
+[Attorney: this lists what the coach's screens show today, including the two
+places that show a parent's mobile number. If a later screen shows coaches
+more of a parent's contact details or the payment method, this notice needs
 to say so first.]
 - We do not sell payment information or use it for marketing.
 

@@ -24,7 +24,8 @@ booking form and checkout would do.]
   coaches and is not at the session.
 - **You** are the parent, guardian, or adult athlete who books. You do not need
   an account: you give the athlete's name, your mobile number, and an email if
-  you like, and you manage a booking from the private link we give you.
+  you like, and you manage a booking from the private link in your
+  confirmation.
 - If the athlete is under 18, a parent or guardian must make the booking.
 
 [Attorney: minimum age to book for oneself, and whether to ask the person
@@ -40,6 +41,22 @@ booking to confirm they are the parent or guardian.]
   checkout page that opens when you choose how to pay. Coachatron never sees or
   stores your card number.
 - Prices are in US dollars.
+- **Booking opens when the coach can take payments.** Until the coach has
+  finished setting up payments, their page shows paid sessions as "Booking
+  opens soon" and does not take payment. If you already hold session credits
+  with that coach, you can still book with them.
+- **Your spot is held while you pay.** When you start a booking, we hold the
+  spot for 15 minutes while you choose how to pay and pay. One mobile number
+  holds one spot in a session at a time.
+- **If your payment cannot book the spot.** A payment that arrives after the
+  session filled or started, for a different amount than the price, or for a
+  booking that is already paid does not book the session. The payment has
+  reached the coach, who sees it in Coachatron and will contact you to sort it
+  out. The page you return to says so; please do not pay again.
+
+[Attorney: a payment that cannot book is settled between the coach and the
+parent today (a booking, a credit, or a refund through support, section 6).
+Decide what these terms promise the parent and by when.]
 
 [Attorney: confirm the name parents will see on their card statement (Stripe
 sets it from the product name) so it can be stated here, which helps parents
@@ -53,42 +70,55 @@ recognize the charge.]
 is used for the booking you are making; the rest become **credits** with that
 coach.
 
-**A monthly plan.** Today a plan is **charged once**, when you buy it, and
-gives you that month's credits. It does not renew, and you will not be charged
-again unless you buy it again.
+**A one-time pack.** A set number of sessions, **charged once** when you buy
+it. One is used for the booking you are making; the rest become credits with
+that coach. It does not renew, and you will not be charged again unless you
+buy another.
 
-[Attorney: the checkout button says "/mo". Until renewal is built, the copy
-should say the plan is charged once. When renewal is built, these terms must
-explain the renewal date, the amount, and how to cancel before the next charge,
-under automatic-renewal laws (for example, California's).]
+[Attorney: checkout labels the pack "one-time" and no plan renews today. If
+monthly renewal is built later, these terms must explain the renewal date,
+the amount, and how to cancel before the next charge, under automatic-renewal
+laws (for example, California's).]
+
+**Confirmation.** Once you are booked, we send a confirmation with your private
+manage link: by text if you opted in to texts, and by email if you gave one.
+The page you return to after paying shows the link too.
 
 **About credits:**
 
 - Credits are tied to the **mobile number you booked with** and to **that
   coach**. A parent booking for two children with one number draws from one
   pool of credits.
-- When you book again with that coach, checkout offers to use a credit.
+- When you book again with that coach, checkout offers to use a credit. To
+  use one, you enter a code we text to the booking's mobile number, which
+  shows the number is yours; arriving from the manage link of a booking
+  already shown to be yours works too.
 - Credits are for sessions only. They have no cash value and cannot be moved to
   another coach.
 - **Expiry.** A package's credits expire only if the coach set an expiry for
-  that package. Plan credits are meant to expire at the end of the month they
-  were bought for.
+  that package. A one-time pack's sessions, and credits returned when a coach
+  cancels, do not expire.
 
-[Attorney: the checkout page does not show a package's expiry yet, and plan
-credits carry no expiry date in the app today. Both must be shown before an
-expiring package or plan is sold. Check state rules on prepaid services and
-expiring credits (some limit expiry or require cash back for unused value).]
+[Attorney: the checkout page does not show a package's expiry yet. It must be
+shown before an expiring package is sold. Check state rules on prepaid
+services and expiring credits (some limit expiry or require cash back for
+unused value).]
 
 ## 4. Cancelling
 
 **If the coach cancels a session,** your booking is cancelled, you get a text
-if you opted in to texts, and **the credit you used for it comes back** to your
-number.
+if you opted in to texts, and **you get a session credit with that coach** on
+your number: the credit you used comes back, and a session you paid for by
+card becomes one session credit. These credits do not expire. If you could
+not be texted, the coach is shown that you were not reached.
 
-[Attorney: a booking paid by card for that one session has no credit to give
-back. Until refunds are built, nothing is returned automatically. Decide
-whether the coach's cancellation gives that parent a credit or a card refund,
-and say which here.]
+**If the coach cancels while you are paying,** your whole payment becomes
+credit with that coach, and we tell you by text (if you opted in) or email
+(if you gave one).
+
+[Attorney: today a card-paid booking cancelled by the coach becomes a credit
+automatically; a card refund goes through support (section 6). Decide whether
+a parent may ask for a card refund instead of the credit, and say so here.]
 
 **If you cancel,** use the manage link from your confirmation.
 
@@ -141,6 +171,9 @@ what Coachatron promises parents if the coach does not.]
   confirmations, reminders, and session updates from Coachatron. Message
   frequency varies. Message and data rates may apply. Reply STOP to opt out and
   HELP for help. Consent is not a condition of purchase.
+- When you ask to use session credits, we text a one-time code to the
+  booking's number, even if you did not check the box, because you asked for
+  it. If that number has replied STOP, we do not send it.
 - Check the box only for a number that is yours or that you may use.
 - We text only US and Canadian mobile numbers.
 
