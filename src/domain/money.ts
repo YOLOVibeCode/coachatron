@@ -94,6 +94,14 @@ async function aggregateSessionSlots(db: DbClient, coachId: number, from: Date, 
  * out of the coach's totals. */
 export const EARNED_BOOKING_STATUSES = "('booked', 'attended', 'noshow')";
 
+/** A cancelled booking whose payment stayed with the coach as session
+ * credit: the coach cancelled the session, before or after the payment
+ * came in, and the parent got credit instead. The money reached the
+ * coach's account, so it counts as collected. `b` is the booking alias. */
+export function keptAsCreditSql(b: string): string {
+  return `(${b}.status = 'cancelled' and ${b}.gross_cents is not null and ${b}.credit_id is not null)`;
+}
+
 /** Counts live bookings (not session slots) on sessions in a window - used
  * for "booked this week," which is about demand actually realized: three
  * athletes booked into one session slot is 3 booked, not 1. Cents is the
@@ -131,14 +139,15 @@ export async function summarizeMoney(db: DbClient, coachId: number, now: Date): 
     aggregateSessionSlots(db, coachId, nextWeekStart, weekAfterNextStart),
     // "Collected" is the actual gross amount charged (booking.gross_cents,
     // null/0 for a credit redemption that charged nothing new this time)
-    // for the same live bookings counted above.
+    // for the same live bookings counted above, plus payments the coach's
+    // cancel turned into credit.
     db.query<{ total_gross_cents: string }>(
       `select coalesce(sum(b.gross_cents), 0)::text as total_gross_cents
        from booking b
        join session s on s.id = b.session_id
        join session_type st on st.id = s.session_type_id
        where st.coach_id = $1
-         and b.status in ${EARNED_BOOKING_STATUSES}
+         and (b.status in ${EARNED_BOOKING_STATUSES} or ${keptAsCreditSql('b')})
          and s.starts_at_utc >= $2
          and s.starts_at_utc < $3`,
       [coachId, thisWeekStart.toISOString(), nextWeekStart.toISOString()],
