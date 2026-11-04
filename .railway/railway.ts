@@ -53,12 +53,17 @@ export default defineRailway((ctx) => {
     env: {
       APP_BASE_URL: preserve(),
       APP_ENV: preserve(),
+      // production only: the relay routes texts to this number to coachatron.com.
+      COACHATRON_SMS_NUMBER: preserve(),
       DATABASE_URL: preserve(),
       LITELLM_API_KEY: preserve(),
       LITELLM_BASE: preserve(),
       NODE_ENV: preserve(),
       PORT: preserve(),
       RAILPACK_NODE_VERSION: nodeVersion(),
+      // production only: deploy.drainingSeconds, set as a variable because
+      // `railway config apply` fails there (see README).
+      RAILWAY_DEPLOYMENT_DRAINING_SECONDS: preserve(),
       RELAY_API_KEY: preserve(),
       RELAY_BASE_URL: preserve(),
       RELAY_CONNECT_PRODUCT: preserve(),
