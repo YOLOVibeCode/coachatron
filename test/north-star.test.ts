@@ -35,11 +35,14 @@ import type { CompleteRequest } from '../src/llm/schema.js';
  *      where they accept the marketplace terms and onboard with the relay.
  *   6. The seller becomes charges-enabled; the relay's seller.updated event
  *      says so, and the coach gets one "You can take payments now" text.
- *   7. A parent books, follows the signed buy link, the relay reports the
- *      payment at /webhooks/store, and /booking/:token shows the booking.
+ *   7. A parent books and reaches checkout by an unguessable token (the
+ *      booking's serial number is not a page), follows the signed buy link,
+ *      comes back to a "confirming your payment" page, the relay reports the
+ *      payment at /webhooks/store, the parent gets the booking confirmation
+ *      with the manage link by text and email, and the manage page from
+ *      that link shows the booking.
  *
- * Later work (paying by text, booking confirmations) can add its assertions
- * to the step it changes.
+ * Later work (paying by text) can add its assertions to the step it changes.
  */
 
 const COACH_PHONE = '+15125550111';
@@ -447,7 +450,7 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           assert.ok(cards.every((c) => c.book && !c.opensSoon), 'every open session has a Book link now');
         });
 
-        await step('7. a parent books, pays on the signed buy link, and the manage page shows the booking', async () => {
+        await step('7. a parent books, pays on the signed buy link, gets a confirmation with the manage link, and the manage page shows the booking', async () => {
           const pubHtml = await (await get(`/c/${handle}`)).text();
           const group = sessionCards(pubHtml).find((c) => c.name === 'Group');
           assert.ok(group?.book, 'the parent taps Book on a group session');
@@ -478,6 +481,10 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           );
           const { id: bookingId, ...pendingRow } = pending.rows[0];
           assert.deepEqual(pendingRow, { status: 'pending', contact_phone: PARENT_PHONE, session_id: sessionId });
+          assert.notEqual(checkoutToken, String(bookingId), 'the checkout link is not the booking number');
+          const bySerial = await get(`/c/${handle}/checkout/${bookingId}`);
+          assert.equal(bySerial.status, 404, 'the booking number does not open a checkout page');
+          assert.doesNotMatch(await bySerial.text(), /Sam Lee|555-0142|5550142/);
 
           const checkout = visible(await (await get(checkoutPath)).text());
           assert.match(checkout, /this app never sees a card/);
@@ -534,6 +541,16 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           assert.equal(hosted.headers.get('location'), q.return);
           assert.deepEqual(relay.buyLinks, [{ product: 'coachatron', seller: handle, amountCents: 2500, user: q.user }]);
 
+          // Back before the paid event: the page says the payment is being
+          // confirmed, offers no second payment, and already has the manage link.
+          const returned = new URL(q.return);
+          const confirming = await (await get(`${returned.pathname}${returned.search}`)).text();
+          assert.match(visible(confirming), /Confirming your payment Group — Sat, \w{3} \d{1,2}, 9:00 AM\. If you paid, this takes a moment\. Please don't pay again\./);
+          assert.doesNotMatch(confirming, /Pay \$/);
+          assert.match(confirming, /href="\/booking\/[A-Za-z0-9_-]{22}">Manage this booking</);
+          const textsToParent = () => relay.sms.filter((m) => m.to === PARENT_PHONE);
+          assert.equal(textsToParent().length, 0, 'nothing is texted before the payment is confirmed');
+
           const paid = await postStorePaid(base, {
             userId: q.user,
             amountCents: Number(q.amount),
@@ -554,14 +571,31 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           assert.equal(b.charge_id, PAYMENT_ID, 'the payment ref is kept for refunds');
           assert.match(b.manage_token, /^[A-Za-z0-9_-]{22}$/);
 
-          const back = visible(await (await get(checkoutPath)).text());
-          assert.match(back, /You're booked Group — Sat, \w{3} \d{1,2}, 9:00 AM/, 'the return page confirms the booking');
+          const manageUrl = `${appBase}/booking/${b.manage_token}`;
+          const backHtml = await (await get(checkoutPath)).text();
+          assert.match(visible(backHtml), /You're booked Group — Sat, \w{3} \d{1,2}, 9:00 AM/, 'the return page confirms the booking');
+          assert.match(backHtml, new RegExp(`href="/booking/${b.manage_token}">Manage this booking<`), 'with the manage link');
+          assert.match(visible(await (await get(`${returned.pathname}${returned.search}`)).text()), /You're booked/, 'and so does the return link');
           const after = sessionCards(await (await get(`/c/${handle}`)).text()).find((c) => c.book === bookPath);
           assert.equal(after?.detail, '7 spots left · $25.00', 'the coach page counts the paid spot');
 
-          // The manage link is read from the booking row; a booking
-          // confirmation that carries it can assert it here.
-          const manage = await get(`/booking/${b.manage_token}`);
+          // The parent ticked the texts box and gave an email: one text and
+          // one email confirm the booking, each with the manage link.
+          const confirmations = textsToParent();
+          assert.equal(confirmations.length, 1, 'one confirmation text');
+          const confirmation = confirmations[0].body;
+          assert.match(confirmation, /^Coachatron: Sam Lee is booked: Group Sat \w{3} \d{1,2} 9am\. /);
+          assert.ok(confirmation.endsWith(`${manageUrl} Reply STOP to opt out.`), confirmation);
+          assert.equal(segmentCount(confirmation), 1, 'the confirmation is one segment');
+          const mail = relay.emails.filter((e) => e.to === PARENT_EMAIL);
+          assert.equal(mail.length, 1, 'one confirmation email');
+          assert.match(mail[0].subject, /^Booked: Group, Sat \w{3} \d{1,2}, 9:00am$/);
+          assert.ok(mail[0].text.includes(manageUrl), 'the email carries the manage link');
+
+          // The manage link from the text opens the booking.
+          const linkInText = /(https?:\/\/\S+\/booking\/[A-Za-z0-9_-]{22})/.exec(confirmation)?.[1] ?? '';
+          assert.equal(linkInText, manageUrl);
+          const manage = await get(new URL(linkInText).pathname);
           assert.equal(manage.status, 200, 'the manage page opens from its link');
           const manageText = visible(await manage.text());
           assert.match(manageText, /Group Sat, \w{3} \d{1,2}, 9:00 AM/);
