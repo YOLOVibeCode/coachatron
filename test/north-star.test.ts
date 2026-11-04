@@ -157,13 +157,19 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
         let handle = '';
 
         await step("1. a signed text from the coach's phone gets one branded, one-segment text with a start link", async () => {
-          const res = await postSignedSms(base, {
-            MessageSid: 'SMnorthstar0001',
-            From: COACH_PHONE,
-            To: COACHATRON_NUMBER,
-            Body: WEEK_TEXT,
-            NumMedia: '0',
-          });
+          // Signed with the relay's secret, and marked by the relay as sent
+          // by Twilio (x-relay-twilio-verified: 1), as a real inbound text is.
+          const res = await postSignedSms(
+            base,
+            {
+              MessageSid: 'SMnorthstar0001',
+              From: COACH_PHONE,
+              To: COACHATRON_NUMBER,
+              Body: WEEK_TEXT,
+              NumMedia: '0',
+            },
+            { twilioVerified: '1' },
+          );
           assert.equal(res.status, 200, 'a signed inbound text is accepted');
           assert.equal(
             await res.text(),
@@ -214,6 +220,11 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
 
           const coach = await db.query<{ phone: string; name: string; tz: string }>('select phone, name, tz from coach');
           assert.deepEqual(coach.rows, [{ phone: COACH_PHONE, name: 'Dana Rivera', tz: 'America/Chicago' }]);
+          assert.deepEqual(
+            (await db.query('select email, email_verified_at is not null as verified from coach')).rows,
+            [{ email: 'dana@example.com', verified: false }],
+            'the email typed on the link is kept but not proved, so only a code sent to it lets it sign in',
+          );
           assert.equal((await get(startPath)).status, 410, 'the start link works once');
 
           const preview = visible(await (await get('/app/schedule?setup=1', coachCookie)).text());
