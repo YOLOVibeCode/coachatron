@@ -27,12 +27,7 @@ import {
   getConnectRecipientKey,
   type CoachRow,
 } from '../domain/auth.js';
-import {
-  APP_BASE_URL,
-  APP_FEE_BPS,
-  OTP_DAILY_MAX_PER_CONTACT,
-  SELLER_AGREEMENT_VERSION,
-} from '../config.js';
+import { APP_BASE_URL, APP_FEE_BPS, OTP_DAILY_MAX_PER_CONTACT, SELLER_AGREEMENT_VERSION } from '../config.js';
 import { acceptSellerAgreement, getSellerStatus, startSellerOnboarding } from '../relay/seller.js';
 import { createWeeklySlots, deactivateSlot, listWeeklySlots, type WeeklySlot } from '../domain/scheduling.js';
 import { coachNav, html, oneTimeCodeNote, page, raw, smsConsentCheckbox } from '../lib/html.js';
@@ -971,6 +966,7 @@ const EMAIL_NOTICES: Record<string, string> = {
   wrong: 'That code did not match. Try again.',
   used: 'That code had too many wrong tries. Ask for a new one.',
   slow: TOO_MANY_TRIES,
+  wait: TOO_MANY_TRIES,
   capped: 'Too many codes for that email today. Try again tomorrow.',
   busy: "We can't send email right now. Try again in a few minutes.",
   failed: SEND_FAILED,
@@ -1012,7 +1008,7 @@ coachRouter.post('/app/email', requireAuth, async (req, res) => {
     return;
   }
   if (!(await takeRequest(db, SIGNIN_CODE_LIMITS, clientKey(req)))) {
-    res.redirect(303, '/app/schedule?email=slow');
+    res.redirect(303, '/app/schedule?email=wait');
     return;
   }
   const outcome = await sendCode(db, { kind: 'email', email: coach.email }, { coachId: coach.id, smsConsent: false });
@@ -1270,10 +1266,7 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
           ? html`<a class="action" href="/app/sessions/${sessionId}/cancel">Cancel session</a>`
           : raw('')}
         
-        <a class="action" href="/app/schedule">Back to schedule</a>
-        <form method="post" action="/signout">
-          <button type="submit" class="ghost">Sign out</button>
-        </form>`,
+        <a class="action" href="/app/schedule">Back to schedule</a>`,
     ),
   );
 });
