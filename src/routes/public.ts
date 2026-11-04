@@ -556,13 +556,14 @@ function renderBookingForm(
   session: SessionForBooking,
   values: { athlete_name?: string; contact_phone?: string; contact_email?: string; from?: string; more?: string[] },
   error?: string,
-  opts: { creditsOnly?: boolean; children?: number } = {},
+  opts: { creditsOnly?: boolean; children?: number; note?: string } = {},
 ) {
   const children = opts.children ?? 1;
   return page(
     'Book a session',
     html`<h1>${session.name}</h1>
       <p class="muted">${formatLocal(session.starts_at_utc, session.tz)} — $${(session.price_cents / 100).toFixed(2)}</p>
+      ${opts.note ? html`<p>${opts.note}</p>` : raw('')}
       ${opts.creditsOnly
         ? html`<p class="muted">${coach.name} is still setting up payments, so for now you can book only with session credits. Enter the phone number your credits are under.</p>`
         : raw('')}
@@ -705,19 +706,45 @@ publicRouter.post('/c/:handle/sessions/:sessionId/waitlist', async (req, res) =>
     return;
   }
 
+  // The booking form's own gates, with its pages and statuses: a session
+  // that has started takes nobody, and while the coach cannot take payments
+  // only a family holding credits can book, so only then is there a line.
+  if (sessionStarted(session)) {
+    res.status(409).send(renderSessionStarted(coach, session));
+    return;
+  }
+  const creditsOnly = needsPayment(session) && !(await paymentsOpen(db, coach));
+  if (creditsOnly && !(await coachHasOpenCredits(db, coach.id))) {
+    res.status(409).send(bookingOpensSoon(coach));
+    return;
+  }
+
   const athleteName = field(req.body, 'athlete_name');
   const children = await childrenAllowed(db, coach);
   const names = athleteNames(req.body).slice(0, children);
   const rawPhone = field(req.body, 'contact_phone');
   const contactPhone = normalizePhone(rawPhone);
   const contactEmail = field(req.body, 'contact_email') || null;
+  const typed = {
+    athlete_name: athleteName,
+    contact_phone: rawPhone,
+    contact_email: contactEmail ?? undefined,
+    more: athleteNames(req.body).slice(athleteName ? 1 : 0),
+  };
+  // The line is for spots that are not there. With a spot for each child
+  // named (one at least), the parent books instead, on the booking form
+  // with what they typed; too few spots for every child still joins.
+  if ((await spotsLeftToBook(db, session)) >= Math.max(1, names.length)) {
+    res.status(409).send(
+      renderBookingForm(coach, session, typed, undefined, {
+        creditsOnly,
+        children,
+        note: 'A spot is open, so there is no need to wait: book it here.',
+      }),
+    );
+    return;
+  }
   if (!athleteName || !contactPhone) {
-    const typed = {
-      athlete_name: athleteName,
-      contact_phone: rawPhone,
-      contact_email: contactEmail ?? undefined,
-      more: athleteNames(req.body).slice(athleteName ? 1 : 0),
-    };
     res.status(422).send(renderWaitlistForm(coach, session, typed, 'Enter the athlete’s name and a valid phone number.', children));
     return;
   }
