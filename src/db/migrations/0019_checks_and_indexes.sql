@@ -2,10 +2,32 @@
 -- has room and a duration, prices and payments are not negative, a credit
 -- balance never goes below zero. The forms check the same and say why.
 --
--- Each constraint is added NOT VALID: rows written from here on are
--- checked, and rows already stored are left as they are, so a start-up
--- never fails on old data. VALIDATE CONSTRAINT checks the old rows later.
--- Dropped first, so running this file again is harmless.
+-- Each constraint is added NOT VALID, so adding it never fails on old
+-- data. Postgres still checks an old row again whenever it is updated, so a
+-- stored value the check refuses would make that row impossible to change
+-- (a package that could not be retired, a session that could not be
+-- cancelled). The updates below first move any such value to the nearest
+-- one the check accepts. The old package form took an expiry of 0 days or
+-- fewer; the paid event read 0 as "never expires", and null now says so.
+-- The other values were refused by the forms or never written by the app,
+-- so those updates are expected to touch no rows. Each constraint is
+-- dropped first and each update touches only refused values, so running
+-- this file again is harmless.
+
+update session_type set capacity = 1 where capacity < 1;
+update session_type set duration_min = 1 where duration_min < 1;
+update session_type set price_cents = 0 where price_cents < 0;
+update session_type set backup_pay_cents = 0 where backup_pay_cents < 0;
+update session set capacity_override = null where capacity_override < 1;
+update package set credits = 1 where credits < 1;
+update package set price_cents = 0 where price_cents < 0;
+update package set expires_days = null where expires_days < 1;
+update plan set credits_per_month = 1 where credits_per_month < 1;
+update plan set price_cents = 0 where price_cents < 0;
+update credit set remaining = 0 where remaining < 0;
+update booking set gross_cents = 0 where gross_cents < 0;
+update roster_member set priority = 0 where priority < 0;
+update coach set fee_bps = least(greatest(fee_bps, 0), 10000) where fee_bps < 0 or fee_bps > 10000;
 
 alter table session_type drop constraint if exists session_type_capacity_positive;
 alter table session_type add constraint session_type_capacity_positive check (capacity > 0) not valid;

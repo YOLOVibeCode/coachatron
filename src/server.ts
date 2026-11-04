@@ -40,6 +40,10 @@ export function createApp() {
 
 /** How long a shutdown waits for requests and the tick to finish. */
 export const SHUTDOWN_TIMEOUT_MS = 10_000;
+/** How long it then waits for the database to close. A query still holding
+ * a connection (waiting on a lock, say) would otherwise keep the pool, and
+ * the process, open. */
+export const DB_CLOSE_TIMEOUT_MS = 2_000;
 
 export interface ShutdownOptions {
   /** Stops the tick timer and waits for a tick that is running. */
@@ -47,17 +51,44 @@ export interface ShutdownOptions {
   /** Closes the database once nothing is using it. */
   closeDb: () => Promise<void>;
   timeoutMs?: number;
+  dbCloseTimeoutMs?: number;
   exit?: (code: number) => void;
+}
+
+/** Resolves true when `work` settles within `ms`, false when it does not;
+ * a rejection counts as settled and is logged. */
+async function settlesWithin(work: Promise<unknown>, ms: number, what: string): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+    timer.unref();
+  });
+  const done = work.then(
+    () => true as const,
+    (err: unknown) => {
+      console.error(`${what}: ${err instanceof Error ? err.message : String(err)}`);
+      return true as const;
+    },
+  );
+  try {
+    return await Promise.race([done, late]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** What the process does on SIGTERM (a deploy or a restart) and SIGINT:
  * stop taking connections, let requests already in flight and a running
  * tick finish, close the database, and exit 0. Whatever is still running
- * after the timeout is cut off and the process exits 1. A second signal
- * while shutting down changes nothing. */
+ * after the timeout is cut off, and the process exits 1. The database then
+ * gets a short while of its own to close; if it is still in use after
+ * that, the process exits 1 without waiting for it. About 12 seconds at
+ * most in all (.railway/railway.ts gives a deploy 15 before it stops the
+ * process). A second signal while shutting down changes nothing. */
 export function gracefulShutdown(server: Server, opts: ShutdownOptions): (signal: string) => Promise<void> {
   const exit = opts.exit ?? ((code: number) => process.exit(code));
   const timeoutMs = opts.timeoutMs ?? SHUTDOWN_TIMEOUT_MS;
+  const dbCloseTimeoutMs = opts.dbCloseTimeoutMs ?? DB_CLOSE_TIMEOUT_MS;
   let started = false;
   return async (signal: string) => {
     if (started) return;
@@ -78,12 +109,11 @@ export function gracefulShutdown(server: Server, opts: ShutdownOptions): (signal
       console.error(`${signal}: requests still running after ${timeoutMs} ms were cut off.`);
       server.closeAllConnections();
     }
-    try {
-      await opts.closeDb();
-    } catch (err) {
-      console.error(`${signal}: the database did not close cleanly: ${err instanceof Error ? err.message : String(err)}`);
+    const dbClosed = await settlesWithin(Promise.resolve().then(opts.closeDb), dbCloseTimeoutMs, `${signal}: the database did not close cleanly`);
+    if (!dbClosed) {
+      console.error(`${signal}: the database was still in use after ${dbCloseTimeoutMs} ms; stopping anyway.`);
     }
-    exit(timedOut ? 1 : 0);
+    exit(timedOut || !dbClosed ? 1 : 0);
   };
 }
 

@@ -9,7 +9,7 @@ import { freshDb } from './helpers/db.js';
 import { listenLoopback } from './helpers/listen.js';
 import { seedCoachWithSession, seedRosterMember } from './helpers/fixtures.js';
 import { createPool } from '../src/db/client.js';
-import { gracefulShutdown } from '../src/server.js';
+import { DB_CLOSE_TIMEOUT_MS, gracefulShutdown, SHUTDOWN_TIMEOUT_MS } from '../src/server.js';
 
 /** What the database holds itself to, and how the process starts and
  * stops. */
@@ -51,6 +51,10 @@ test('bookings are indexed by session and texts by provider id, and the schema f
   assert.ok(has('session', /\(session_type_id, starts_at_utc\)/), 'session (session_type_id, starts_at_utc)');
   assert.ok(has('credit', /\(coach_id, contact_phone\)/), 'credit (coach_id, contact_phone)');
 
+  await runChecksMigration(db);
+});
+
+async function runChecksMigration(db: Awaited<ReturnType<typeof freshDb>>): Promise<void> {
   const sql = readFileSync(new URL('../src/db/migrations/0019_checks_and_indexes.sql', import.meta.url), 'utf8')
     .split('\n')
     .filter((line) => !line.trim().startsWith('--'))
@@ -58,6 +62,48 @@ test('bookings are indexed by session and texts by provider id, and the schema f
   for (const statement of sql.split(';').map((s) => s.trim()).filter(Boolean)) {
     await db.query(statement);
   }
+}
+
+test('rows stored before the checks can still be changed: values the checks refuse are moved to the nearest one they take', async () => {
+  const db = await freshDb();
+  const seed = await seedCoachWithSession(db);
+  // As a database from before migration 0019 could hold them.
+  for (const [table, constraint] of [
+    ['package', 'package_expires_days_positive'],
+    ['session', 'session_capacity_override_positive'],
+    ['credit', 'credit_remaining_not_negative'],
+    ['coach', 'coach_fee_bps_range'],
+  ]) {
+    await db.query(`alter table ${table} drop constraint ${constraint}`);
+  }
+  const old = await db.query<{ id: number }>(
+    "insert into package (coach_id, name, credits, price_cents, expires_days) values ($1, 'Old', 10, 30000, 0) returning id",
+    [seed.coach.id],
+  );
+  const older = await db.query<{ id: number }>(
+    "insert into package (coach_id, name, credits, price_cents, expires_days) values ($1, 'Older', 10, 30000, -3) returning id",
+    [seed.coach.id],
+  );
+  await db.query('update session set capacity_override = 0 where id = $1', [seed.sessionId]);
+  await db.query("insert into credit (coach_id, contact_phone, remaining, source) values ($1, '+15550000003', -2, 'package')", [seed.coach.id]);
+  await db.query('update coach set fee_bps = 20000 where id = $1', [seed.coach.id]);
+
+  await runChecksMigration(db);
+
+  const packages = await db.query<{ id: number; expires_days: number | null }>('select id, expires_days from package where id = any($1::int[]) order by id', [
+    [old.rows[0].id, older.rows[0].id],
+  ]);
+  assert.deepEqual(packages.rows.map((r) => r.expires_days), [null, null], 'an expiry of 0 days already meant none');
+  await db.query('update package set active = false where coach_id = $1', [seed.coach.id]);
+  await db.query("update session set status = 'cancelled' where id = $1", [seed.sessionId]);
+  const session = await db.query<{ capacity_override: number | null }>('select capacity_override from session where id = $1', [seed.sessionId]);
+  assert.equal(session.rows[0].capacity_override, null, 'the session type capacity applies again');
+  const credit = await db.query<{ remaining: number }>("select remaining from credit where contact_phone = '+15550000003'");
+  assert.equal(credit.rows[0].remaining, 0);
+  const coach = await db.query<{ fee_bps: number }>('select fee_bps from coach where id = $1', [seed.coach.id]);
+  assert.equal(coach.rows[0].fee_bps, 10000);
+  // And the checks are back in place.
+  await assert.rejects(db.query('update package set expires_days = 0 where id = $1', [old.rows[0].id]), /check constraint|violates/i);
 });
 
 test('production refuses to start without DATABASE_URL, and says why', async () => {
@@ -133,6 +179,41 @@ test('on a stop signal, requests in flight finish, the tick and the database clo
   assert.deepEqual(steps, ['tick stopped', 'request answered', 'db closed']);
   assert.equal(exitCode, 0);
   await assert.rejects(fetch(`http://127.0.0.1:${port}/`), 'no new connections');
+});
+
+test('a database that does not close in time does not hold the process open: it exits 1', async () => {
+  const server = slowServer(0);
+  await listenLoopback(server);
+  let exitCode: number | null = null;
+  const shutdown = gracefulShutdown(server, {
+    stopTick: async () => undefined,
+    // A pool whose last client is stuck in a query never finishes ending.
+    closeDb: () => new Promise<void>(() => undefined),
+    timeoutMs: 1_000,
+    dbCloseTimeoutMs: 200,
+    exit: (code) => {
+      exitCode = code;
+    },
+  });
+  const started = Date.now();
+  await shutdown('SIGTERM');
+  assert.ok(Date.now() - started < 1_000, 'did not wait past the database deadline');
+  assert.equal(exitCode, 1);
+});
+
+test('Railway waits longer than a clean stop takes before it stops the process', async () => {
+  const iac = (await import(pathToFileURL(fileURLToPath(new URL('../.railway/railway.ts', import.meta.url))).href)) as {
+    default: (ctx: unknown) => { resources: Array<{ name: string; deploy?: { drainingSeconds?: number | null } }> };
+  };
+  const { createRailwayContext } = await import('railway/iac');
+  for (const environment of ['development', 'uat', 'production']) {
+    const web = iac.default(createRailwayContext({ environment })).resources.find((r) => r.name === 'web');
+    const draining = web?.deploy?.drainingSeconds ?? 0;
+    assert.ok(
+      draining * 1000 >= SHUTDOWN_TIMEOUT_MS + DB_CLOSE_TIMEOUT_MS + 2_000,
+      `${environment}: ${draining} s between SIGTERM and SIGKILL`,
+    );
+  }
 });
 
 test('a request still running at the shutdown deadline is cut off and the process exits 1', async () => {

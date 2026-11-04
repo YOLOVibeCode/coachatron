@@ -18,6 +18,9 @@ railway config apply
 - **Variables.** Every value stays in Railway; the file marks each one
   `preserve()`. Never put a secret here. **Add every new web variable to the
   file as `preserve()`**: apply deletes any variable the file leaves out.
+- **Stopping.** `drainingSeconds: 15` gives a replaced deployment 15 seconds
+  between SIGTERM and SIGKILL. The server needs up to 12 to stop cleanly
+  (`gracefulShutdown` in `src/server.ts`); a test keeps the two in step.
 - **Node version.** `RAILPACK_NODE_VERSION` comes from `../.nvmrc`. Railpack
   reads that variable before `package.json` engines, so it decides the Node a
   deploy runs. To apply everything except a Node change, set

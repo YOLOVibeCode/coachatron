@@ -62,7 +62,9 @@ PGlite with no `DATABASE_URL` at all. With `NODE_ENV=production` the server
 refuses to start without `DATABASE_URL`, rather than keep its data in memory.
 On SIGTERM or SIGINT it stops taking connections, lets requests in flight and
 a running tick finish, closes the database, and exits; anything still running
-after 10 seconds is cut off.
+after 10 seconds is cut off, and a database still in use 2 seconds after that
+is left to close on exit. Railway waits 15 seconds before it stops the process
+(`drainingSeconds` in `.railway/railway.ts`).
 
 ## Status
 
@@ -283,7 +285,8 @@ The running server ticks once a minute (`src/jobs/tick.ts`). Each tick keeps
 every weekly time 8 weeks ahead on the calendar, passes an expired overflow
 offer to the next backup coach, and sends 24-hour reminders outside quiet
 hours (9pm–8am in the coach's timezone); a reminder the relay could not send
-is tried again on the next ticks. It also asks the relay about coaches
+is tried again on the next ticks (at least once, so in a rare relay failure a
+parent can get it twice; see `docs/PLATFORM.md`). It also asks the relay about coaches
 still setting up payments (at most every 15 minutes each, in case an event
 was missed), sends payments-ready texts that waited out quiet hours, and sends
 the payment set-up reminders. Tests call `runTick()` directly

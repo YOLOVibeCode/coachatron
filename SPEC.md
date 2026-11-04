@@ -659,8 +659,10 @@ and `children_per_booking`, `booking.late_cancel` and `waived_at`; and
 `booking.pass_id` (the children of one booking pass).
 Migration 0019 adds CHECK constraints for what the forms
 already check (capacity and duration above zero, no negative price or
-credit balance, a package expiry above zero) and indexes on the columns the
-pages, the tick and the send path filter on, `booking.session_id` first.
+credit balance, a package expiry above zero), after moving any stored value
+they refuse to the nearest one they take (a package expiry of 0 days, which
+already meant none, becomes null), and indexes on the columns the pages, the
+tick and the send path filter on, `booking.session_id` first.
 
 Two column names predate the move to Stripe and were kept: `square_merchant_id`
 is unused (a coach reaches their Stripe account through
