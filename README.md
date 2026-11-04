@@ -47,6 +47,11 @@ npm run build      # compile to dist/
 npm run dev        # start the server on http://localhost:3000
 ```
 
+End-to-end test: `test/north-star.test.ts` runs in `npm test` and follows one
+coach from a texted week to a parent's paid booking through the real routes
+(text in, start link, preview, Publish, connect payments, book, signed buy
+link, payment event, manage page), against the fake relay and a fake model.
+
 `npm run migrate` applies the SQL migrations in `src/db/migrations/` to
 `DATABASE_URL` if you've set one (Postgres in production); it's optional for
 local development, since `npm run dev` and `npm test` both work against
