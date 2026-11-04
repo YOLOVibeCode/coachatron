@@ -7,6 +7,7 @@ import { seedBookedSession, seedCoachWithSession } from './helpers/fixtures.js';
 import { createCoachSession } from '../src/domain/auth.js';
 import { createPendingBooking } from '../src/domain/pricing.js';
 import { createStartLink } from '../src/domain/startLink.js';
+import { createPaymentsLink } from '../src/domain/payments.js';
 import { parseCookies } from '../src/lib/cookies.js';
 import { isPrivateLinkPath } from '../src/lib/headers.js';
 import type { DbClient } from '../src/db/client.js';
@@ -49,10 +50,13 @@ test('pages opened by a private link are not cached and do not pass the link on 
     const token = await manageToken(db, await seedBookedSession(db, seed.sessionId, 'Sam', '+15550000001'));
     const start = await createStartLink(db, '+15553334444', 'Tuesdays at 6');
     const pending = await createPendingBooking(db, seed.sessionId, 'Mia', '+15550000002', null);
+    const payments = await createPaymentsLink(db, seed.coach.id);
     await withServer(async (base) => {
       for (const path of [
         `/booking/${token}`,
         `/start/${start}`,
+        `/p/${payments}`,
+        `/P/${payments}`,
         '/offer/not-a-real-offer',
         '/signin/verify?to=pat%40example.com',
         `/c/${seed.coach.handle}/checkout/${pending}`,
@@ -83,6 +87,8 @@ test('private-link paths are told apart from public ones', () => {
     '/booking/abc/cancel',
     '/start/abc',
     '/offer/abc',
+    '/p/abc',
+    '/P/abc',
     '/signin/verify',
     '/c/pat/checkout/12',
     '/BOOKING/abc',
@@ -91,7 +97,7 @@ test('private-link paths are told apart from public ones', () => {
   ]) {
     assert.equal(isPrivateLinkPath(path), true, path);
   }
-  for (const path of ['/', '/start', '/signin', '/signin/otp', '/c/pat', '/c/pat/sessions/1/book', '/sms']) {
+  for (const path of ['/', '/start', '/signin', '/signin/otp', '/c/pat', '/c/pat/sessions/1/book', '/sms', '/privacy', '/p']) {
     assert.equal(isPrivateLinkPath(path), false, path);
   }
 });

@@ -1,9 +1,9 @@
 import type { NextFunction, Request, Response } from 'express';
 
 /** Pages whose URL is the only key to something private: a booking's
- * manage link, a start link, an offer, a sign-in code page, a checkout.
- * Express matches routes whatever the case, so these do too. */
-const PRIVATE_LINK = /^\/(?:booking|start|offer)\/|^\/signin\/verify(?:\/|$)|^\/c\/[^/]+\/checkout\//i;
+ * manage link, a start link, an offer, a payments link, a sign-in code
+ * page, a checkout. Express matches routes whatever the case, so these do too. */
+const PRIVATE_LINK = /^\/(?:booking|start|offer|p)\/|^\/signin\/verify(?:\/|$)|^\/c\/[^/]+\/checkout\//i;
 
 export function isPrivateLinkPath(path: string): boolean {
   return PRIVATE_LINK.test(path);
