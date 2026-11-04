@@ -69,7 +69,8 @@ test('the booking and waitlist forms leave an existing consent record as it was'
 test('a ticked box on the booking or waitlist form does not undo a revoked consent', async () => {
   await withRelay(async () => {
     const db = await freshDb();
-    const seed = await seedCoachWithSession(db, { capacity: 4 });
+    // One spot: the booking form's hold fills it, so the waitlist form joins.
+    const seed = await seedCoachWithSession(db, { capacity: 1 });
     await recordConsent(db, PHONE, '/signin/verify', { ip: '203.0.113.5', userAgent: 'owner-phone/1.0', numberVerified: true });
     await revokeConsent(db, PHONE);
     const before = await consentRow(db, PHONE);

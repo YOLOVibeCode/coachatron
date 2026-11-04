@@ -146,12 +146,24 @@ export interface OutboundText {
   template: string;
   /** Optional ceiling on this template to this number in 24 hours. */
   perRecipientDailyMax?: number;
-  /** Set off by someone who is not signed in, so it counts against the
-   * app-wide visitor ceiling (visitorTextLimits): 'always' (a sign-in code,
-   * a start link, an opt-in confirmation), or 'new-number' only when no
-   * text has been sent to this number before (a booking or waitlist text). */
-  visitor?: 'always' | 'new-number';
+  /** Set off by someone who is not signed in, so it counts against an
+   * app-wide budget (visitorTextLimits). From a web form: 'always' (a
+   * sign-in code, an opt-in confirmation), or 'new-number' only when no
+   * text has been sent to this number before (a booking or waitlist text).
+   * 'inbound-reply' (the start link that answers a text from a number we
+   * do not know) is counted in a budget of its own, since it goes only to
+   * the number that texted. */
+  visitor?: 'always' | 'new-number' | 'inbound-reply';
 }
+
+/** The app-wide budgets for texts set off by people who are not signed in.
+ * Each has the visitor limits, counted on its own message_log flag. */
+type Budget = 'visitor' | 'inbound-reply';
+
+const BUDGET_COLUMN: Record<Budget, 'visitor' | 'inbound_reply'> = {
+  visitor: 'visitor',
+  'inbound-reply': 'inbound_reply',
+};
 
 /** Texts that answer the person this moment and need no standing consent:
  * a sign-in code they asked for, and replies to a text they sent us. An
@@ -233,47 +245,50 @@ async function textedBefore(db: DbClient, phone: string): Promise<boolean> {
   return (await countSent(db, 'to_phone = $1', [phone])) > 0;
 }
 
-/** Whether this text counts against the visitor ceiling. */
-async function countsAsVisitor(db: DbClient, msg: OutboundText): Promise<boolean> {
-  if (msg.visitor === 'always') return true;
-  return msg.visitor === 'new-number' && !(await textedBefore(db, msg.to));
+/** Which app-wide budget, if any, this text counts against. */
+async function budgetOf(db: DbClient, msg: OutboundText): Promise<Budget | null> {
+  if (msg.visitor === 'inbound-reply') return 'inbound-reply';
+  if (msg.visitor === 'always') return 'visitor';
+  return msg.visitor === 'new-number' && !(await textedBefore(db, msg.to)) ? 'visitor' : null;
 }
 
-/** Which visitor ceiling, if any, this visitor's text would cross: the
- * hour's or the day's, or the reserve kept from the product's day for
- * everyone else's texts. */
-async function visitorCeilingHit(db: DbClient, now: Date): Promise<string | null> {
+/** Which ceiling of its budget, if any, this text would cross: the hour's
+ * or the day's, or the reserve kept from the product's day for everyone
+ * else's texts ("visitor-hourly", "inbound-reply-reserve", ...). */
+async function budgetCeilingHit(db: DbClient, budget: Budget, now: Date): Promise<string | null> {
+  const column = BUDGET_COLUMN[budget];
   const limits = visitorTextLimits();
   const hourAgo = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
-  if ((await countSent(db, 'visitor and sent_at > $1', [hourAgo])) >= limits.hourly) return 'visitor-hourly';
+  if ((await countSent(db, `${column} and sent_at > $1`, [hourAgo])) >= limits.hourly) return `${budget}-hourly`;
   const utcDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
-  if ((await countSent(db, 'visitor and sent_at >= $1', [utcDay])) >= limits.daily) return 'visitor-daily';
-  if ((await countSent(db, 'sent_at >= $1', [utcDay])) + limits.reserve >= (await productDailyCeiling(db, now))) return 'visitor-reserve';
+  if ((await countSent(db, `${column} and sent_at >= $1`, [utcDay])) >= limits.daily) return `${budget}-daily`;
+  if ((await countSent(db, 'sent_at >= $1', [utcDay])) + limits.reserve >= (await productDailyCeiling(db, now))) return `${budget}-reserve`;
   return null;
 }
 
-/** Checks the visitor ceiling and, when there is room, writes the text's
+/** Checks the text's budget and, when there is room, writes the text's
  * row as 'reserved' before it goes, in one transaction under
  * VISITOR_TEXT_LOCK. Texts asked for at the same moment (many addresses at
  * once) then each see the ones before them, so no more than the ceiling go
  * out. Returns the row to finish once the relay answers, or the ceiling it
  * would cross. A process that stops before finishing leaves its row
  * 'reserved', still counted, which errs on the side of fewer texts. */
-async function reserveVisitorText(
+async function reserveBudgetedText(
   db: DbClient,
   msg: OutboundText,
   body: string,
+  budget: Budget,
   now: Date,
 ): Promise<{ rowId: number } | { hit: string }> {
   return inTransaction(db, async (tx) => {
     await tx.query('select pg_advisory_xact_lock($1)', [VISITOR_TEXT_LOCK]);
-    const hit = await visitorCeilingHit(tx, now);
+    const hit = await budgetCeilingHit(tx, budget, now);
     if (hit) return { hit };
     const row = await tx.query<{ id: number }>(
-      `insert into message_log (to_phone, template, body, provider_id, sent_at, status, coach_id, channel, visitor)
-       values ($1, $2, $3, null, $4, 'reserved', $5, 'sms', true)
+      `insert into message_log (to_phone, template, body, provider_id, sent_at, status, coach_id, channel, visitor, inbound_reply)
+       values ($1, $2, $3, null, $4, 'reserved', $5, 'sms', $6, $7)
        returning id`,
-      [msg.to, msg.template, body, now.toISOString(), msg.coachId],
+      [msg.to, msg.template, body, now.toISOString(), msg.coachId, budget === 'visitor', budget === 'inbound-reply'],
     );
     return { rowId: row.rows[0].id };
   });
@@ -322,12 +337,12 @@ async function log(
   providerId: string | null,
   now: Date,
   channel: Channel = 'sms',
-  visitor = false,
+  budget: Budget | null = null,
 ) {
   await db.query(
-    `insert into message_log (to_phone, template, body, provider_id, sent_at, status, coach_id, channel, visitor)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-    [msg.to, msg.template, body, providerId, now.toISOString(), status, msg.coachId, channel, visitor],
+    `insert into message_log (to_phone, template, body, provider_id, sent_at, status, coach_id, channel, visitor, inbound_reply)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+    [msg.to, msg.template, body, providerId, now.toISOString(), status, msg.coachId, channel, budget === 'visitor', budget === 'inbound-reply'],
   );
 }
 
@@ -351,14 +366,15 @@ export async function sendText(db: DbClient, msg: OutboundText, now: Date = new 
     console.warn(`sms: ${hit} ceiling reached, not sending ${msg.template} (coach ${msg.coachId ?? '-'})`);
     return 'capped';
   }
-  // A visitor's text past the app-wide visitor ceiling waits: 'busy', so
-  // the form says to try again later (or use email where there is one).
-  // Under it, the text takes its place before it goes.
+  // A visitor's text past its app-wide budget waits: 'busy', so the form
+  // says to try again later (or use email where there is one). Under it,
+  // the text takes its place before it goes.
   let reservedRow: number | null = null;
-  if (await countsAsVisitor(db, msg)) {
-    const reserved = await reserveVisitorText(db, msg, body, now);
+  const budget = await budgetOf(db, msg);
+  if (budget !== null) {
+    const reserved = await reserveBudgetedText(db, msg, body, budget, now);
     if ('hit' in reserved) {
-      await log(db, msg, body, `capped-${reserved.hit}`, null, now, 'sms', true);
+      await log(db, msg, body, `capped-${reserved.hit}`, null, now, 'sms', budget);
       console.warn(`sms: ${reserved.hit} ceiling reached, not sending ${msg.template} (coach ${msg.coachId ?? '-'})`);
       return 'busy';
     }

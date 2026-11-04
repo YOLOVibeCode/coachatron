@@ -657,3 +657,63 @@ test('a long add question still ends "Reply Y." once the brand is put in front a
     }
   });
 });
+
+test('the assistant counts spots as Schedule does; WHO and a broadcast still mean the athletes still booked', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 6 });
+    await pinSession(db, seed.sessionId, tomorrowAt(seed.coach.tz, 18, 0));
+    await seedBookedSession(db, seed.sessionId, 'Ada Booked', '+15550007401');
+    // The attendance route has no time check, so a session still ahead can
+    // already have athletes marked attended or no-show.
+    const attended = await seedBookedSession(db, seed.sessionId, 'Ben Attended', '+15550007402');
+    await db.query("update booking set status = 'attended' where id = $1", [attended]);
+    const noshow = await seedBookedSession(db, seed.sessionId, 'Cal Noshow', '+15550007403');
+    await db.query("update booking set status = 'noshow' where id = $1", [noshow]);
+    const cancelled = await seedBookedSession(db, seed.sessionId, 'Dee Cancelled', '+15550007404');
+    await db.query("update booking set status = 'cancelled' where id = $1", [cancelled]);
+
+    const cookie = cookieFor(await createCoachSession(db, seed.coach.id));
+    await withServer(async (base) => {
+      const schedule = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
+      assert.match(schedule, / · 3 of 6 spots booked · /, 'Schedule counts Ada, Ben and Cal');
+    });
+
+    setComplete(fakeComplete(new Error('pattern only')));
+    try {
+      const sched = await handleCoachMessage(db, seed.coach, "what's tomorrow", 'sms');
+      assert.equal(sched.kind, 'answer');
+      assert.match(sched.text, /\(3\/6\)/, 'the same count as Schedule');
+      const who = await handleCoachMessage(db, seed.coach, "who's at 6pm", 'sms');
+      assert.match(who.text, /\b1 at /, 'WHO counts the names it lists');
+      assert.match(who.text, /Ada Booked/);
+      assert.doesNotMatch(who.text, /Ben Attended|Cal Noshow|Dee Cancelled/);
+    } finally {
+      resetComplete();
+    }
+
+    const llm = fakeComplete({
+      intent: 'broadcast.send',
+      confidence: 0.95,
+      session_id: seed.sessionId,
+      session_type_id: seed.sessionTypeId,
+      session_type: null,
+      when: null,
+      new_when: null,
+      location: null,
+      reason: 'bring indoor shoes',
+      source: 'model',
+    });
+    setComplete(llm);
+    try {
+      const ask = await handleCoachMessage(db, seed.coach, 'tell the 6pm group to bring indoor shoes', 'sms');
+      assert.equal(llm.calls.length, 1);
+      const system = (llm.calls[0] as { messages: Array<{ role: string; content: string }> }).messages[0].content;
+      assert.match(system, new RegExp(`id=${seed.sessionId} .* spots=3/6`), 'the model sees the same count');
+      assert.equal(ask.kind, 'confirm');
+      assert.match(ask.text, /Text 1 athletes/, 'a broadcast texts only Ada, who is still booked');
+    } finally {
+      resetComplete();
+    }
+  });
+});

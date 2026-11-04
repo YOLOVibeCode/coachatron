@@ -50,6 +50,14 @@ export function formatConfirmWhen(isoUtc: string, tz: string): string {
   return `${weekday} ${month} ${day}, ${hour12}:${minute}${ap}`;
 }
 
+/** The time of day alone, e.g. "6:15 PM", for something that ends within
+ * the hour, such as a parent's hold on a spot. */
+export function formatClockLocal(isoUtc: string | Date, tz: string): string {
+  const date = new Date(isoUtc);
+  if (Number.isNaN(date.getTime())) return NOT_A_TIME;
+  return new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit' }).format(date);
+}
+
 /** e.g. "5:00 – 6:00 PM" for a session block on the coach schedule. */
 export function formatTimeRange(isoUtc: string, durationMin: number, tz: string): string {
   const start = new Date(isoUtc);

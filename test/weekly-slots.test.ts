@@ -109,8 +109,10 @@ test('weekly times screen: add with a location, list, remove; schedule links eac
       assert.ok(Number(located.rows[0].n) >= 16, 'expected about 8 weeks of Tue and Thu sessions');
 
       const page = await (await fetch(`${base}/app/session-types/${seed.sessionTypeId}/generate-week`, { headers: { cookie } })).text();
-      assert.match(page, /Tue 18:00 · Field 3/);
-      assert.match(page, /Thu 18:00 · Field 3/);
+      // Shown on a 12-hour clock, like every other screen; the inputs stay 24-hour.
+      assert.match(page, /Tue 6:00pm · Field 3/);
+      assert.match(page, /Thu 6:00pm · Field 3/);
+      assert.doesNotMatch(page, /18:00/);
 
       const schedule = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
       assert.match(schedule, /href="\/app\/sessions\/\d+"/);
@@ -173,7 +175,7 @@ test('weekly times take a clock time from 00:00 to 23:59, and a time already the
       assert.equal((await post({ day_2: '1', time_2: '18:00', location: 'Field 3' })).status, 303);
       const moved = await post({ day_2: '1', time_2: '18:00', day_4: '1', time_4: '18:00', location: 'Field 9' });
       assert.equal(moved.status, 422);
-      assert.match(await moved.text(), /Tue 18:00 \(at Field 3\) is already a weekly time and keeps its place, so nothing was added\./);
+      assert.match(await moved.text(), /Tue 6:00pm \(at Field 3\) is already a weekly time and keeps its place, so nothing was added\./);
       assert.deepEqual(await slotRows(), [{ weekday: 2, time_local: '18:00', location_text: 'Field 3' }], 'Thursday was not added either');
       const placed = await db.query<{ location_text: string | null }>('select distinct location_text from session where weekly_slot_id is not null');
       assert.deepEqual(placed.rows, [{ location_text: 'Field 3' }]);
