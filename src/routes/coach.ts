@@ -52,7 +52,16 @@ import { createWeeklySlots, deactivateSlot, listWeeklySlots, type WeeklySlot } f
 import { coachNav, html, oneTimeCodeNote, page, raw, smsConsentCheckbox, type SafeHtml } from '../lib/html.js';
 import { cancelReach, cancelScheduledSession, dropInCreditNote, previewSessionCancel, type CancelReach } from '../domain/cancelSession.js';
 import { DEFAULT_TZ, formatClockLocal, formatCoachDollars, formatLocal, formatTimeRange, isValidTimeZone } from '../lib/time.js';
-import { getPackagesForCoach, getPlansForCoach, createPackage, createPlan, takesSpotSql } from '../domain/pricing.js';
+import {
+  getPackagesForCoach,
+  getPlansForCoach,
+  createPackage,
+  createPlan,
+  liveHoldSql,
+  soldSql,
+  SOLD_BOOKING_STATUSES,
+  takesSpotSql,
+} from '../domain/pricing.js';
 import { clockTime, dollarsToCents, LIMITS, rowId, wholeNumber } from '../lib/input.js';
 import {
   canWaive,
@@ -1071,10 +1080,15 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
     price_cents: number;
     duration_min: number;
     booked: string;
+    holding: string;
   }>(
+    // Counted as Session detail counts them: sold bookings (booked,
+    // attended, no-show) as booked, and parents still paying, while their
+    // hold stands, apart from them.
     `select s.id, s.starts_at_utc, s.tz, st.name, coalesce(s.capacity_override, st.capacity) as capacity, st.price_cents,
             st.duration_min,
-            coalesce((select count(*) from booking b where b.session_id = s.id and b.status = 'booked'), 0)::text as booked
+            (select count(*) from booking b where b.session_id = s.id and ${soldSql('b')})::text as booked,
+            (select count(*) from booking b where b.session_id = s.id and ${liveHoldSql('b')})::text as holding
      from session s
      join session_type st on st.id = s.session_type_id
      where st.coach_id = $1 and s.status = 'scheduled' and s.starts_at_utc > now()
@@ -1116,7 +1130,7 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
                 (s) =>
                   html`<a class="card" href="/app/sessions/${s.id}">
                     <strong>${formatLocal(s.starts_at_utc, s.tz)}</strong>
-                    <div class="meta"><span>${formatTimeRange(s.starts_at_utc, s.duration_min, s.tz)} · ${s.name} · ${s.booked} of ${s.capacity} spots booked · ${formatCoachDollars(s.price_cents)}</span></div>
+                    <div class="meta"><span>${formatTimeRange(s.starts_at_utc, s.duration_min, s.tz)} · ${s.name} · ${s.booked} of ${s.capacity} spots booked${Number(s.holding) > 0 ? ` · ${s.holding} holding` : ''} · ${formatCoachDollars(s.price_cents)}</span></div>
                   </a>`,
               )}
         </div>
@@ -1510,7 +1524,7 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
     `select b.id, b.athlete_name, b.status, b.manage_token, b.late_cancel, b.waived_at, b.payment_source, b.gross_cents, b.charge_id,
             b.credit_id, b.hold_expires_at, ${CREDIT_WITHDRAWN_SQL}
      from booking b
-     where b.session_id = $1 and (b.status <> 'pending' or b.hold_expires_at > now())
+     where b.session_id = $1 and (b.status <> 'pending' or ${liveHoldSql('b')})
      order by b.id`,
     [sessionId],
   );
@@ -1632,8 +1646,8 @@ function movedHereNote(from: MoveRow | undefined) {
 }
 
 /** Bookings that were sold and still hold their spot: "Booked (N)" on
- * screen 3. */
-const SOLD_STATUSES = new Set(['booked', 'attended', 'noshow']);
+ * screen 3, and "N of M spots booked" on the schedule. */
+const SOLD_STATUSES = new Set(SOLD_BOOKING_STATUSES);
 
 /** What screen 3 says of a booking, in words, never its raw status. A
  * pending booking is listed only while its hold stands. */

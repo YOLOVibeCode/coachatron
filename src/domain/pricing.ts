@@ -195,10 +195,27 @@ export function inPassSql(b: string, param: string): string {
   return `(${b}.id = ${param} or (${b}.pass_id is not null and ${b}.pass_id = (select p.pass_id from booking p where p.id = ${param})))`;
 }
 
+/** A booking that was sold and still has its spot: booked, or already
+ * marked attended or no-show. What "N of M spots booked" on the schedule
+ * and "Booked (N)" on Session detail count. */
+export const SOLD_BOOKING_STATUSES: readonly string[] = ['booked', 'attended', 'noshow'];
+
+/** SQL for "this booking was sold and still has its spot". `b` is the
+ * booking alias. */
+export function soldSql(b: string): string {
+  return `${b}.status in (${SOLD_BOOKING_STATUSES.map((s) => `'${s}'`).join(', ')})`;
+}
+
+/** SQL for "this booking is a parent at checkout whose hold on the spot
+ * has not run out". `b` is the booking alias. */
+export function liveHoldSql(b: string): string {
+  return `(${b}.status = 'pending' and ${b}.hold_expires_at > now())`;
+}
+
 /** SQL for "this booking takes a spot": it was sold and not cancelled, or
  * it is pending and its hold has not run out. `b` is the booking alias. */
 export function takesSpotSql(b: string): string {
-  return `(${b}.status in ('booked', 'attended', 'noshow') or (${b}.status = 'pending' and ${b}.hold_expires_at > now()))`;
+  return `(${soldSql(b)} or ${liveHoldSql(b)})`;
 }
 
 /** Spots taken in a session: live bookings plus unexpired holds. */
