@@ -33,7 +33,7 @@ import {
   type BookingRow,
 } from '../domain/pricing.js';
 import { checkOverflow, acceptOffer, declineOffer, describeOffer, getOfferByToken } from '../domain/cascade.js';
-import { buyerEmail, connectBuyUrl } from '../relay/buy-link.js';
+import { buyerEmail, cameBackFromPaying, connectBuyUrl } from '../relay/buy-link.js';
 import { hasActiveConsent, isOptedOut, optedOutNotice, recordConsent } from '../domain/sms-consent.js';
 import {
   BOOKING_HOLD_LIMITS,
@@ -684,7 +684,7 @@ publicRouter.get('/c/:handle/checkout/:token', async (req, res) => {
     return;
   }
   // Back from the hosted payment page before its confirmation has arrived.
-  if (req.query.paid === '1') {
+  if (cameBackFromPaying(req.originalUrl)) {
     res.status(200).send(renderPaymentConfirming(coach, ctx.session, ctx.booking, req.params.token));
     return;
   }

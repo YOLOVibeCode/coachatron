@@ -58,6 +58,19 @@ export function connectBuyUrl(args: {
   return url;
 }
 
+/** Whether a checkout URL is the parent's way back from the hosted payment
+ * page: its return link ends in ?paid=1. The relay hands that link to the
+ * payment provider as it is, and the provider sends the parent back to it
+ * exactly (Stripe), or adds its own query after it. A provider that adds
+ * "?" without looking for one already there gives "?paid=1?orderId=...",
+ * so a later "?" is read as "&". */
+export function cameBackFromPaying(url: string): boolean {
+  const at = url.indexOf('?');
+  if (at === -1) return false;
+  const query = new URLSearchParams(url.slice(at + 1).split('#')[0].replace(/\?/g, '&'));
+  return query.getAll('paid').includes('1');
+}
+
 /** The stand-in address domain for a parent who gave no email. Nothing is
  * ever sent to it. */
 export const PLACEHOLDER_EMAIL_DOMAIN = 'book.coachatron.test';
