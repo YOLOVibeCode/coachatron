@@ -27,7 +27,7 @@ daemon, no Docker:
 
 These five commands and their meaning are **fixed**: do not rename them, do
 not add a required secret to any of them, do not make any of them depend on a
-running database, Square, Twilio, SendGrid, or a model provider.
+running database, Stripe, Square, Twilio, SendGrid, or a model provider.
 
 ## Stack (decided once, in M1, not reopened)
 
@@ -51,7 +51,9 @@ running database, Square, Twilio, SendGrid, or a model provider.
   `src/relay/sms.ts` (SMS/email) are thin `fetch` wrappers around
   `RELAY_BASE_URL`. In tests, `RELAY_BASE_URL` points at an in-process fake
   server started by the test (`test/fakes/relay.ts`), built with Express
-  (already a dependency — do not add a mocking library).
+  (already a dependency — do not add a mocking library). *(Payments now use
+  `src/relay/buy-link.ts` and `src/relay/seller.ts`, on Stripe Connect behind
+  the relay; see the M3 note.)*
 - **No model client in Slice 1.** Per `AGENTS.md`, Slice 1 never calls the
   model. Do not create `src/relay/model.ts` or any LiteLLM client in any
   milestone below. That is Slice 2 work and is explicitly out of scope here.
@@ -64,7 +66,7 @@ daemon in tests, which is exactly what `AGENTS.md` and `SPEC.md §11` ask for.
 
 ## Never (repeated from `AGENTS.md`; violating any of these fails the milestone)
 
-- No `square`, `twilio`, `@sendgrid/mail`, `openai`, `@anthropic-ai/*`, or
+- No `stripe`, `square`, `twilio`, `@sendgrid/mail`, `openai`, `@anthropic-ai/*`, or
   `@google/*` package in `package.json`, ever.
 - No SQLite. Production storage is Postgres; tests use PGlite.
 - No thirteenth screen. Exactly the twelve in `SPEC.md §8.1`, mapped 1:1 to
@@ -73,7 +75,7 @@ daemon in tests, which is exactly what `AGENTS.md` and `SPEC.md §11` ask for.
 - Do not touch `SPEC.md`, `docs/PLATFORM.md`, or `design/index.html`'s
   content. `design/index.html` is a reference to match, not a file to grow
   into the product.
-- Do not deploy. Do not call a live Square, Twilio, SendGrid, or model API
+- Do not deploy. Do not call a live Stripe, Square, Twilio, SendGrid, or model API
   from anywhere `npm test` can reach.
 - PRs target `develop`. Never push to `main` or `develop` directly.
 - Last lines of any job on this repo are `COST this run: <amount or
@@ -273,6 +275,11 @@ phone + OTP is the only coach credential per `SPEC.md §7.1`.
 
 ## M3: Pricing & booking payment (Connect Hub, three ways to pay)
 Status: [x] done
+*(Note 2026-11-03: checkout has since moved to signed relay buy links, and the
+relay runs Connect Hub on Stripe Connect, not Square; `connectHub.ts`,
+`charge()` and `subscribe()` below are gone. Each payment mode is one charge
+today, the monthly plan included. Current design: `docs/PLATFORM.md` §2. The
+text below is the M3 build log as written.)*
 Goal: A parent opens `/c/<handle>`, books a session, and pays drop-in,
 10-pack, or monthly through a fake Connect Hub HTTP relay with `appFeeBps
 500` — screens 5 (pricing), 9 (booking form), 10 (checkout).
@@ -486,7 +493,7 @@ Routes `src/routes/public.ts` additions:
   (`{ name, price_cents, credits_per_month }`) rows for the signed-in coach
 
 Must not change: `appFeeBps` stays `500` on every call, in both `charge()`
-and `subscribe()`. Do not import a Square SDK — `connectHub.ts` only ever
+and `subscribe()`. Do not import a Stripe or Square SDK — `connectHub.ts` only ever
 calls `fetch` against `RELAY_BASE_URL`.
 
 ---
@@ -869,7 +876,7 @@ already written. Bugs found and fixed:
 
 No product code beyond `src/domain/money.ts` and the `/app/money` route in
 `src/routes/coach.ts` needed changes; the route itself (render-only, no
-Square balance/payout call) was correct as found.
+processor balance/payout call) was correct as found.
 
 `src/domain/money.ts` — pure read functions over `DbClient`, no writes:
 ```ts
@@ -897,7 +904,7 @@ export async function summarizeMoney(db: DbClient, coachId: number, now: Date): 
 permanent constraint from `SPEC.md §7.4`: "There is no payout screen, no
 balance, no withdrawal."
 
-Must not change: do not add a Square balance/payout API call anywhere in
+Must not change: do not add a Stripe (or any processor) balance/payout API call anywhere in
 this milestone or any other. The Money screen only ever reads Coachatron's
 own database.
 
@@ -997,11 +1004,12 @@ milestone Notes above where they happened:
 - `startCascade` operates on the original session rather than creating a
   literal "parallel session" row (M4) — the accepted roster member becomes
   that session's backup coach via `assigned_roster_member_id`.
-- No refund-webhook consumption exists (SPEC.md §9.4: refunds are issued
-  through the coach's own Square dashboard; Coachatron was never asked to
-  automate reversing a package credit on a partial refund in Slice 1, and
-  the "I will judge it by" / acceptance criteria across all seven
-  milestones never required it).
+- No refund-webhook consumption exists (SPEC.md §9.4: refunds are not
+  built yet, and coaches have no Stripe dashboard to refund from; Coachatron
+  was never asked to automate reversing a package credit on a partial refund
+  in Slice 1, and the "I will judge it by" / acceptance criteria across all
+  seven milestones never required it). *(Corrected 2026-11-03: this first
+  said refunds go through the coach's own Square dashboard.)*
 
 ### Release verification (post-M7)
 
