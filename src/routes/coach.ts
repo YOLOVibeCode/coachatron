@@ -17,6 +17,7 @@ import {
   checkOtp,
   consumeOtp,
   contactKey,
+  hasLiveOtp,
   newOtpCode,
   type OtpCheck,
   createCoachSession,
@@ -135,7 +136,10 @@ function renderContactForm(value = '', error?: string, saved = false) {
 }
 
 const NOT_TEXTABLE = 'We text only US and Canadian mobile numbers. Use your email instead.';
-const TOO_MANY_TRIES = 'Too many tries. Wait a few minutes, then try again.';
+/** Code checks: the longest of their windows is an hour. */
+const TOO_MANY_TRIES = 'Too many tries. Try again in an hour.';
+/** Code requests from one address: the longest window is a day. */
+const TOO_MANY_CODE_REQUESTS = 'Too many codes asked for from here. Try again later.';
 const RELAY_BUSY = "We can't send codes right now. Try again in a few minutes.";
 const SEND_FAILED = "We couldn't send a code just now. Try again in a minute.";
 const CODE_ERRORS: Record<Exclude<OtpCheck, { ok: true }>['reason'], string> = {
@@ -188,11 +192,20 @@ async function sendCode(
   return outcome;
 }
 
-/** Counts one code check for this address and this phone or email. */
+/** Counts one code check for this address, and for this phone or email
+ * while it has a live code. With no code out there is nothing to guess,
+ * so checks alone never hold back the next code asked for. */
 async function takeCodeCheck(db: DbClient, req: Request, contact: Contact): Promise<boolean> {
   const byAddress = await takeRequest(db, CODE_CHECK_IP_LIMITS, clientKey(req));
-  const byContact = await takeRequest(db, CODE_CHECK_CONTACT_LIMITS, contactKey(contact));
+  const byContact = (await hasLiveOtp(db, contact)) ? await takeRequest(db, CODE_CHECK_CONTACT_LIMITS, contactKey(contact)) : true;
   return byAddress && byContact;
+}
+
+/** The texts box ticked when the code was asked for. A STOP sent since
+ * then stands: the number opts back in by texting START. */
+async function recordCodeConsent(db: DbClient, req: Request, phone: string, source: string): Promise<void> {
+  if (await isOptedOut(db, phone)) return;
+  await recordConsent(db, phone, source, { ...consentMeta(req), numberVerified: true });
 }
 
 function smsConsentChecked(body: unknown): boolean {
@@ -232,7 +245,7 @@ coachRouter.post('/signin/otp', async (req, res) => {
   }
   const db = getDb();
   if (!(await takeRequest(db, SIGNIN_CODE_LIMITS, clientKey(req)))) {
-    again(429, TOO_MANY_TRIES);
+    again(429, TOO_MANY_CODE_REQUESTS);
     return;
   }
   if (contact.kind === 'phone' && (await isOptedOut(db, contact.phone))) {
@@ -358,7 +371,10 @@ coachRouter.post('/signin/verify', async (req, res) => {
       res.status(422).send(renderVerifyForm(contact, { code, name, email, tz }, emailTakenNotice(holder)));
       return;
     }
-    await consumeOtp(db, otpId);
+    if (!(await consumeOtp(db, otpId))) {
+      res.status(401).send(renderVerifyForm(contact, { code, name, email, tz }, CODE_ERRORS.none));
+      return;
+    }
     if (unproved) await releaseUnprovedEmail(db, contactValue(contact));
     coach = await createCoach(db, {
       phone: contact.kind === 'phone' ? contact.phone : null,
@@ -367,12 +383,11 @@ coachRouter.post('/signin/verify', async (req, res) => {
       name,
       tz: isValidTimeZone(tz) ? tz : DEFAULT_TZ,
     });
-  } else {
-    await consumeOtp(db, otpId);
+  } else if (!(await consumeOtp(db, otpId))) {
+    res.status(401).send(renderVerifyForm(contact, { code, name, email, tz }, CODE_ERRORS.none));
+    return;
   }
-  if (contact.kind === 'phone' && check.smsConsent) {
-    await recordConsent(db, contact.phone, '/signin/otp', { ...consentMeta(req), numberVerified: true });
-  }
+  if (contact.kind === 'phone' && check.smsConsent) await recordCodeConsent(db, req, contact.phone, '/signin/otp');
 
   const token = await createCoachSession(db, coach.id);
   const cookies = [serializeCookie(SESSION_COOKIE, token, 30 * 24 * 60 * 60)];
@@ -907,6 +922,7 @@ const PHONE_NOTICES: Record<string, string> = {
   wrong: 'That code did not match. Try again.',
   used: 'That code had too many wrong tries. Ask for a new one.',
   slow: TOO_MANY_TRIES,
+  wait: TOO_MANY_CODE_REQUESTS,
   busy: "We can't send texts right now. Try again in a few minutes.",
   failed: SEND_FAILED,
   taken: 'That number is already on another Coachatron account.',
@@ -966,7 +982,7 @@ const EMAIL_NOTICES: Record<string, string> = {
   wrong: 'That code did not match. Try again.',
   used: 'That code had too many wrong tries. Ask for a new one.',
   slow: TOO_MANY_TRIES,
-  wait: TOO_MANY_TRIES,
+  wait: TOO_MANY_CODE_REQUESTS,
   capped: 'Too many codes for that email today. Try again tomorrow.',
   busy: "We can't send email right now. Try again in a few minutes.",
   failed: SEND_FAILED,
@@ -1032,7 +1048,10 @@ coachRouter.post('/app/email/verify', requireAuth, async (req, res) => {
     res.redirect(303, `/app/schedule?email=${check.reason === 'used-up' ? 'used' : 'wrong'}`);
     return;
   }
-  await consumeOtp(db, check.id);
+  if (!(await consumeOtp(db, check.id))) {
+    res.redirect(303, '/app/schedule?email=wrong');
+    return;
+  }
   await markEmailVerified(db, coach.id, coach.email);
   res.redirect(303, '/app/schedule?email=done');
 });
@@ -1056,7 +1075,7 @@ coachRouter.post('/app/phone', requireAuth, async (req, res) => {
     return;
   }
   if (!(await takeRequest(db, SIGNIN_CODE_LIMITS, clientKey(req)))) {
-    res.redirect(303, '/app/schedule?phone=slow');
+    res.redirect(303, '/app/schedule?phone=wait');
     return;
   }
   if (await isOptedOut(db, phone)) {
@@ -1110,15 +1129,16 @@ coachRouter.post('/app/phone/verify', requireAuth, async (req, res) => {
     res.redirect(303, check.reason === 'used-up' ? '/app/schedule?phone=used' : `/app/schedule?phone=wrong&to=${encodeURIComponent(phone)}`);
     return;
   }
+  if (!(await consumeOtp(db, check.id))) {
+    res.redirect(303, `/app/schedule?phone=wrong&to=${encodeURIComponent(phone)}`);
+    return;
+  }
   const result = await setCoachPhone(db, coachId, phone);
   if (result === 'taken') {
     res.redirect(303, '/app/schedule?phone=taken');
     return;
   }
-  await consumeOtp(db, check.id);
-  if (check.smsConsent) {
-    await recordConsent(db, phone, '/app/phone', { ...consentMeta(req), numberVerified: true });
-  }
+  if (check.smsConsent) await recordCodeConsent(db, req, phone, '/app/phone');
   res.redirect(303, '/app/schedule?phone=done');
 });
 

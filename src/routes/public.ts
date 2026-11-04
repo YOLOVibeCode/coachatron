@@ -18,7 +18,7 @@ import {
 import { checkOverflow, acceptOffer, declineOffer, describeOffer, getOfferByToken } from '../domain/cascade.js';
 import { buyerEmail, connectBuyUrl } from '../relay/buy-link.js';
 import { hasActiveConsent, isOptedOut, optedOutNotice, recordConsent } from '../domain/sms-consent.js';
-import { clientKey, SMS_OPT_IN_LIMITS, takeRequest } from '../domain/requestLimits.js';
+import { clientKey, SMS_OPT_IN_LIMITS, takeRequest, WAITLIST_LIMITS } from '../domain/requestLimits.js';
 import { canText, sendText } from '../domain/outbound.js';
 import { SMS_BRAND, SMS_OPT_IN_CONFIRMATION, SMS_PURPOSE, SUPPORT_EMAIL } from '../config.js';
 import type { Request } from 'express';
@@ -183,7 +183,7 @@ publicRouter.post('/sms', async (req, res) => {
   }
   const db = getDb();
   if (!(await takeRequest(db, SMS_OPT_IN_LIMITS, clientKey(req)))) {
-    res.status(429).send(renderSmsPage({ phone: rawPhone }, { kind: 'error', text: 'Too many tries. Wait a few minutes, then try again.' }));
+    res.status(429).send(renderSmsPage({ phone: rawPhone }, { kind: 'error', text: 'Too many tries from here. Try again later.' }));
     return;
   }
   // Typing a number here does not prove it is yours, so it cannot undo
@@ -391,6 +391,17 @@ publicRouter.post('/c/:handle/sessions/:sessionId/waitlist', async (req, res) =>
   // waitlist has no email column (SPEC.md §11.1) — phone is the contact of record.
   if (!athleteName || !contactPhone) {
     res.status(422).send(notFound());
+    return;
+  }
+  if (!(await takeRequest(db, WAITLIST_LIMITS, clientKey(req)))) {
+    res.status(429).send(
+      page(
+        'Try again later',
+        html`<h1>Too many waitlist requests</h1>
+          <p class="muted">Too many from here for now. Try again later.</p>
+          <a class="action" href="/c/${coach.handle}">Back to ${coach.name}'s sessions</a>`,
+      ),
+    );
     return;
   }
 

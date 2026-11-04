@@ -125,13 +125,7 @@ export async function checkOtp(db: DbClient, target: string | Contact, code: str
     [contactValue(contact), OTP_MAX_ATTEMPTS],
   );
   const row = taken.rows[0];
-  if (!row) {
-    const live = await db.query<{ id: number }>(
-      `select id from otp_code where ${column} = $1 and consumed_at is null and expires_at > now() limit 1`,
-      [contactValue(contact)],
-    );
-    return { ok: false, reason: live.rows.length > 0 ? 'used-up' : 'none' };
-  }
+  if (!row) return { ok: false, reason: (await hasLiveOtp(db, contact)) ? 'used-up' : 'none' };
   const given = Buffer.from(hashCode(code), 'hex');
   const stored = Buffer.from(row.code_hash, 'hex');
   if (given.length === stored.length && crypto.timingSafeEqual(given, stored)) {
@@ -142,8 +136,25 @@ export async function checkOtp(db: DbClient, target: string | Contact, code: str
   return { ok: false, reason: row.attempts >= OTP_MAX_ATTEMPTS ? 'used-up' : 'wrong' };
 }
 
-export async function consumeOtp(db: DbClient, otpId: number): Promise<void> {
-  await db.query('update otp_code set consumed_at = now() where id = $1', [otpId]);
+/** Uses up a code checkOtp accepted. False when another request already
+ * used it, so the same code sent twice at once signs in only once. */
+export async function consumeOtp(db: DbClient, otpId: number): Promise<boolean> {
+  const result = await db.query<{ id: number }>(
+    'update otp_code set consumed_at = now() where id = $1 and consumed_at is null returning id',
+    [otpId],
+  );
+  return result.rows.length > 0;
+}
+
+/** True while this phone or email has a code that has not been used or
+ * expired, whether or not it still takes tries. */
+export async function hasLiveOtp(db: DbClient, target: string | Contact): Promise<boolean> {
+  const contact = asContact(target);
+  const live = await db.query<{ id: number }>(
+    `select id from otp_code where ${otpColumn(contact)} = $1 and consumed_at is null and expires_at > now() limit 1`,
+    [contactValue(contact)],
+  );
+  return live.rows.length > 0;
 }
 
 export async function createCoachSession(db: DbClient, coachId: number): Promise<string> {

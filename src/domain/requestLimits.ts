@@ -36,6 +36,13 @@ export const SMS_OPT_IN_LIMITS: LimitRule[] = [
   { bucket: 'opt-in-ip-day', windowMs: DAY, max: 20 },
 ];
 
+/** Waitlist joins from one address. A join can send the coach a text or
+ * an email asking whether to open a second group. */
+export const WAITLIST_LIMITS: LimitRule[] = [
+  { bucket: 'waitlist-ip-hour', windowMs: HOUR, max: 10 },
+  { bucket: 'waitlist-ip-day', windowMs: DAY, max: 30 },
+];
+
 /** The landing page's week box, from one address. */
 export const START_BOX_LIMITS: LimitRule[] = [{ bucket: 'start-ip-10m', windowMs: 10 * MINUTE, max: 30 }];
 
