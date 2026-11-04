@@ -42,6 +42,10 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # npm test is scripts/run-tests.mjs. On Node 24 it runs a test file once
+      # more only when V8 aborted that file's process and none of its tests
+      # failed (nodejs/node#66366, hit through PGlite's WebAssembly), and adds
+      # a warning to the run when it did. Anything else fails as before.
       - name: Test
         run: npm test
 
