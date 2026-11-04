@@ -668,9 +668,9 @@ publicRouter.get('/c/:handle/checkout/:token', async (req, res) => {
 
 /** The manage link on the page a parent lands on, so a parent who gets no
  * texts or email still has it. */
-function manageLinkBlock(booking: Pick<BookingRow, 'manage_token'>) {
+function manageLinkBlock(booking: Pick<BookingRow, 'manage_token'>, style: 'action' | 'action ghost' = 'action') {
   return html`<p>Keep this link to see or cancel the booking:</p>
-    <a class="action" href="/booking/${booking.manage_token}">Manage this booking</a>`;
+    <a class="${style}" href="/booking/${booking.manage_token}">Manage this booking</a>`;
 }
 
 function renderAlreadyBooked(coach: CoachRow, session: SessionForBooking, booking: Pick<BookingRow, 'manage_token' | 'status'>) {
@@ -698,7 +698,7 @@ function renderPaymentConfirming(coach: CoachRow, session: SessionForBooking, bo
     html`<h1>Confirming your payment</h1>
       <p class="muted">${session.name} — ${formatLocal(session.starts_at_utc, session.tz)}. If you paid, this takes a moment. Please don't pay again.</p>
       <a class="action" href="/c/${coach.handle}/checkout/${checkoutToken}?paid=1">Check again</a>
-      ${manageLinkBlock(booking)}
+      ${manageLinkBlock(booking, 'action ghost')}
       <p class="muted">Didn't finish paying? <a href="/c/${coach.handle}/checkout/${checkoutToken}">Choose how to pay</a>.</p>`,
   );
 }

@@ -140,3 +140,17 @@ test("the assistant's cancel reply says how many were texted and who was not rea
     }
   });
 });
+
+test('a cancelled session with nobody booked just says it was cancelled', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 6 });
+    assert.equal((await cancelScheduledSession(db, seed.coach.id, seed.sessionId)).kind, 'cancelled');
+    const cookie = `cx_session=${await createCoachSession(db, seed.coach.id)}`;
+    await withServer(async (base) => {
+      const detail = await (await fetch(`${base}/app/sessions/${seed.sessionId}`, { headers: { cookie } })).text();
+      assert.match(detail, /<strong>Cancelled\.<\/strong><\/p>/);
+      assert.doesNotMatch(detail, /Texted \d+ of|Not reached/);
+    });
+  });
+});

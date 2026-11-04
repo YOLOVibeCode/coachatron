@@ -1401,6 +1401,7 @@ const UNREACHED_REASON: Record<CancelReach['unreached'][number]['reason'], strin
 function renderCancelReach(reach: CancelReach) {
   const parents = reach.athletesTotal === 1 ? 'parent' : 'parents';
   const credits = reach.creditsReturned === 1 ? 'credit' : 'credits';
+  if (reach.athletesTotal === 0) return html`<div class="card cancel-reach"><p><strong>Cancelled.</strong></p></div>`;
   return html`<div class="card cancel-reach">
     <p><strong>Cancelled.</strong> Texted ${reach.athletesNotified} of ${reach.athletesTotal} ${parents}. ${reach.creditsReturned} ${credits} returned.</p>
     ${reach.unreached.length > 0
