@@ -165,9 +165,15 @@ one-field-per-screen.
 3. Chooses how to pay: **this session** ($35), **a package** (10 for $300), or
    **a monthly plan** ($120/mo). Existing credits are detected by phone number
    and applied automatically.
+   *(Updated 2026-11-03: the spot is held for 15 minutes while the parent pays.
+   A plan is charged once, so parents and coaches see it as a one-time pack.
+   Credits are used once the phone is proven: a code texted to it at
+   checkout, or arriving from a manage link that was proven the same way.)*
 4. Pays. Square hosted checkout — we never touch card data.
 5. Gets an SMS + email confirmation with a manage link (reschedule/cancel within
-   policy).
+   policy). *(Implemented 2026-11-03: a text when the parent chose texts, an
+   email when they gave an address, and the manage link on the page they
+   return to after paying.)*
 
 ### 7.3 Capacity overflow — the differentiating flow
 
@@ -486,3 +492,6 @@ Item 4 is the only one that matters. The others are how we get there.
    deciding whether email is Slice 1 scope (small addition: one relay call
    alongside the existing SMS confirmation) or explicitly Slice 2, rather
    than leaving it an unstated gap.
+   **Answered 2026-11-03:** booking confirmations, and the notice when a
+   payment for a cancelled session becomes credit, go by email too when the
+   parent gave an address.
