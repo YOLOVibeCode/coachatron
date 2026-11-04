@@ -32,3 +32,7 @@ railway config apply
   change directly (for a variable: `railway variable set KEY=VALUE --service
   web --environment production`), then run `railway config plan` to confirm
   it says "already up to date".
+- **Production draining.** `railway environment edit` would not set
+  `deploy.drainingSeconds` in production either, so production carries it as
+  the variable `RAILWAY_DEPLOYMENT_DRAINING_SECONDS=15`. Its plan therefore
+  still lists that one `deploy.drainingSeconds` change; nothing else.
