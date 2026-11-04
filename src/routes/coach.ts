@@ -48,7 +48,7 @@ import {
 } from '../domain/payments.js';
 import { createWeeklySlots, deactivateSlot, listWeeklySlots, type WeeklySlot } from '../domain/scheduling.js';
 import { coachNav, html, oneTimeCodeNote, page, raw, smsConsentCheckbox } from '../lib/html.js';
-import { cancelScheduledSession, countSessionCancelNotifyAthletes } from '../domain/cancelSession.js';
+import { cancelReach, cancelScheduledSession, previewSessionCancel, type CancelReach } from '../domain/cancelSession.js';
 import { DEFAULT_TZ, formatCoachDollars, formatLocal, formatTimeRange, isValidTimeZone } from '../lib/time.js';
 import { getPackagesForCoach, getPlansForCoach, createPackage, createPlan } from '../domain/pricing.js';
 import { summarizeMoney } from '../domain/money.js';
@@ -1348,12 +1348,15 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
     [sessionId],
   );
   
+  const reach = session.status === 'cancelled' ? await cancelReach(db, sessionId) : null;
+
   res.status(200).send(
     page(
       session.name,
       html`${coachNav('schedule')}
         <h1>${session.name}</h1>
         <p class="muted">${formatLocal(session.starts_at_utc, session.tz)}</p>
+        ${reach ? renderCancelReach(reach) : raw('')}
         
         <h2>Booked (${bookings.rows.filter((b) => b.status === 'booked').length})</h2>
         ${bookings.rows.length === 0
@@ -1386,6 +1389,30 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
     ),
   );
 });
+
+const UNREACHED_REASON: Record<CancelReach['unreached'][number]['reason'], string> = {
+  'no-texts': 'has not opted in to texts',
+  'not-sent': 'text not sent (daily limit)',
+  failed: 'text failed to send',
+};
+
+/** The cancel's confirmation on screen 3: how many parents were texted, and
+ * who still needs to be told by the coach. */
+function renderCancelReach(reach: CancelReach) {
+  const parents = reach.athletesTotal === 1 ? 'parent' : 'parents';
+  const credits = reach.creditsReturned === 1 ? 'credit' : 'credits';
+  return html`<div class="card cancel-reach">
+    <p><strong>Cancelled.</strong> Texted ${reach.athletesNotified} of ${reach.athletesTotal} ${parents}. ${reach.creditsReturned} ${credits} returned.</p>
+    ${reach.unreached.length > 0
+      ? html`<p class="error">Not reached — please contact them yourself:</p>
+          <ul class="unreached">
+            ${reach.unreached.map(
+              (u) => html`<li>${u.athleteName} · <a href="tel:${u.contactPhone}">${u.contactPhone}</a> · ${UNREACHED_REASON[u.reason]}</li>`,
+            )}
+          </ul>`
+      : raw('')}
+  </div>`;
+}
 
 coachRouter.post('/app/sessions/:id/bookings/:bookingId/attendance', requireAuth, async (req, res) => {
   const db = getDb();
@@ -1437,15 +1464,18 @@ coachRouter.get('/app/sessions/:id/cancel', requireAuth, async (req, res) => {
     return;
   }
 
-  const notifyCount = await countSessionCancelNotifyAthletes(db, sessionId);
+  const preview = await previewSessionCancel(db, sessionId);
   const when = formatLocal(session.starts_at_utc, session.tz);
-  const athleteWord = notifyCount === 1 ? 'athlete' : 'athletes';
+  const untextable = preview.total - preview.textable;
   res.status(200).send(
     page(
       'Cancel session',
       html`${coachNav('schedule')}
         <h1>Cancel session</h1>
-        <p>Cancel ${when}? ${notifyCount} ${athleteWord} will get a text.</p>
+        <p>Cancel ${when}? ${preview.textable} ${preview.textable === 1 ? 'athlete' : 'athletes'} will get a text.</p>
+        ${untextable > 0
+          ? html`<p class="muted">${untextable} ${untextable === 1 ? 'parent has' : 'parents have'} not opted in to texts. You'll see who to contact after you cancel.</p>`
+          : raw('')}
         <form method="post" action="/app/sessions/${sessionId}/cancel">
           <div class="btn-row">
             <button type="submit" class="action danger">Confirm cancel</button>
@@ -1481,7 +1511,8 @@ coachRouter.post('/app/sessions/:id/cancel', requireAuth, async (req, res) => {
     return;
   }
 
-  res.redirect(303, '/app/schedule');
+  // The session screen shows who was texted and who was not reached.
+  res.redirect(303, `/app/sessions/${sessionId}`);
 });
 
 // ---- Screen 5: pricing (packages and plans) ----

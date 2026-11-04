@@ -530,8 +530,9 @@ async function executeCancel(db: DbClient, coach: CoachRow, sessionId: number): 
   if (result.kind === 'not_found') return 'That session is gone.';
   if (result.kind === 'already_started') return 'Session already started.';
   if (result.kind === 'already_cancelled') return 'That session is already cancelled.';
+  const notReached = result.unreached.length > 0 ? ` Not reached: ${result.unreached.map((u) => u.athleteName).join(', ')}.` : '';
   return clipSms(
-    `Cancelled. ${result.athletesNotified} athletes notified, ${result.creditsReturned} credits returned.`,
+    `Cancelled. ${result.athletesNotified} of ${result.athletesTotal} athletes texted, ${result.creditsReturned} credits returned.${notReached}`,
   );
 }
 
