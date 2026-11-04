@@ -21,6 +21,7 @@ Fill these in as the project gains them, and keep them true:
 | --- | --- |
 | Install | `npm ci` |
 | Test | `npm test` |
+| Race tests on real Postgres (skipped in `npm test` without it) | `TEST_DATABASE_URL=postgres://… npm run test:pg` |
 | Typecheck | `npm run typecheck` |
 | Dev | `npm run dev` |
 | Eval voice setup (calls the live model; run on purpose only) | `LITELLM_API_KEY=... npm run eval:setup` |

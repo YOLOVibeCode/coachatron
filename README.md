@@ -55,6 +55,16 @@ text, book, checkout by its token, signed buy link, payment event, the
 confirmation with the manage link, manage page), against the fake relay and a
 fake model.
 
+Race tests: `test/pg/` runs two transactions at the same moment on real
+Postgres (two parents going for the last spot, a backup coach accepting
+while the tick expires the offer, a refund reported while a parent moves
+the booking), since PGlite runs one transaction at a time and cannot show
+a lock wait. They run only when `TEST_DATABASE_URL` names a Postgres server
+they may create a throwaway database on, and are skipped in `npm test`
+otherwise. `TEST_DATABASE_URL=postgres://postgres@localhost:5432/postgres
+npm run test:pg` runs just them; CI's `Postgres` job does that against a
+`postgres:16` service container.
+
 `npm run migrate` applies the SQL migrations in `src/db/migrations/` to
 `DATABASE_URL` if you've set one (Postgres in production); it's optional for
 local development, since `npm run dev` and `npm test` both work against
