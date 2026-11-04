@@ -44,7 +44,9 @@ import {
   notePublished,
   openPaymentsLink,
   paymentsOpen,
+  paymentsStep,
   recordSellerStatus,
+  type PaymentsStep,
 } from '../domain/payments.js';
 import { createWeeklySlots, deactivateSlot, listWeeklySlots, type WeeklySlot } from '../domain/scheduling.js';
 import { coachNav, html, oneTimeCodeNote, page, raw, smsConsentCheckbox, type SafeHtml } from '../lib/html.js';
@@ -104,6 +106,7 @@ import { readStartText, START_COOKIE } from '../lib/startCookie.js';
 import {
   coachHasSchedule,
   discardDraft,
+  formatClock,
   getOpenDraft,
   handleSetupMessage,
   publishSetupPlan,
@@ -819,7 +822,7 @@ function renderWeeklyTimes(
       ${slots.map(
         (slot) => html`<div class="card">
           <div class="row">
-            <span>${WEEKDAY_LABELS[slot.weekday]} ${slot.time_local}${slot.location_text ? ` · ${slot.location_text}` : ''}</span>
+            <span>${WEEKDAY_LABELS[slot.weekday]} ${formatClock(slot.time_local)}${slot.location_text ? ` · ${slot.location_text}` : ''}</span>
             <form method="post" action="/app/session-types/${type.id}/slots/${slot.id}/remove">
               <button type="submit" class="ghost">Remove</button>
             </form>
@@ -892,7 +895,7 @@ coachRouter.post('/app/session-types/:id/generate-week', requireAuth, async (req
   });
   if (elsewhere.length > 0) {
     const which = elsewhere
-      .map((c) => `${WEEKDAY_LABELS[c.weekday]} ${c.time_local}${c.location_text ? ` (at ${c.location_text})` : ''}`)
+      .map((c) => `${WEEKDAY_LABELS[c.weekday]} ${formatClock(c.time_local)}${c.location_text ? ` (at ${c.location_text})` : ''}`)
       .join(', ');
     const are = elsewhere.length === 1 ? 'is already a weekly time and keeps its place' : 'are already weekly times and keep their places';
     refuse(`${which} ${are}, so nothing was added.`);
@@ -988,10 +991,26 @@ const COPY_LINK_SCRIPT =
   "function old(){try{if(document.execCommand('copy'))done()}catch(e){}}" +
   "try{navigator.clipboard.writeText(i.value).then(done,old)}catch(e){old()}";
 
+/** The words for each payments step, the same on Schedule and Money. */
+const CONNECT_PAYMENTS = 'Connect payments';
+const FINISH_CONNECTING_PAYMENTS = 'Finish connecting payments';
+const TEST_ONLY_PAYMENTS = 'This payment account takes test payments only, so parents cannot book paid sessions yet.';
+
+/** Schedule's line and link for a coach who cannot take payments yet. */
+function paymentsStepCard(step: PaymentsStep) {
+  if (step === 'test-only') {
+    return html`<p class="muted">${TEST_ONLY_PAYMENTS}</p>
+      <a class="action" href="/app/money">See payments</a>`;
+  }
+  return html`<p class="muted">Parents can't book until payments are set up.</p>
+    <a class="action" href="/app/money">${step === 'finish' ? FINISH_CONNECTING_PAYMENTS : CONNECT_PAYMENTS}</a>`;
+}
+
 /** The coach's page link, always in view on Schedule and Money: one box to
  * select or copy, and a way to text it. On Schedule the main action is
- * sharing it, or, until payments work, setting them up. Money has its own. */
-function renderPageLinkCard(coach: CoachRow, opts: { main: 'share' | 'payments' | 'none'; justPublished?: boolean }) {
+ * sharing it, or, until payments work, the next payments step. Money has
+ * its own. */
+function renderPageLinkCard(coach: CoachRow, opts: { main: 'share' | PaymentsStep | 'none'; justPublished?: boolean }) {
   const link = coachPageUrl(coach.handle);
   const share = `sms:?&body=${encodeURIComponent(`Book with me: ${link}`)}`;
   return html`<div class="card page-link">
@@ -1004,10 +1023,7 @@ function renderPageLinkCard(coach: CoachRow, opts: { main: 'share' | 'payments' 
       <button type="button" class="ghost" onclick="${COPY_LINK_SCRIPT}">Copy link</button>
       <a class="action${opts.main === 'share' ? '' : ' ghost'}" href="${share}">Share your link</a>
     </div>
-    ${opts.main === 'payments'
-      ? html`<p class="muted">Parents can't book until payments are set up.</p>
-          <a class="action" href="/app/money">Connect payments</a>`
-      : raw('')}
+    ${opts.main === 'share' || opts.main === 'none' ? raw('') : paymentsStepCard(opts.main)}
   </div>`;
 }
 
@@ -1029,7 +1045,7 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
     return;
   }
   const live = renderPageLinkCard(coach, {
-    main: (await paymentsOpen(db, coach)) ? 'share' : 'payments',
+    main: (await paymentsOpen(db, coach)) ? 'share' : await paymentsStep(db, coach.id),
     justPublished: req.query.published === '1',
   });
   const askCard = renderAskCard(await pendingAskForCoach(db, coachId));
@@ -2227,9 +2243,7 @@ function renderPaymentsCard(state: PaymentsState, notice: string | null, error: 
   const body =
     state.kind === 'connected'
       ? html`<p><strong>Payments connected.</strong></p>
-          ${state.testOnly
-            ? html`<p class="error">This payment account takes test payments only, so parents cannot book paid sessions yet.</p>`
-            : raw('')}
+          ${state.testOnly ? html`<p class="error">${TEST_ONLY_PAYMENTS}</p>` : raw('')}
           <p class="muted">Athletes pay you directly. Coachatron keeps ${feePercent} of each payment.</p>
           <p class="muted">
             ${state.payoutsEnabled
@@ -2244,7 +2258,7 @@ function renderPaymentsCard(state: PaymentsState, notice: string | null, error: 
         : state.kind === 'finish'
           ? html`<p class="muted">Finish setting up your payment account so athletes can pay you.</p>
               <form method="post" action="/app/money/payments">
-                <button type="submit">Finish connecting payments</button>
+                <button type="submit">${FINISH_CONNECTING_PAYMENTS}</button>
               </form>`
           : html`<p class="muted">Connect a payment account so athletes can pay you when they book.</p>
               <ul class="muted">
@@ -2254,7 +2268,7 @@ function renderPaymentsCard(state: PaymentsState, notice: string | null, error: 
               </ul>
               <form method="post" action="/app/money/payments">
                 <label><input type="checkbox" name="agree" value="1" /> I accept the Coachatron marketplace terms (${SELLER_AGREEMENT_VERSION}).</label>
-                <button type="submit">Connect payments</button>
+                <button type="submit">${CONNECT_PAYMENTS}</button>
               </form>`;
   return html`<h2>Payments</h2>
     <div class="card">
