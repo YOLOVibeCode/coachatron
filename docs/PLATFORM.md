@@ -18,8 +18,8 @@ Source of truth: `~/Dev/Noctusoft/noctusoft-relay` (`AGENTS.md`,
 
 | Surface | Endpoint | Coachatron uses it for |
 |---|---|---|
-| **Email** | `POST /email/send` (SendGrid drop-in at `/v3/mail/send`) | Booking confirmations, receipts, cancellations |
-| **SMS out** | `POST /sms/send` (Twilio drop-in at `/2010-04-01/Accounts/:sid/Messages.json`) | Reminders, overflow offers, coach alerts |
+| **Email** | `POST /email/send` (SendGrid drop-in at `/v3/mail/send`) | Sign-in codes, booking confirmations with the manage link, and the notice when a payment for a cancelled session becomes credit |
+| **SMS out** | `POST /sms/send` (Twilio drop-in at `/2010-04-01/Accounts/:sid/Messages.json`) | Confirmations, reminders, cancels, overflow offers, coach alerts, and the coach's go-live and payments texts |
 | **Inbound SMS** | `inbound.js` `ROUTES`, keyed by phone number → product webhook | Offer replies, and the NL control channel (§4) |
 | **Inbound email** | `ROUTES.email`, keyed by domain, with auto-reply + forward | `reply.coachatron.com` support address |
 | **Connect Hub** | `/connect/:productKey/*`, buy links at `/buy/connect/:productKey/:seller` | Coach onboards a Stripe connected account; parents pay it; we take an app fee |
@@ -102,10 +102,10 @@ What Coachatron calls today:
 | Step | Relay | Coachatron |
 |---|---|---|
 | Accept the terms | `POST /connect/:product/recipients/:seller/agreement` with `agreement_version: "v1"` | Money screen box "I accept the Coachatron marketplace terms (v1)" (`SELLER_AGREEMENT_VERSION`) |
-| Onboard | `POST …/onboard` → signed relay link → Stripe's hosted form (identity, bank) → back to `/app/money?seller=connected\|pending\|failed` | "Connect payments"; once connected, "Update payout details" opens the same form |
-| Status | `GET /connect/:product/recipients/:seller` | Charges and payouts enabled, accepted agreement version |
-| Pay | Signed buy link `GET /buy/connect/:product/:seller?…&sig=` → Stripe's hosted checkout, with the platform fee | Checkout (screen 10): drop-in, package, or plan, each one charge |
-| Hear back | Event v1 `marketplace.purchase.paid` at `/webhooks/store` | Books the athlete; grants package or plan credits |
+| Onboard | `POST …/onboard` → signed relay link → Stripe's hosted form (identity, bank) → back to `/app/money?seller=connected\|pending\|failed` | "Connect payments"; once connected, "Update payout details" opens the same form. A coach who only texts reaches Money from the payments link in their go-live text (§2.2) |
+| Status | `GET /connect/:product/recipients/:seller` | Charges and payouts enabled, accepted agreement version; whether charges work is saved in `coach_payments` (§2.2) |
+| Pay | Signed buy link `GET /buy/connect/:product/:seller?…&sig=` → Stripe's hosted checkout, with the platform fee | Checkout (screen 10, reached by its token): drop-in, package, or one-time pack, each one charge, offered only while the coach's charges work |
+| Hear back | Event v1 `marketplace.purchase.paid` at `/webhooks/store`; `seller.updated` and `seller.disconnected` for the coach's account | Records the event once, checks it, then books the held spot and grants package or pack credits, or keeps the payment for the coach (§2.2) |
 
 How the relay sets up each coach (`stripe/adapter.js`, `beginOnboarding`):
 
@@ -131,8 +131,9 @@ Built in the relay, not used by Coachatron yet:
   (SPEC.md §9.4).
   Until then a refund is a support request, as the Money screen says.
 - **Seller subscriptions** (`…/plans`, `…/subscriptions` and cancel / pause /
-  resume / swap-plan / update-card). The monthly plan is charged once today;
-  renewal would use these.
+  resume / swap-plan / update-card). A plan is sold as a one-time pack,
+  charged once, and parents and coaches see it that way; monthly renewal
+  would use these.
 - **Disputes:** Stripe handles them. Event v1 carries a `disputeId` ref, which
   Coachatron does not read yet.
 
@@ -149,7 +150,8 @@ No live charge has run for Coachatron yet. What gates it, slowest first:
 2. **Marketplace terms v1 published** where the Money screen's box can point
    to them. The box names v1; the text has to exist before a coach accepts it
 3. **Dispute and refund handoff** — how a coach with no Stripe dashboard asks
-   for a refund or answers a dispute, until the app does both
+   for a refund or answers a dispute, until the app does both. Payments listed
+   under "Payments to resolve" on Money (§2.2) need the same handoff
 4. Production's Connect row switched from Stripe test mode to live (an
    operator step on `ns`)
 5. Production canary — one $1 real charge on a real coach account, refunded
@@ -162,6 +164,60 @@ critical path to first revenue.
 Connect Hub explicitly does *not* cover **coach onboarding UI** — that is
 product-side, i.e. Coachatron's screen 7 (Money, and connecting payments) in
 SPEC.md §8.1.
+
+### 2.2 From publish to a paid booking
+
+*Implemented 2026-11-03* (`src/domain/payments.ts`, `src/routes/public.ts`,
+`src/routes/store-webhook.ts`):
+
+- **Whether a coach can take charges** is saved in `coach_payments`, so the
+  public page asks the relay at most once a minute and only until it first
+  answers. It is updated when the coach lands back on Money, by
+  `seller.updated` and `seller.disconnected` events, and by the tick, which
+  asks about a coach still setting up at most every 15 minutes (for 30 days
+  after they started) in case an event was missed.
+- **Booking opens soon.** Until charges work, each paid session on
+  `/c/:handle` says "Booking opens soon" in place of Book, checkout offers
+  only session credits, and nothing sends a parent to the payment page. Free
+  sessions book as usual, and families who hold session credits with the
+  coach can still book with them.
+- **Texts to the coach** (each one segment, only to a mobile with the texts
+  box ticked): on the first publish, the page link and, until charges work, a
+  payments link `/p/:token` (one use, 7 days) that signs the coach in on
+  Money; one "You can take payments now" text when charges turn on, held
+  past quiet hours; and, while setup is unfinished, the payments link again
+  about a day and about three days after publishing, two at most.
+- **Spot holds.** Starting a booking holds the spot for 15 minutes while the
+  parent pays (`booking.hold_expires_at`), counted again from when they pick a
+  way to pay; capacity counts live bookings plus unexpired holds. One phone
+  holds one spot per session at a time.
+- **Checkout** is reached by `booking.checkout_token`, never the booking's
+  serial id. Session credits are used only once the booking's phone is
+  proven (`booking.phone_verified_at`): a code texted to it at checkout, or
+  arriving from a manage link that was proven the same way.
+- **Payment checks.** Every paid event is claimed in `store_event` before it
+  is handled, so a redelivery or a restart never handles it twice; while
+  another delivery is handling it, the app answers with an error so the relay
+  retries. A payment books only when its booking is waiting for it, the
+  amount equals the price, and the session is scheduled, not started, and has
+  room (an expired hold still books while there is room). Anything else is
+  kept in `payment_attention` with a fixed reason (booking missing or
+  cancelled, already booked, item missing, amount mismatch, session started,
+  session full), logged once, and listed on Money under "Payments to resolve"
+  for the coach to settle with the parent. The parent's checkout page then
+  says the coach has the payment. A payment for a session the coach cancelled
+  while the parent was paying becomes credit with the coach instead, the
+  parent is told by text or email, and Money lists it with whether they were
+  told.
+- **Confirmations.** A booked parent gets one confirmation with the manage
+  link: a text when they ticked the texts box, an email when they gave an
+  address. The page they return to after paying shows the link as well.
+- **A coach's cancel** returns a credit for every paid booking, including a
+  paid drop-in, which becomes one session credit with the coach with no
+  expiry. Each step can run again, so a cancel that stopped part way
+  finishes on the next try; how each parent was reached is kept on the
+  booking (`booking.cancel_notice`), and the session screen lists who the
+  coach still needs to contact.
 
 ---
 

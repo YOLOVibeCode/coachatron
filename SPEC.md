@@ -142,6 +142,11 @@ the solo coach. They return only when a paying customer is blocked without them.
    Email works from anywhere; a mobile can be added later for texts. A coach who
    texted their week taps the link we text back instead. The model runs only after
    the code or link proves who they are. *(Updated 2026-10-02.)*
+   *(Updated 2026-11-03: a code works once and for 10 minutes, a new code ends
+   the earlier ones, and a code stops working after 5 wrong tries. Email
+   sign-in matches only an address a code has proved. Asking for codes, and
+   the public forms that send texts, are limited per number or email and per
+   client address; `docs/PLATFORM.md` §4.5.)*
 3. The product shows what it understood, asks for anything missing (never guesses
    a price), and writes nothing until the coach taps **Publish**. *(Added 2026-09-30.
    The landing box and the texted week feed this same setup. The one-form session
@@ -156,7 +161,15 @@ the solo coach. They return only when a paying customer is blocked without them.
    share a booking link immediately and connect before the first paid booking
    (charges are made on the coach's own Stripe account, so until then checkout
    cannot take a card).
-   *(Updated 2026-11-03: Stripe Connect through the relay, not Square OAuth.)*
+   *(Updated 2026-11-03: Stripe Connect through the relay, not Square OAuth.
+   Until the coach's account can take charges, each paid session on their
+   page says "Booking opens soon" in place of Book; free sessions book as
+   usual, and families who hold session credits can still book with them.
+   Publishing texts the coach their page link and, until payments work, a
+   payments link (one use, within 7 days) that signs them in on Money. One
+   text says when payments are ready, and a coach who has not finished gets
+   the link again about a day and about three days after publishing.
+   `docs/PLATFORM.md` §2.2.)*
 6. Gets their link: `coachatron.com/c/<handle>`. Done.
 
 Steps 5 and 6 are the only places a coach can fail. Everything before is
@@ -179,7 +192,11 @@ one-field-per-screen.
    Credits are used once the phone is proven: a code texted to it at
    checkout, or arriving from a manage link that was proven the same way.)*
 4. Pays. A signed relay buy link opens Stripe's hosted checkout — we never touch
-   card data.
+   card data. *(Updated 2026-11-03: checkout is reached by an unguessable
+   token, not the booking number. Each payment event is recorded once and
+   checked: it books the spot only when the amount matches and the session is
+   still open with room. Any other payment is kept, and the coach sees it on
+   Money under "Payments to resolve" (§7.4).)*
 5. Gets an SMS + email confirmation with a manage link (reschedule/cancel within
    policy). *(Implemented 2026-11-03: a text when the parent chose texts, an
    email when they gave an address, and the manage link on the page they
@@ -222,7 +239,10 @@ to the credit it came from and keeps that credit's expiry: a pack's never
 expires, and a package's expires with the package if the coach set an expiry.
 The parent's cancel text and the coach's cancel summary say so. A payment
 kept as credit this way still counts in collected, since it reached the
-coach's account.)*
+coach's account. Money also lists, under "Payments to resolve", payments that
+reached the coach's account but did not book (the session filled or started
+first, the amount did not match, or a second payment), with the parent's name
+and number, for the coach to settle with the parent.)*
 
 ---
 
@@ -237,14 +257,14 @@ Ship nothing else until a real coach has taken real money through this.
 2. Schedule — this week's sessions, tap one to see who's in it
 3. Session detail — roster of athletes, mark attendance, cancel session
 4. Session types — list + create/edit (name, duration, capacity, price)
-5. Pricing — packages and plans (create/retire)
+5. Pricing — packages and plans (create/retire); a plan is shown as a one-time pack
 6. My roster — assistant coaches, add by phone, reorder priority
 7. Money — read-only summary (§7.4)
 
 **Athlete-facing (4)**
 8. Coach's public page — open sessions list
 9. Booking form — athlete details
-10. Checkout — pick drop-in / package / plan, then Stripe hosted payment
+10. Checkout — pick drop-in / package / one-time pack, then Stripe hosted payment
 11. Manage booking — magic-link page to cancel or reschedule
 
 **Assistant-facing (1)**
@@ -307,10 +327,10 @@ Connect Hub (mounted at `/connect/:productKey/*`) also covers a
 runtime-enforced versioned seller agreement, refunds, and seller
 subscriptions. **Build against it; do not call Stripe or any processor
 directly.** Coachatron uses the agreement, onboarding, seller status, and the
-one-time buy link today: the monthly plan is charged once (§9.2) and refunds
-are not built (§9.4). The legal steps (attorney review of the marketplace
-terms, parent terms, and payments privacy notice) have no code dependency;
-drafts are in `docs/legal/`. Detail in `docs/PLATFORM.md` §2.
+one-time buy link today: a plan is sold as a one-time pack, charged once
+(§9.2), and refunds are not built (§9.4). The legal steps (attorney review of
+the marketplace terms, parent terms, and payments privacy notice) have no
+code dependency; drafts are in `docs/legal/`. Detail in `docs/PLATFORM.md` §2.
 
 ### 9.2 What an athlete can buy
 
@@ -318,7 +338,7 @@ drafts are in `docs/legal/`. Detail in `docs/PLATFORM.md` §2.
 |---|---|---|
 | **Drop-in** | One session, one charge | Default. Always available. |
 | **Package** | N sessions prepaid, credits drawn down per booking | Credits are a liability; surface on the Money screen. Expiry optional, default none. |
-| **Subscription** | Monthly recurring, grants N credits/month | Unused credits expire at period end by default. *Today the plan is charged once, at purchase, for the first month's credits (no expiry date is set yet); monthly renewal is not built.* |
+| **Subscription** | Monthly recurring, grants N credits/month | Unused credits expire at period end by default. *Today the plan is charged once, at purchase, for its credits, so parents and coaches see it as a one-time pack whose sessions do not expire; monthly renewal is not built.* |
 
 Credits are tracked per **phone number**, not per account, so a parent booking
 for two children with one phone draws from one pool.
@@ -392,9 +412,22 @@ marketing. Messages are short enough to read in a notification preview.
 | Slot opened from waitlist | Waitlisted athlete | SMS |
 | Payment failed (subscription) | Athlete/parent | SMS + email |
 
+*(Updated 2026-11-03, as built: a booking confirmation carries the manage
+link and goes by text when the parent ticked the texts box and by email when
+they gave an address. A coach's cancel is texted, and returns a credit for
+every paid booking, a paid drop-in included; the session screen lists the
+parents it could not reach. When a payment arrives for a session the coach
+cancelled while the parent paid, it becomes credit and the parent is told the
+same way as a confirmation. No subscription payment can fail while plans are
+one-time packs. The coach also gets payment texts: the go-live text with the
+page link and, until payments work, a payments link; one "You can take
+payments now" text; and up to two set-up reminders.)*
+
 **Inbound SMS** is parsed for a small fixed vocabulary only in Slice 1: `Y`/`YES`,
 `N`/`NO`, `STOP`, `HELP`. Anything else gets a single reply pointing at the web
-link.
+link. *(Updated 2026-11-03: an inbound text or status callback is acted on only
+when the relay confirms Twilio's own signature checked out; anything else
+changes nothing. `docs/PLATFORM.md` §3.)*
 
 In Slice 2 this grows into **natural-language control** — the coach runs the
 business by texting in plain English. Intent extraction goes through one
@@ -470,6 +503,15 @@ message_log(id, to_phone, template, body, provider_id, sent_at, status)
 
 `credit.contact_phone` is the join key for a buyer, by design (§9.2). Normalize
 to E.164 on write.
+
+Added since the sketch (migrations 0013–0018): `request_limit` (fixed-window
+counts per client address, phone, or email) and `otp_code.attempts`;
+`coach.email_verified_at`; `coach_payments` (whether the coach can take
+charges, and the payment texts owed) and `payments_link`;
+`booking.hold_expires_at`, `booking.checkout_token`,
+`booking.phone_verified_at`, and `booking.cancel_notice`; `store_event` (each
+paid event, handled once) and `payment_attention` (payments kept for the
+coach to resolve).
 
 Two column names predate the move to Stripe and were kept: `square_merchant_id`
 is unused (a coach reaches their Stripe account through

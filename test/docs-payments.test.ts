@@ -1,13 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
-import { APP_FEE_BPS, SELLER_AGREEMENT_VERSION } from '../src/config.js';
+import { APP_FEE_BPS, BOOKING_HOLD_MINUTES, OTP_MAX_ATTEMPTS, SELLER_AGREEMENT_VERSION } from '../src/config.js';
 import { withServer } from './helpers/server.js';
 
 /** The docs say how payments really run: Stripe Connect behind the relay,
- * the coach as merchant, the configured platform fee, the monthly plan
- * charged once, and refunds not built yet. The drafts in docs/legal are
- * marked as drafts and are not served by the app. */
+ * the coach as merchant, the configured platform fee, a plan sold as a
+ * one-time pack, booking that opens once the coach can take charges, spot
+ * holds, payments kept for the coach when they cannot book, a credit for
+ * every paid booking a coach cancels, and refunds not built yet. The drafts
+ * in docs/legal are marked as drafts and are not served by the app. */
 
 const root = new URL('..', import.meta.url);
 const read = (p: string) => readFileSync(new URL(p, root), 'utf8');
@@ -35,6 +37,10 @@ const RETIRED_PAYMENT_CLAIMS = [
   /zero-rated without a deploy/,
   /configurable per-coach and per-transaction-type from day one/,
 ];
+
+/** What the legal drafts said before plans became one-time packs and a
+ * coach's cancel credited paid drop-ins. */
+const RETIRED_LEGAL_CLAIMS = [/monthly plans?/i, /Plan credits are meant to expire/, /nothing is returned automatically/, /gets nothing back\s+automatically/];
 
 function section(text: string, heading: string): string {
   const start = text.indexOf(heading);
@@ -99,10 +105,65 @@ test('the README lists the store settings the buy links and store events use', (
   }
 });
 
-test('docs say the monthly plan is charged once', () => {
-  assert.match(read('SPEC.md'), /plan is charged once/);
-  assert.match(read('README.md'), /monthly plan is charged once/);
+test('docs say a plan is a one-time pack, charged once', () => {
+  for (const doc of ['SPEC.md', 'README.md']) {
+    assert.match(read(doc), /plan is charged once/, `${doc} says a plan is charged once`);
+    assert.match(read(doc), /one-time pack/, `${doc} names the one-time pack`);
+  }
+  assert.match(read('docs/PLATFORM.md'), /one-time pack,\s+charged once/);
+  assert.match(read('docs/legal/parent-terms.md'), /one-time pack/);
   assert.match(read('docs/legal/parent-terms.md'), /charged once/);
+  for (const draft of ['marketplace-terms.md', 'parent-terms.md', 'privacy-payments.md']) {
+    for (const claim of RETIRED_LEGAL_CLAIMS) {
+      assert.doesNotMatch(read(`docs/legal/${draft}`), claim, `${draft} still says ${claim}`);
+    }
+  }
+});
+
+test('docs give the spot hold and the sign-in code rules the app uses', () => {
+  const hold = new RegExp(`for ${BOOKING_HOLD_MINUTES} minutes`);
+  assert.match(section(read('SPEC.md'), '### 7.2 Athlete books and pays'), hold);
+  assert.match(section(read('docs/PLATFORM.md'), '### 2.2 From publish to a paid booking'), hold);
+  assert.match(read('README.md'), hold);
+  assert.match(read('docs/legal/parent-terms.md'), hold);
+  const tries = new RegExp(`after ${OTP_MAX_ATTEMPTS}\\s+wrong tries`);
+  for (const doc of ['SPEC.md', 'README.md', 'docs/PLATFORM.md']) {
+    assert.match(read(doc), tries, `${doc} says when a code stops working`);
+    assert.match(read(doc), /works once/, `${doc} says a code works once`);
+  }
+});
+
+test('docs use the words the app shows while booking is closed and for payments kept for the coach', () => {
+  const closed = /Booking\s+opens\s+soon/;
+  const kept = /Payments\s+to\s+resolve/;
+  assert.match(read('src/routes/public.ts'), closed, 'the public page still says it');
+  assert.match(read('src/routes/coach.ts'), kept, 'the Money screen still says it');
+  for (const doc of ['SPEC.md', 'README.md', 'docs/PLATFORM.md', 'docs/legal/marketplace-terms.md', 'docs/legal/parent-terms.md']) {
+    assert.match(read(doc), closed, `${doc} says booking opens once the coach can take payments`);
+  }
+  for (const doc of ['SPEC.md', 'README.md', 'docs/PLATFORM.md', 'docs/legal/marketplace-terms.md']) {
+    assert.match(read(doc), kept, `${doc} names the list of payments kept for the coach`);
+  }
+});
+
+test("docs say a coach's cancel gives every paid booking a credit, drop-ins included", () => {
+  for (const doc of ['README.md', 'docs/PLATFORM.md', 'docs/legal/marketplace-terms.md', 'docs/legal/parent-terms.md']) {
+    assert.match(read(doc), /becomes\s+one\s+session\s+credit/, `${doc} says a paid drop-in becomes a credit`);
+  }
+  assert.match(section(read('SPEC.md'), '### 7.4 Coach gets paid'), /drop-in for it gets one session credit/);
+});
+
+test('docs say an inbound text is acted on only when the relay confirms Twilio sent it', () => {
+  for (const doc of ['README.md', 'docs/PLATFORM.md']) {
+    assert.match(read(doc), /`x-relay-twilio-verified/, `${doc} names the relay's header`);
+  }
+});
+
+test('the README screen table names the checkout token route and the payments link', () => {
+  const readme = read('README.md');
+  assert.match(readme, /`\/c\/:handle\/checkout\/:token`/);
+  assert.doesNotMatch(readme, /checkout\/:bookingId/);
+  assert.match(readme, /`\/p\/:token`/);
 });
 
 test('each legal draft starts with the review banner and marks open questions', () => {

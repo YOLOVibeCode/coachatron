@@ -15,7 +15,7 @@ that there's too much of it.
 
 Coachatron does three things and refuses the rest:
 
-- **Sell sessions** — drop-in, prepaid packages, or a monthly plan
+- **Sell sessions** — drop-in, prepaid packages, or one-time packs
 - **Take the money** — straight into the coach's own Stripe account (Stripe
   Connect, through the Noctusoft relay); we never hold funds
 - **Find a second coach** — when a session fills past a threshold, text the
@@ -49,8 +49,11 @@ npm run dev        # start the server on http://localhost:3000
 
 End-to-end test: `test/north-star.test.ts` runs in `npm test` and follows one
 coach from a texted week to a parent's paid booking through the real routes
-(text in, start link, preview, Publish, connect payments, book, signed buy
-link, payment event, manage page), against the fake relay and a fake model.
+(text in, start link, preview, Publish, the texted page and payments links,
+"Booking opens soon" until payments work, connect payments, the payments-ready
+text, book, checkout by its token, signed buy link, payment event, the
+confirmation with the manage link, manage page), against the fake relay and a
+fake model.
 
 `npm run migrate` applies the SQL migrations in `src/db/migrations/` to
 `DATABASE_URL` if you've set one (Postgres in production); it's optional for
@@ -99,16 +102,16 @@ The twelve screens of Coachatron (Slice 1):
 
 | # | Screen | Route(s) | Who |
 |---|--------|----------|-----|
-| 1 | Sign in | `/signin`, `/signin/otp`, `/signin/verify` | Coach |
+| 1 | Sign in (and the texted payments link) | `/signin`, `/signin/otp`, `/signin/verify`, `/p/:token` | Coach |
 | 2 | Schedule (and voice setup) | `/app/schedule`, `/app/setup`, `/app/setup/publish`, `/app/setup/discard` | Coach |
 | 3 | Session detail | `/app/sessions/:id`, `/app/sessions/:id/bookings/:bookingId/attendance`, `/app/sessions/:id/cancel` | Coach |
 | 4 | Session types | `/app/session-types`, `/app/session-types/:id/generate-week` (weekly times), `/app/session-types/:id/slots/:slotId/remove` | Coach |
 | 5 | Pricing | `/app/pricing`, `/app/pricing/package`, `/app/pricing/plan` | Coach |
 | 6 | Roster | `/app/roster`, `/app/roster/:id/priority` | Coach |
-| 7 | Money (and connecting payments) | `/app/money`, `/app/money/payments` | Coach |
+| 7 | Money (and connecting payments) | `/app/money`, `/app/money/payments`, `/signout` | Coach |
 | 8 | Public page | `/c/:handle` | Athlete |
 | 9 | Booking form | `/c/:handle/sessions/:sessionId/book`, `/c/:handle/sessions/:sessionId/waitlist` | Athlete |
-| 10 | Checkout | `/c/:handle/checkout/:bookingId` | Athlete |
+| 10 | Checkout | `/c/:handle/checkout/:token` | Athlete |
 | 11 | Manage booking | `/booking/:token`, `/booking/:token/cancel` | Athlete |
 | 12 | Offer response | `/offer/:token` | Assistant coach |
 
@@ -132,20 +135,19 @@ Do not commit secrets. `npm test` uses the in-process fake in `test/fakes/relay.
 
 ## Known gaps
 
-- **No email confirmations.** `SPEC.md §7.2` describes an SMS + email
-  confirmation; Slice 1 as built sends SMS only (the relay's `/email/send`
-  exists and is exercised by the fake in tests, but nothing calls it yet).
-  Tracked as `SPEC.md §15` item 7.
-- **The monthly plan is charged once.** Checkout charges the plan's price
-  one time and grants the first month's credits; nothing renews it. Renewal
-  would use the relay's seller subscriptions, which this slice doesn't call
-  (see `ROADMAP.md` M3).
+- **Plans are one-time packs.** A plan is charged once: checkout charges the
+  pack's price one time and grants its sessions as credits that do not
+  expire, and nothing renews it, so the Pricing screen and checkout call it a
+  one-time pack. Monthly renewal would use the relay's seller subscriptions,
+  which this slice doesn't call (see `ROADMAP.md` M3).
 - **Refunds are not built.** Coaches have no Stripe dashboard, so there is
   no refund button anywhere yet; the Money screen tells a coach to ask
   Coachatron. The relay already has a seller refund route
   (`POST /connect/:productKey/recipients/:seller/refunds`, which returns
   Coachatron's fee with the refund). A later change will call it and reverse
   a credit when `marketplace.purchase.refunded` arrives (`SPEC.md §9.4`).
+  Until then a payment that reached the coach but could not book is listed
+  on Money for the coach to settle with the parent (see "Booking and paying").
 - **The overflow cascade reuses the original session**, rather than
   creating a literal second "parallel session" row — the accepted backup
   coach is recorded on the same session via `assigned_roster_member_id`.
@@ -161,13 +163,67 @@ authenticated coachatron.com address. A coach who joined by email adds a mobile
 on the schedule screen to get texts; until then the overflow question arrives by
 email and is answered on the schedule screen.
 
+A code works once and for 10 minutes, a new code ends the earlier ones, and a
+code stops working after 5 wrong tries. Email sign-in matches only an address
+that a code sent to it has proved. Asking for codes and checking them are
+limited per number or email and per client address (`docs/PLATFORM.md` §4.5).
+
+## Going live and taking payments
+
+Publishing a week texts the coach once (when they have a mobile and ticked the
+texts box) with their page link and, until payments work, a payments link
+(`/p/:token`): it works once within 7 days, signs the coach in, and opens
+Money, where they accept the terms and connect payments. Until the relay says
+the coach's account can take charges, each paid session on `/c/:handle` shows
+**Booking opens soon** instead of Book, and nothing leads a parent to a
+payment page; free sessions book as usual, and families who hold session
+credits with the coach can still book with them. When charges turn on, the
+coach gets one "You can take payments now" text, held until 8am if it is
+quiet hours. A coach who published but has not finished gets the payments
+link again about a day and about three days after publishing, two reminders
+at most. Whether a coach can take charges is saved (`coach_payments`), so the
+public page does not ask the relay on every view.
+
+## Booking and paying
+
+- **Spot holds.** Starting a booking holds the spot for 15 minutes while the
+  parent pays, counted again from when they pick a way to pay. One phone
+  holds one spot per session at a time. Starting a booking is limited per
+  client address (20 an hour, 60 a day).
+- **Checkout** is reached by an unguessable token, not the booking number.
+  Using session credits needs a code texted to the booking's phone, or a
+  manage link whose booking was proved the same way.
+- **Payment checks.** Each paid event from the relay is recorded once
+  (`store_event`), so a redelivery or a restart never handles it twice; one
+  that another delivery is still handling is answered so the relay retries
+  it. A payment books the spot only when its booking is waiting for it, the
+  amount matches the price, and the session is still open with room. Any
+  other payment (the session filled or started first, the amount differs, a
+  second payment, a booking or pack that no longer exists) reached the
+  coach's account but books nothing: it is kept with its reason
+  (`payment_attention`) and listed on Money under **Payments to resolve**
+  with the parent's name and number, and the parent's pages say the coach
+  has the payment instead of asking them to pay again.
+- **Confirmations.** A booked parent gets a confirmation with the manage
+  link, by text when they ticked the texts box and by email when they gave an
+  address; the page they return to after paying shows the link too.
+- **A coach's cancel** returns a credit for every paid booking: a package or
+  pack credit comes back, and a paid drop-in becomes one session credit with
+  the coach, with no expiry. Each parent who chose texts is told; the session
+  screen shows who could not be reached. A payment that arrives for a session
+  the coach cancelled while the parent was paying becomes credit the same
+  way, and the parent is told by text or email.
+
 ## Texting in
 
 A coach can text their week to the Coachatron number once it exists. The relay
 forwards Twilio's form fields to `/webhooks/sms`, signed with
-`x-relay-signature`; the app checks it when `RELAY_INBOUND_SECRET` is set. One
-number serves every environment for sending; incoming texts go to uat while
-testing and to production at launch (`docs/PLATFORM.md` section 3).
+`x-relay-signature`; the app checks it when `RELAY_INBOUND_SECRET` is set. The
+app acts on an inbound text or status callback only when the relay also says
+Twilio's own signature checked out (`x-relay-twilio-verified: 1`); anything
+else gets an empty TwiML 200 and changes nothing. One number serves every
+environment for sending; incoming texts go to uat while testing and to
+production at launch (`docs/PLATFORM.md` section 3).
 
 ## Testing texts without a phone (development)
 
@@ -189,8 +245,11 @@ narrow space `Intl` puts before "PM", so a text never silently becomes
 UCS-2); refuses numbers outside `+1` (US and Canada, the destinations priced
 near $0.0083 a segment); and stops at 300 texts per coach per local day,
 2,000 per coach per month, 400 per active coach per day for the product
-(never below 500), and 5 sign-in codes per number per day. Every attempt,
-sent or stopped, is written to `message_log`.
+(never below 500), and 5 sign-in codes per number or email per day. Requests
+that send a code, opt in at `/sms`, join a waitlist, start a booking, or use
+the landing page's box are also limited per client address
+(`src/domain/requestLimits.ts`). Every attempt, sent or stopped, is written
+to `message_log`.
 
 ## Voice-setup eval (live model, opt-in)
 
@@ -206,7 +265,10 @@ trusting the number.
 The running server ticks once a minute (`src/jobs/tick.ts`). Each tick keeps
 every weekly time 8 weeks ahead on the calendar, passes an expired overflow
 offer to the next backup coach, and sends 24-hour reminders outside quiet
-hours (9pm–8am in the coach's timezone). Tests call `runTick()` directly
+hours (9pm–8am in the coach's timezone). It also asks the relay about coaches
+still setting up payments (at most every 15 minutes each, in case an event
+was missed), sends payments-ready texts that waited out quiet hours, and sends
+the payment set-up reminders. Tests call `runTick()` directly
 with a fixed clock; `createApp()` never starts the timer.
 
 None of these affect the three journeys in the product brief (booking +
