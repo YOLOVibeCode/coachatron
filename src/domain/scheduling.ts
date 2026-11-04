@@ -64,6 +64,15 @@ export function zonedParts(date: Date, tz: string): ZonedParts {
   };
 }
 
+/** No non-urgent SMS between 9pm and 8am local (SPEC.md §10). */
+const QUIET_END_HOUR = 8;
+const QUIET_START_HOUR = 21;
+
+export function inQuietHours(now: Date, tz: string): boolean {
+  const hour = zonedParts(now, tz).hour;
+  return hour < QUIET_END_HOUR || hour >= QUIET_START_HOUR;
+}
+
 export function addCalendarDays(
   year: number,
   month: number,

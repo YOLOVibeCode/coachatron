@@ -1,20 +1,15 @@
 import type { DbClient } from '../db/client.js';
 import { advanceCascade } from '../domain/cascade.js';
-import { topUpAllSlots, zonedParts } from '../domain/scheduling.js';
+import { inQuietHours, topUpAllSlots } from '../domain/scheduling.js';
 import { clipSms, formatConfirmWhen } from '../lib/time.js';
 import { sendText } from '../domain/outbound.js';
 import { purgeRequestLimits } from '../domain/requestLimits.js';
+import { pollPaymentAccounts, sendDueReadyTexts } from '../domain/payments.js';
 
-/** No non-urgent SMS between 9pm and 8am local (SPEC.md §10). */
-const QUIET_END_HOUR = 8;
-const QUIET_START_HOUR = 21;
+export { inQuietHours };
+
 const REMINDER_WINDOW_MS = 24 * 60 * 60 * 1000;
 const REMINDER_FLOOR_MS = 2 * 60 * 60 * 1000;
-
-export function inQuietHours(now: Date, tz: string): boolean {
-  const hour = zonedParts(now, tz).hour;
-  return hour < QUIET_END_HOUR || hour >= QUIET_START_HOUR;
-}
 
 /** Texts each booked athlete once, inside 24h of the session and outside
  * quiet hours. A session too early in the morning for the 24h mark is
@@ -75,6 +70,8 @@ const STEPS: Array<[string, TickStep]> = [
   ['top up weekly slots', topUpAllSlots],
   ['advance overflow cascades', advanceCascade],
   ['send reminders', sendDueReminders],
+  ['check payment accounts', pollPaymentAccounts],
+  ['text coaches whose payments are ready', sendDueReadyTexts],
   ['purge old request limits', purgeRequestLimits],
 ];
 

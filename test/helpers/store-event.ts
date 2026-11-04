@@ -62,3 +62,49 @@ export function buyerFromLocation(location: string | null): string {
   if (!user) throw new Error(`buy link has no user: ${location}`);
   return user;
 }
+
+/** A seller event as the relay forwards a payment account update. */
+export async function postSellerEvent(
+  base: string,
+  args: {
+    sellerKey: string;
+    chargesEnabled?: boolean | null;
+    type?: 'seller.updated' | 'seller.disconnected';
+    product?: string;
+    id?: string;
+    secret?: string;
+  },
+): Promise<Response> {
+  const callbackUrl = `${base}/webhooks/store`;
+  const type = args.type ?? 'seller.updated';
+  const charges = args.chargesEnabled === undefined ? true : args.chargesEnabled;
+  const event = {
+    id: args.id ?? `rel_evt_${type}_${args.sellerKey}_${Math.random().toString(36).slice(2)}`,
+    type,
+    version: 1,
+    store: `${args.product ?? 'coachatron'}@${args.sellerKey}`,
+    product: args.product ?? 'coachatron',
+    mode: 'test',
+    occurredAt: new Date().toISOString(),
+    buyer: null,
+    item: null,
+    money: null,
+    refs: { orderId: null, paymentId: null, subscriptionId: null, refundId: null, disputeId: null },
+    subscription: null,
+    seller: {
+      ref: 'acct_test',
+      key: args.sellerKey,
+      status: type === 'seller.disconnected' ? 'disconnected' : charges ? 'active' : 'restricted',
+      chargesEnabled: charges,
+      payoutsEnabled: charges,
+      requirementsDue: [],
+    },
+    entitlements: {},
+  };
+  const body = JSON.stringify(event);
+  return fetch(callbackUrl, {
+    method: 'POST',
+    headers: storeEventHeaders(callbackUrl, body, args.secret),
+    body,
+  });
+}

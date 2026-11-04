@@ -9,6 +9,8 @@ function sellerPath(sellerKey: string, suffix = ''): string {
   return `/connect/${encodeURIComponent(connectProduct())}/recipients/${encodeURIComponent(sellerKey)}${suffix}`;
 }
 
+const STATUS_TIMEOUT_MS = 5000;
+
 export class SellerError extends Error {
   constructor(
     readonly status: number,
@@ -33,7 +35,8 @@ export interface SellerStatus {
 
 /** null when the coach has never started (the relay has no seller for them). */
 export async function getSellerStatus(sellerKey: string): Promise<SellerStatus | null> {
-  const res = await relayFetch(sellerPath(sellerKey));
+  // The public page and the tick job ask too; a stuck relay must not hold them.
+  const res = await relayFetch(sellerPath(sellerKey), { signal: AbortSignal.timeout(STATUS_TIMEOUT_MS) });
   if (res.status === 404) return null;
   if (!res.ok) return fail(res);
   const body = (await res.json()) as Record<string, unknown>;

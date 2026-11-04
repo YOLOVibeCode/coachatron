@@ -12,6 +12,9 @@ import {
   markBookingBooked,
 } from '../domain/pricing.js';
 import { checkOverflow } from '../domain/cascade.js';
+import { findCoachBySellerKey } from '../domain/auth.js';
+import { recordChargesEnabled, refreshPaymentsStatus } from '../domain/payments.js';
+import { connectProduct } from '../relay/seller.js';
 
 export const storeWebhookRouter = Router();
 
@@ -84,6 +87,26 @@ async function onPaid(event: StoreEvent): Promise<void> {
   void checkOverflow(db, booking.session_id);
 }
 
+/** The relay forwards the payment provider's account updates as
+ * seller.updated (and seller.disconnected), keyed by the coach's seller key. */
+async function onSellerEvent(event: StoreEvent): Promise<void> {
+  const key = event.seller?.key;
+  if (!key) return;
+  // Each environment sells through its own Connect app; another one's seller
+  // with the same key is a different coach.
+  if (event.product && event.product !== connectProduct()) return;
+  const db = getDb();
+  const coach = await findCoachBySellerKey(db, key);
+  if (!coach) return;
+  if (event.type === 'seller.disconnected') {
+    await recordChargesEnabled(db, coach, false);
+    return;
+  }
+  const charges = event.seller?.chargesEnabled;
+  if (typeof charges === 'boolean') await recordChargesEnabled(db, coach, charges);
+  else await refreshPaymentsStatus(db, coach);
+}
+
 async function coachIdForBooking(sessionId: number): Promise<number | null> {
   const db = getDb();
   const row = await db.query<{ coach_id: number }>(
@@ -116,6 +139,8 @@ storeWebhookRouter.post('/', (req, res) => {
     on: {
       'marketplace.purchase.paid': onPaid,
       'purchase.paid': onPaid,
+      'seller.updated': onSellerEvent,
+      'seller.disconnected': onSellerEvent,
     },
   });
   void handler.node(req, res);

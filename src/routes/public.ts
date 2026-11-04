@@ -20,6 +20,7 @@ import { buyerEmail, connectBuyUrl } from '../relay/buy-link.js';
 import { hasActiveConsent, isOptedOut, optedOutNotice, recordConsent } from '../domain/sms-consent.js';
 import { clientKey, SMS_OPT_IN_LIMITS, takeRequest, WAITLIST_LIMITS } from '../domain/requestLimits.js';
 import { canText, sendText } from '../domain/outbound.js';
+import { paymentsOpen } from '../domain/payments.js';
 import { SMS_BRAND, SMS_OPT_IN_CONFIRMATION, SMS_PURPOSE, SUPPORT_EMAIL } from '../config.js';
 import type { Request } from 'express';
 
@@ -48,6 +49,22 @@ async function loadSessionForCoach(db: DbClient, coach: CoachRow, sessionId: num
 
 function notFound() {
   return page('Not found', html`<h1>Not found</h1><p class="muted">That page does not exist.</p>`);
+}
+
+/** A session needs payment unless it is free. */
+function needsPayment(session: { price_cents: number }): boolean {
+  return session.price_cents > 0;
+}
+
+/** What a parent sees instead of a Pay button the coach cannot take yet.
+ * Nothing is sent to the payment page, which would answer an error. */
+function bookingOpensSoon(coach: CoachRow) {
+  return page(
+    'Booking opens soon',
+    html`<h1>Booking opens soon</h1>
+      <p class="muted">${coach.name} is still setting up payments. Check back soon to book.</p>
+      <a class="action" href="/c/${coach.handle}">See ${coach.name}'s sessions</a>`,
+  );
 }
 
 function field(body: unknown, key: string): string {
@@ -241,6 +258,7 @@ publicRouter.get('/c/:handle', async (req, res) => {
      limit 50`,
     [coach.id],
   );
+  const open = sessions.rows.some(needsPayment) ? await paymentsOpen(db, coach) : true;
 
   res.status(200).send(
     page(
@@ -256,9 +274,11 @@ publicRouter.get('/c/:handle', async (req, res) => {
                   <span>${s.name}</span>
                   <span>${spotsLeft > 0 ? `${spotsLeft} spot${spotsLeft === 1 ? '' : 's'} left · $${(s.price_cents / 100).toFixed(2)}` : 'Full'}</span>
                 </div>
-                ${spotsLeft > 0
-                  ? html`<a class="action" href="/c/${coach.handle}/sessions/${s.id}/book">Book</a>`
-                  : raw('')}
+                ${spotsLeft <= 0
+                  ? raw('')
+                  : open || !needsPayment(s)
+                    ? html`<a class="action" href="/c/${coach.handle}/sessions/${s.id}/book">Book</a>`
+                    : html`<p class="muted">Booking opens soon</p>`}
               </div>`;
             })}`,
     ),
@@ -277,6 +297,10 @@ publicRouter.get('/c/:handle/sessions/:sessionId/book', async (req, res) => {
   const session = await loadSessionForCoach(db, coach, Number(req.params.sessionId));
   if (!session) {
     res.status(404).send(notFound());
+    return;
+  }
+  if (needsPayment(session) && !(await paymentsOpen(db, coach))) {
+    res.status(200).send(bookingOpensSoon(coach));
     return;
   }
   res.status(200).send(renderBookingForm(coach, session, {}));
@@ -316,6 +340,11 @@ publicRouter.post('/c/:handle/sessions/:sessionId/book', async (req, res) => {
   const session = await loadSessionForCoach(db, coach, Number(req.params.sessionId));
   if (!session) {
     res.status(404).send(notFound());
+    return;
+  }
+
+  if (needsPayment(session) && !(await paymentsOpen(db, coach))) {
+    res.status(409).send(bookingOpensSoon(coach));
     return;
   }
 
@@ -460,8 +489,13 @@ publicRouter.get('/c/:handle/checkout/:bookingId', async (req, res) => {
   const packages = await getPackagesForCoach(db, coach.id);
   const plans = await getPlansForCoach(db, coach.id);
   const credit = await getCreditBalance(db, coach.id, ctx.booking.contact_phone);
+  const canPay = await paymentsOpen(db, coach);
+  if (!canPay && !credit && needsPayment(ctx.session)) {
+    res.status(200).send(bookingOpensSoon(coach));
+    return;
+  }
 
-  res.status(200).send(renderCheckout(coach, ctx.session, ctx.booking.id, { packages, plans, credit }));
+  res.status(200).send(renderCheckout(coach, ctx.session, ctx.booking.id, { packages, plans, credit, canPay }));
 });
 
 function renderAlreadyBooked(coach: CoachRow, session: SessionForBooking) {
@@ -477,6 +511,8 @@ type CheckoutOptions = {
   packages: Array<{ id: number; name: string; credits: number; price_cents: number }>;
   plans: Array<{ id: number; name: string; price_cents: number; credits_per_month: number }>;
   credit: { remaining: number } | null;
+  /** False while the coach cannot take payments: only credits and free sessions are offered. */
+  canPay?: boolean;
 };
 
 function renderCheckout(
@@ -487,12 +523,17 @@ function renderCheckout(
   error?: string,
 ) {
   const action = `/c/${coach.handle}/checkout/${bookingId}`;
+  const canPay = options.canPay !== false;
+  const packages = canPay ? options.packages : [];
+  const plans = canPay ? options.plans : [];
 
   return page(
     'Checkout',
     html`<h1>${session.name}</h1>
       <p class="muted">${formatLocal(session.starts_at_utc, session.tz)}</p>
-      <p class="muted">Pay on the Noctusoft hosted page. Apple Pay and cards are there — this app never sees a card.</p>
+      ${canPay
+        ? html`<p class="muted">Pay on the Noctusoft hosted page. Apple Pay and cards are there — this app never sees a card.</p>`
+        : html`<p class="muted">${coach.name} is still setting up payments, so paying here opens soon.</p>`}
 
       ${options.credit
         ? html`<form method="post" action="${action}">
@@ -501,12 +542,14 @@ function renderCheckout(
           </form>`
         : raw('')}
 
-      <form method="post" action="${action}">
-        <input type="hidden" name="mode" value="dropin" />
-        <button type="submit">Pay $${(session.price_cents / 100).toFixed(2)} — this session only</button>
-      </form>
+      ${canPay || !needsPayment(session)
+        ? html`<form method="post" action="${action}">
+            <input type="hidden" name="mode" value="dropin" />
+            <button type="submit">Pay $${(session.price_cents / 100).toFixed(2)} — this session only</button>
+          </form>`
+        : raw('')}
 
-      ${options.packages.map(
+      ${packages.map(
         (p) => html`<form method="post" action="${action}">
           <input type="hidden" name="mode" value="package" />
           <input type="hidden" name="package_id" value="${p.id}" />
@@ -514,7 +557,7 @@ function renderCheckout(
         </form>`,
       )}
 
-      ${options.plans.map(
+      ${plans.map(
         (p) => html`<form method="post" action="${action}">
           <input type="hidden" name="mode" value="plan" />
           <input type="hidden" name="plan_id" value="${p.id}" />
@@ -549,6 +592,13 @@ publicRouter.post('/c/:handle/checkout/:bookingId', async (req, res) => {
   const recipientKey = getConnectRecipientKey(coach);
   const email = buyerEmail(phone, ctx.booking.contact_email, bookingId);
 
+  // Every mode but a credit (or a free drop-in) goes to the payment page.
+  const paying = mode === 'package' || mode === 'plan' || (mode === 'dropin' && needsPayment(ctx.session));
+  if (paying && !(await paymentsOpen(db, coach))) {
+    res.status(409).send(bookingOpensSoon(coach));
+    return;
+  }
+
   try {
     if (mode === 'credit') {
       const credit = await getCreditBalance(db, coach.id, phone);
@@ -562,7 +612,7 @@ publicRouter.post('/c/:handle/checkout/:bookingId', async (req, res) => {
               coach,
               ctx.session,
               bookingId,
-              { packages, plans, credit: null },
+              { packages, plans, credit: null, canPay: await paymentsOpen(db, coach) },
               'That credit is no longer available.',
             ),
           );
@@ -647,7 +697,7 @@ publicRouter.post('/c/:handle/checkout/:bookingId', async (req, res) => {
           coach,
           ctx.session,
           bookingId,
-          { packages, plans, credit },
+          { packages, plans, credit, canPay: await paymentsOpen(db, coach) },
           'Checkout is not available right now. Please try again.',
         ),
       );

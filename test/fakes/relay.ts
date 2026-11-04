@@ -57,6 +57,8 @@ export interface FakeRelay {
   onboards: FakeOnboard[];
   /** The relay's current agreement_version for every product. */
   agreementVersion: string;
+  /** How many times the app asked for a seller's status. */
+  statusChecks: number;
   seller(product: string, sellerKey: string): FakeSeller | undefined;
   /** What the provider's onboarding does once the coach finishes it. */
   enableCharges(product: string, sellerKey: string): void;
@@ -91,12 +93,14 @@ export async function startFakeRelay(): Promise<FakeRelay> {
   const relay = {
     agreementVersion: 'v1',
     limited: { sms: false, email: false },
+    statusChecks: 0,
   };
 
   const seller = '/connect/:product/recipients/:sellerKey';
 
   app.get(seller, (req, res) => {
     if (!requireApiKey(req, res)) return;
+    relay.statusChecks += 1;
     const s = sellers.get(id(req.params.product, req.params.sellerKey));
     if (!s) {
       res.status(404).json({ code: 'RECIPIENT_NOT_FOUND' });
@@ -212,8 +216,9 @@ export async function startFakeRelay(): Promise<FakeRelay> {
     onboards,
     seller: (product: string, sellerKey: string) => sellers.get(id(product, sellerKey)),
     enableCharges: (product: string, sellerKey: string) => {
-      const s = sellers.get(id(product, sellerKey));
-      if (s) s.chargesEnabled = true;
+      const s = sellers.get(id(product, sellerKey)) ?? { product, sellerKey, agreementVersion: relay.agreementVersion, chargesEnabled: false };
+      s.chargesEnabled = true;
+      sellers.set(id(product, sellerKey), s);
     },
     close: () =>
       new Promise<void>((resolve) => {

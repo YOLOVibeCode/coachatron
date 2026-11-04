@@ -30,6 +30,7 @@ import {
 } from '../domain/auth.js';
 import { APP_BASE_URL, APP_FEE_BPS, OTP_DAILY_MAX_PER_CONTACT, SELLER_AGREEMENT_VERSION } from '../config.js';
 import { acceptSellerAgreement, getSellerStatus, startSellerOnboarding } from '../relay/seller.js';
+import { markPaymentsStarted, recordSellerStatus } from '../domain/payments.js';
 import { createWeeklySlots, deactivateSlot, listWeeklySlots, type WeeklySlot } from '../domain/scheduling.js';
 import { coachNav, html, oneTimeCodeNote, page, raw, smsConsentCheckbox } from '../lib/html.js';
 import { cancelScheduledSession, countSessionCancelNotifyAthletes } from '../domain/cancelSession.js';
@@ -1590,9 +1591,12 @@ type PaymentsState =
   | { kind: 'start' }
   | { kind: 'unavailable' };
 
-async function loadPaymentsState(coach: CoachRow): Promise<PaymentsState> {
+/** Asks the relay, and saves the answer: this is where a coach lands back
+ * from onboarding (?seller=connected|pending|failed). */
+async function loadPaymentsState(db: DbClient, coach: CoachRow): Promise<PaymentsState> {
   try {
     const status = await getSellerStatus(getConnectRecipientKey(coach));
+    await recordSellerStatus(db, coach, status);
     if (status?.chargesEnabled) return { kind: 'connected', payoutsEnabled: status.payoutsEnabled };
     if (status?.agreementVersion === SELLER_AGREEMENT_VERSION) return { kind: 'finish' };
     return { kind: 'start' };
@@ -1649,7 +1653,7 @@ function renderPaymentsCard(state: PaymentsState, notice: string | null, error: 
 async function renderMoney(res: Response, coach: CoachRow, opts: { status?: number; notice?: string | null; error?: string | null } = {}) {
   const db = getDb();
   const summary = await summarizeMoney(db, coach.id, new Date());
-  const payments = await loadPaymentsState(coach);
+  const payments = await loadPaymentsState(db, coach);
 
   // Format dollars for display
   const formatDollars = (cents: number) => `$${(cents / 100).toFixed(2)}`;
@@ -1697,9 +1701,11 @@ coachRouter.post('/app/money/payments', requireAuth, async (req, res) => {
     res.redirect(303, '/signin');
     return;
   }
+  const db = getDb();
   const sellerKey = getConnectRecipientKey(coach);
   try {
     const status = await getSellerStatus(sellerKey);
+    await recordSellerStatus(db, coach, status);
     if (status?.agreementVersion !== SELLER_AGREEMENT_VERSION) {
       if (field(req.body, 'agree') !== '1') {
         await renderMoney(res, coach, { status: 422, error: 'Check the box to accept the marketplace terms.' });
@@ -1707,6 +1713,7 @@ coachRouter.post('/app/money/payments', requireAuth, async (req, res) => {
       }
       await acceptSellerAgreement(sellerKey, SELLER_AGREEMENT_VERSION);
     }
+    await markPaymentsStarted(db, coach.id);
     const url = await startSellerOnboarding(sellerKey, {
       returnUrl: `${process.env.APP_BASE_URL ?? APP_BASE_URL}/app/money`,
       email: coach.email,

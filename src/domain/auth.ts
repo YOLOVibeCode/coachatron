@@ -209,6 +209,18 @@ export async function findCoachByPhone(db: DbClient, phone: string): Promise<Coa
   return result.rows[0] ?? null;
 }
 
+/** The coach a relay seller event names: their Connect recipient key, which
+ * defaults to the handle. */
+export async function findCoachBySellerKey(db: DbClient, sellerKey: string): Promise<CoachRow | null> {
+  const result = await db.query<CoachRow>(
+    `select ${COACH_COLUMNS} from coach
+     where connect_recipient_key = $1 or (connect_recipient_key is null and handle = $1)
+     order by id limit 1`,
+    [sellerKey],
+  );
+  return result.rows[0] ?? null;
+}
+
 /** The coach who signs in with this email: only a proved address counts. */
 export async function findCoachByEmail(db: DbClient, email: string): Promise<CoachRow | null> {
   const result = await db.query<CoachRow>(
