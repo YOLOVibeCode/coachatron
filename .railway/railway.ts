@@ -53,8 +53,6 @@ export default defineRailway((ctx) => {
     env: {
       APP_BASE_URL: preserve(),
       APP_ENV: preserve(),
-      // production only: the product's texting number (landing page, consent text).
-      COACHATRON_SMS_NUMBER: preserve(),
       DATABASE_URL: preserve(),
       LITELLM_API_KEY: preserve(),
       LITELLM_BASE: preserve(),
