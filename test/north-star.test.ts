@@ -171,6 +171,7 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
             'the reply goes out as a sent text, not TwiML',
           );
 
+          assert.equal(relay.sms.length, 1, 'one text goes out in total');
           const toCoach = relay.sms.filter((m) => m.to === COACH_PHONE);
           assert.equal(toCoach.length, 1, 'the coach gets exactly one text');
           const body = toCoach[0].body;
@@ -209,6 +210,7 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           const call = llm.calls[0] as CompleteRequest;
           assert.equal(call.schemaName, 'setup');
           assert.equal(call.messages[call.messages.length - 1].content, WEEK_TEXT, 'the model reads what the coach texted');
+          assert.doesNotMatch(call.messages[0].content, /Current setup:/, 'the first read starts from no draft');
 
           const coach = await db.query<{ phone: string; name: string; tz: string }>('select phone, name, tz from coach');
           assert.deepEqual(coach.rows, [{ phone: COACH_PHONE, name: 'Dana Rivera', tz: 'America/Chicago' }]);
@@ -224,7 +226,14 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
 
           const answered = await postForm('/app/setup', { text: GROUP_SIZE_ANSWER }, coachCookie);
           assert.equal(answered.status, 303);
-          assert.equal(llm.calls.length, 2, 'the answer is read against the same draft');
+          assert.equal(llm.calls.length, 2, 'the answer is one more model call');
+          const followUp = llm.calls[1] as CompleteRequest;
+          assert.equal(followUp.schemaName, 'setup');
+          assert.equal(followUp.messages[followUp.messages.length - 1].content, GROUP_SIZE_ANSWER, 'the model reads the answer');
+          const followUpPrompt = followUp.messages[0].content;
+          assert.match(followUpPrompt, /Current setup: \{/, 'the answer is read against the open draft');
+          assert.match(followUpPrompt, /"price_cents":6000/, 'the draft it carries is the week read in step 2');
+          assert.match(followUpPrompt, /How many athletes fit in Group\?/, 'with the question being answered');
           const ready = visible(await (await get('/app/schedule?setup=1', coachCookie)).text());
           assert.match(ready, /Group 60 min · 8 athletes · \$25 Sat 9:00am/);
           assert.doesNotMatch(ready, /How many athletes/);
@@ -358,22 +367,33 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           assert.ok(Number(q.exp) > nowS && Number(q.exp) <= nowS + 86_400 + 60, `the link expires within a day: ${q.exp}`);
           assert.match(q.nonce, /^[a-f0-9]{24}$/);
           assert.match(q.sig, /^[a-f0-9]{64}$/);
-          const resigned = signConnectBuyLink({
-            secret: TEST_STORE_SECRET,
-            product: 'coachatron',
-            seller: handle,
-            amountCents: 2500,
-            currency: 'USD',
-            user: q.user,
-            email: q.email,
-            returnUrl: q.return,
-            description: q.desc,
-            exp: Number(q.exp),
-            nonce: q.nonce,
-            baseUrl: relay.url,
-          });
-          assert.equal(resigned.sig, q.sig, 'the signature covers amount, buyer, return, and description under the signing key');
+          const sign = (change: Partial<Parameters<typeof signConnectBuyLink>[0]> = {}) =>
+            signConnectBuyLink({
+              secret: TEST_STORE_SECRET,
+              product: 'coachatron',
+              seller: handle,
+              amountCents: 2500,
+              currency: 'USD',
+              user: q.user,
+              email: q.email,
+              returnUrl: q.return,
+              description: q.desc,
+              exp: Number(q.exp),
+              nonce: q.nonce,
+              baseUrl: relay.url,
+              ...change,
+            });
+          const resigned = sign();
+          assert.equal(resigned.sig, q.sig, 'the link is what the store client signs for these params under the signing key');
           assert.equal(resigned.url, location, 'the link is exactly what the store client signs');
+          for (const [field, change] of [
+            ['amount', { amountCents: 2501 }],
+            ['buyer', { user: `booking:${bookingId + 1}:dropin` }],
+            ['return', { returnUrl: `${appBase}/c/${handle}` }],
+            ['description', { description: 'Private' }],
+          ] as const) {
+            assert.notEqual(sign(change).sig, q.sig, `a different ${field} gives a different signature`);
+          }
 
           const hosted = await fetch(location, { redirect: 'manual' });
           assert.equal(hosted.status, 303, 'the hosted page sends the parent back');
