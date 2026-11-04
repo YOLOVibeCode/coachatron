@@ -66,12 +66,53 @@ test('accepting the terms records the agreement and sends the coach to the relay
         assert.equal(res.headers.get('location'), `${relay.url}/connect/coachatron/onboard?state=fake-${coach.handle}`);
         assert.equal(relay.seller('coachatron', coach.handle)?.agreementVersion, 'v1');
         assert.deepEqual(relay.onboards, [
-          { product: 'coachatron', sellerKey: coach.handle, returnUrl: 'https://dev.coachatron.com/app/money', email: 'pat@example.com' },
+          {
+            product: 'coachatron',
+            sellerKey: coach.handle,
+            returnUrl: 'https://dev.coachatron.com/app/money',
+            email: 'pat@example.com',
+            profile: {
+              phone: '+15550102030',
+              entityType: 'individual',
+              businessUrl: `https://dev.coachatron.com/c/${coach.handle}`,
+              productDescription: 'Private and group coaching sessions booked through Coachatron',
+            },
+          },
         ]);
       });
     } finally {
       delete process.env.APP_BASE_URL;
     }
+  });
+});
+
+test('a relay that does not take the profile fields still sends the coach to onboarding', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const { coach, cookie } = await signedInCoach(db);
+    relay.strictOnboard = true;
+    await withServer(async (base) => {
+      const res = await connect(base, cookie, { agree: '1' });
+      assert.equal(res.status, 303);
+      assert.equal(res.headers.get('location'), `${relay.url}/connect/coachatron/onboard?state=fake-${coach.handle}`);
+      assert.equal(relay.onboards.length, 1);
+      assert.equal(relay.onboards[0].email, 'pat@example.com');
+      assert.equal(relay.onboards[0].profile, undefined);
+    });
+  });
+});
+
+test('a coach with no mobile is sent to onboarding without a phone', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const coach = await createCoach(db, { name: 'Email Only', phone: null, email: 'only@example.com', tz: 'America/Chicago' });
+    const cookie = `cx_session=${await createCoachSession(db, coach.id)}`;
+    await withServer(async (base) => {
+      assert.equal((await connect(base, cookie, { agree: '1' })).status, 303);
+      assert.equal(relay.onboards[0].profile?.phone, undefined);
+      assert.equal(relay.onboards[0].profile?.entityType, 'individual');
+      assert.match(relay.onboards[0].profile?.businessUrl ?? '', new RegExp(`/c/${coach.handle}$`));
+    });
   });
 });
 

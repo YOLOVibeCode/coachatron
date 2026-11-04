@@ -15,7 +15,7 @@ export interface SeededSession {
  * HTTP round trip) so payment tests can focus on checkout, not sign-in. */
 export async function seedCoachWithSession(
   db: DbClient,
-  opts: { capacity?: number; priceCents?: number } = {},
+  opts: { capacity?: number; priceCents?: number; paymentsReady?: boolean } = {},
 ): Promise<SeededSession> {
   const capacity = opts.capacity ?? 2;
   const priceCents = opts.priceCents ?? 3500;
@@ -29,6 +29,11 @@ export async function seedCoachWithSession(
     tz: 'America/Chicago',
   });
   await grantSmsConsent(db, coach.phone);
+  // A coach who can take payments, unless the test says otherwise.
+  await db.query('insert into coach_payments (coach_id, charges_enabled, checked_at) values ($1, $2, now())', [
+    coach.id,
+    opts.paymentsReady ?? true,
+  ]);
 
   const typeResult = await db.query<{ id: number }>(
     `insert into session_type (coach_id, name, duration_min, capacity, price_cents, active)

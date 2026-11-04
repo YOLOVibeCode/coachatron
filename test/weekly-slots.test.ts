@@ -13,6 +13,7 @@ import {
   zonedParts,
 } from '../src/domain/scheduling.js';
 import type { DbClient } from '../src/db/client.js';
+import { clockTime } from '../src/lib/input.js';
 
 const TZ = 'America/Chicago';
 // Tuesday Oct 20 2026, 7am in Chicago. Chicago leaves daylight time on Nov 1.
@@ -114,7 +115,7 @@ test('weekly times screen: add with a location, list, remove; schedule links eac
       const schedule = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
       assert.match(schedule, /href="\/app\/sessions\/\d+"/);
       assert.match(schedule, /class="coach-nav"/);
-      assert.match(schedule, /0\/2 ·/);
+      assert.match(schedule, /0 of 2 spots booked/);
 
       const removeRes = await fetch(`${base}/app/session-types/${seed.sessionTypeId}/slots/${slots.rows[0].id}/remove`, {
         method: 'POST',
@@ -133,6 +134,54 @@ test('weekly times screen: add with a location, list, remove; schedule links eac
         body: JSON.stringify({}),
       });
       assert.equal(empty.status, 422);
+    });
+  });
+});
+
+test('weekly times take a clock time from 00:00 to 23:59, and a time already there keeps its place', async () => {
+  for (const [raw, read] of [['18:30', '18:30'], ['18:30:00', '18:30'], ['00:00', '00:00'], ['23:59', '23:59']]) {
+    assert.equal(clockTime(raw), read, raw);
+  }
+  for (const raw of ['24:00', '25:99', '18:60', '6:30', '6pm', '', '18:30:61']) {
+    assert.equal(clockTime(raw), null, raw);
+  }
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db);
+    const cookie = `cx_session=${await createCoachSession(db, seed.coach.id)}`;
+    const slotRows = async () =>
+      (
+        await db.query<{ weekday: number; time_local: string; location_text: string | null }>(
+          'select weekday, time_local, location_text from weekly_slot where session_type_id = $1 and active order by weekday',
+          [seed.sessionTypeId],
+        )
+      ).rows;
+    await withServer(async (base) => {
+      const post = (body: Record<string, string>) =>
+        fetch(`${base}/app/session-types/${seed.sessionTypeId}/generate-week`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', cookie },
+          body: JSON.stringify(body),
+          redirect: 'manual',
+        });
+
+      const late = await post({ day_2: '1', time_2: '25:99' });
+      assert.equal(late.status, 422);
+      assert.match(await late.text(), /Tue: use a time from 00:00 to 23:59\./);
+      assert.deepEqual(await slotRows(), []);
+
+      assert.equal((await post({ day_2: '1', time_2: '18:00', location: 'Field 3' })).status, 303);
+      const moved = await post({ day_2: '1', time_2: '18:00', day_4: '1', time_4: '18:00', location: 'Field 9' });
+      assert.equal(moved.status, 422);
+      assert.match(await moved.text(), /Tue 18:00 \(at Field 3\) is already a weekly time and keeps its place, so nothing was added\./);
+      assert.deepEqual(await slotRows(), [{ weekday: 2, time_local: '18:00', location_text: 'Field 3' }], 'Thursday was not added either');
+      const placed = await db.query<{ location_text: string | null }>('select distinct location_text from session where weekly_slot_id is not null');
+      assert.deepEqual(placed.rows, [{ location_text: 'Field 3' }]);
+
+      // The same time again, with the same place or none, changes nothing and is fine.
+      assert.equal((await post({ day_2: '1', time_2: '18:00', location: 'Field 3' })).status, 303);
+      assert.equal((await post({ day_2: '1', time_2: '18:00' })).status, 303);
+      assert.equal((await slotRows()).length, 1);
     });
   });
 });

@@ -1,23 +1,32 @@
 import type { DbClient } from '../db/client.js';
 import { advanceCascade } from '../domain/cascade.js';
-import { topUpAllSlots, zonedParts } from '../domain/scheduling.js';
+import { inQuietHours, topUpAllSlots } from '../domain/scheduling.js';
 import { clipSms, formatConfirmWhen } from '../lib/time.js';
-import { sendText } from '../domain/outbound.js';
+import { sendText, type SendOutcome } from '../domain/outbound.js';
+import { purgeRequestLimits } from '../domain/requestLimits.js';
+import { pollPaymentAccounts, sendDueReadyTexts, sendPaymentReminders } from '../domain/payments.js';
+import { moveWaitlists } from '../domain/waitlist.js';
 
-/** No non-urgent SMS between 9pm and 8am local (SPEC.md §10). */
-const QUIET_END_HOUR = 8;
-const QUIET_START_HOUR = 21;
+export { inQuietHours };
+
 const REMINDER_WINDOW_MS = 24 * 60 * 60 * 1000;
 const REMINDER_FLOOR_MS = 2 * 60 * 60 * 1000;
-
-export function inQuietHours(now: Date, tz: string): boolean {
-  const hour = zonedParts(now, tz).hour;
-  return hour < QUIET_END_HOUR || hour >= QUIET_START_HOUR;
-}
+/** Failed sends to one number before its reminders stop being retried for
+ * the day. Each later tick tries again until then. */
+export const REMINDER_MAX_FAILURES = 5;
 
 /** Texts each booked athlete once, inside 24h of the session and outside
  * quiet hours. A session too early in the morning for the 24h mark is
- * reminded at 8am the day before instead. */
+ * reminded at 8am the day before instead. A reminder is claimed before it
+ * is sent, so two ticks never send it together; a send the relay fails,
+ * cannot be reached for, or turns away as busy gives the claim back for the
+ * next tick, and the next athlete is still reminded this tick.
+ *
+ * At least once, not exactly once: the relay's /sms/send takes no
+ * idempotency key, and it can answer 502 after Twilio has taken the text,
+ * so in that rare case a parent gets the reminder twice. A missed reminder
+ * costs more than a repeated one. Each failure is logged, and after
+ * REMINDER_MAX_FAILURES in a day a number is not tried again. */
 export async function sendDueReminders(db: DbClient, now: Date): Promise<number> {
   const due = await db.query<{
     booking_id: number;
@@ -39,8 +48,18 @@ export async function sendDueReminders(db: DbClient, now: Date): Promise<number>
      where b.status = 'booked' and s.status = 'scheduled'
        and s.starts_at_utc > $1 and s.starts_at_utc <= $2
        and not exists (select 1 from reminder_sent r where r.booking_id = b.id)
+       and (
+         select count(*) from message_log m
+         where m.to_phone = b.contact_phone and m.template = 'reminder'
+           and m.status in ('failed', 'capped-relay') and m.sent_at > $3
+       ) < $4
      order by s.starts_at_utc`,
-    [new Date(now.getTime() + REMINDER_FLOOR_MS).toISOString(), new Date(now.getTime() + REMINDER_WINDOW_MS).toISOString()],
+    [
+      new Date(now.getTime() + REMINDER_FLOOR_MS).toISOString(),
+      new Date(now.getTime() + REMINDER_WINDOW_MS).toISOString(),
+      new Date(now.getTime() - REMINDER_WINDOW_MS).toISOString(),
+      REMINDER_MAX_FAILURES,
+    ],
   );
 
   let sent = 0;
@@ -53,17 +72,27 @@ export async function sendDueReminders(db: DbClient, now: Date): Promise<number>
     if (claimed.rows.length === 0) continue;
     const when = formatConfirmWhen(new Date(row.starts_at_utc).toISOString(), row.tz);
     const place = row.location_text ? ` at ${row.location_text}` : '';
-    const outcome = await sendText(
-      db,
-      {
-        to: row.contact_phone,
-        body: clipSms(`Coachatron: ${row.athlete_name}'s ${row.name} is ${when}${place}.`),
-        coachId: row.coach_id,
-        template: 'reminder',
-      },
-      now,
-    );
-    if (outcome === 'sent') sent += 1;
+    let outcome: SendOutcome | 'failed';
+    try {
+      outcome = await sendText(
+        db,
+        {
+          to: row.contact_phone,
+          body: clipSms(`Coachatron: ${row.athlete_name}'s ${row.name} is ${when}${place}.`),
+          coachId: row.coach_id,
+          template: 'reminder',
+        },
+        now,
+      );
+    } catch (err) {
+      console.error(`tick: reminder for booking ${row.booking_id} not sent, tried again next tick: ${err instanceof Error ? err.message : String(err)}`);
+      outcome = 'failed';
+    }
+    if (outcome === 'failed' || outcome === 'busy') {
+      await db.query('delete from reminder_sent where booking_id = $1', [row.booking_id]);
+    } else if (outcome === 'sent') {
+      sent += 1;
+    }
   }
   return sent;
 }
@@ -73,7 +102,12 @@ type TickStep = (db: DbClient, now: Date) => Promise<unknown>;
 const STEPS: Array<[string, TickStep]> = [
   ['top up weekly slots', topUpAllSlots],
   ['advance overflow cascades', advanceCascade],
+  ['offer open spots to the waitlist', moveWaitlists],
   ['send reminders', sendDueReminders],
+  ['check payment accounts', pollPaymentAccounts],
+  ['text coaches whose payments are ready', sendDueReadyTexts],
+  ['remind coaches to set up payments', sendPaymentReminders],
+  ['purge old request limits', purgeRequestLimits],
 ];
 
 /** The scheduled job (SPEC.md §11: "a scheduled job over a table"). Each

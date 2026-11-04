@@ -1,8 +1,16 @@
 import type { DbClient } from '../db/client.js';
-import { SMS_CONSENT_TEXT_VERSION, SMS_PURPOSE } from '../config.js';
+import { coachatronSmsNumber, SMS_CONSENT_TEXT_VERSION, SMS_PURPOSE } from '../config.js';
+import { displayPhone, toE164 } from '../lib/phone.js';
 import { upsertOptOut, isOptedOut } from './cascade.js';
 
 export { isOptedOut };
+
+/** What a form says for a number that texted STOP: only a START from that
+ * phone lifts it. `then` finishes the sentence ("first, or use your email"). */
+export function optedOutNotice(then: string): string {
+  const number = toE164(coachatronSmsNumber());
+  return `That number opted out of Coachatron texts. Reply START${number ? ` to ${displayPhone(number)}` : ''} ${then}.`;
+}
 
 export async function hasActiveConsent(db: DbClient, phone: string, purpose: string = SMS_PURPOSE): Promise<boolean> {
   if (await isOptedOut(db, phone)) return false;
@@ -14,11 +22,15 @@ export async function hasActiveConsent(db: DbClient, phone: string, purpose: str
   return result.rows.length > 0;
 }
 
+/** Records the texts box. An opt-out (a STOP) is lifted only when the
+ * person has just proved the number is theirs (numberVerified: a code
+ * texted to it, or a reply from it). A box ticked on a form anyone can
+ * fill in keeps the opt-out; that number opts back in by texting START. */
 export async function recordConsent(
   db: DbClient,
   phone: string,
   source: string,
-  meta: { ip?: string | null; userAgent?: string | null; purpose?: string },
+  meta: { ip?: string | null; userAgent?: string | null; purpose?: string; numberVerified?: boolean },
 ): Promise<void> {
   const purpose = meta.purpose ?? SMS_PURPOSE;
   await db.query(
@@ -33,7 +45,7 @@ export async function recordConsent(
        revoked_at = null`,
     [phone, purpose, SMS_CONSENT_TEXT_VERSION, source, meta.ip ?? null, meta.userAgent ?? null],
   );
-  await db.query('delete from opt_out where phone = $1', [phone]);
+  if (meta.numberVerified === true) await db.query('delete from opt_out where phone = $1', [phone]);
 }
 
 export async function revokeConsent(db: DbClient, phone: string, purpose: string = SMS_PURPOSE): Promise<void> {
@@ -64,12 +76,12 @@ export async function confirmConsentFromReply(db: DbClient, phone: string): Prom
   const pending = await db.query<{ purpose: string }>('select purpose from sms_consent_pending where phone = $1', [phone]);
   if (pending.rows.length === 0) return false;
   const purpose = pending.rows[0].purpose;
-  await recordConsent(db, phone, 'reply-yes', { purpose });
+  await recordConsent(db, phone, 'reply-yes', { purpose, numberVerified: true });
   await db.query('delete from sms_consent_pending where phone = $1', [phone]);
   return true;
 }
 
 /** Test helper and seeds: grant consent without a form POST. */
 export async function grantSmsConsent(db: DbClient, phone: string, source = 'test'): Promise<void> {
-  await recordConsent(db, phone, source, {});
+  await recordConsent(db, phone, source, { numberVerified: true });
 }

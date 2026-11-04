@@ -58,6 +58,12 @@ export async function consumeStartLink(
   return result.rows[0] ?? null;
 }
 
+/** Puts a just-used link back, when the step that used it could not finish
+ * for a reason the coach can fix on the same form. */
+export async function reopenStartLink(db: DbClient, token: string): Promise<void> {
+  await db.query('update start_link set used_at = null where token_hash = $1', [tokenHash(token)]);
+}
+
 export async function phoneHasBooking(db: DbClient, phone: string): Promise<boolean> {
   const result = await db.query('select 1 from booking where contact_phone = $1 limit 1', [phone]);
   return result.rows.length > 0;

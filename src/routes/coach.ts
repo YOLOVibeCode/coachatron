@@ -1,35 +1,104 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { getDb, type DbClient } from '../db/client.js';
-import { canText, sendEmailMessage, sendText, signInCodeEmail } from '../domain/outbound.js';
+import { canText, sendEmailMessage, sendText, signInCodeEmail, type SendOutcome } from '../domain/outbound.js';
 import {
   normalizePhone,
   normalizeEmail,
   parseContact,
   contactValue,
   findCoachByContact,
-  findCoachByEmail,
+  findCoachHoldingEmail,
+  emailTakenNotice,
+  markEmailVerified,
+  releaseUnprovedEmail,
   setCoachPhone,
   type Contact,
   createOtp,
   checkOtp,
   consumeOtp,
+  contactKey,
+  hasLiveOtp,
+  newOtpCode,
+  type OtpCheck,
   createCoachSession,
+  deleteCoachSession,
   getCoachBySessionToken,
   findCoachById,
   createCoach,
   getConnectRecipientKey,
   type CoachRow,
 } from '../domain/auth.js';
-import { APP_BASE_URL, APP_FEE_BPS, OTP_DAILY_MAX_PER_CONTACT, SELLER_AGREEMENT_VERSION } from '../config.js';
+import {
+  APP_FEE_BPS,
+  OTP_DAILY_MAX_PER_CONTACT,
+  SELLER_AGREEMENT_VERSION,
+  SELLER_PRODUCT_DESCRIPTION,
+} from '../config.js';
 import { acceptSellerAgreement, getSellerStatus, startSellerOnboarding } from '../relay/seller.js';
+import {
+  appBaseUrl,
+  coachPageUrl,
+  consumePaymentsLink,
+  markPaymentsStarted,
+  notePublished,
+  openPaymentsLink,
+  paymentsOpen,
+  recordSellerStatus,
+} from '../domain/payments.js';
 import { createWeeklySlots, deactivateSlot, listWeeklySlots, type WeeklySlot } from '../domain/scheduling.js';
 import { coachNav, html, oneTimeCodeNote, page, raw, smsConsentCheckbox } from '../lib/html.js';
-import { DEFAULT_TZ, formatLocal, isValidTimeZone } from '../lib/time.js';
-import { getPackagesForCoach, getPlansForCoach, createPackage, createPlan } from '../domain/pricing.js';
+import { cancelReach, cancelScheduledSession, dropInCreditNote, previewSessionCancel, type CancelReach } from '../domain/cancelSession.js';
+import { DEFAULT_TZ, formatCoachDollars, formatLocal, formatTimeRange, isValidTimeZone } from '../lib/time.js';
+import { getPackagesForCoach, getPlansForCoach, createPackage, createPlan, takesSpotSql } from '../domain/pricing.js';
+import { clockTime, dollarsToCents, LIMITS, rowId, wholeNumber } from '../lib/input.js';
+import {
+  canWaive,
+  CREDIT_WITHDRAWN_SQL,
+  getBookingPolicy,
+  MAX_CANCEL_WINDOW_HOURS,
+  MAX_CHILDREN_PER_BOOKING,
+  parseBookingPolicy,
+  setBookingPolicy,
+  waiveBooking,
+  type BookingPolicy,
+} from '../domain/policy.js';
 import { summarizeMoney } from '../domain/money.js';
+import { namesList } from '../domain/bookingMessages.js';
+import { describeAttention, listPaymentAttention, type AttentionItem } from '../domain/paymentAttention.js';
+import {
+  canTryAgain,
+  checkRefund,
+  describeDispute,
+  describeRefund,
+  describeRefundBlock,
+  listDisputes,
+  listRecentPayments,
+  listRefunds,
+  needsAttention,
+  purchaseLabel,
+  refundLabel,
+  refundsByPayment,
+  requestRefund,
+  type DisputeItem,
+  type PaymentItem,
+  type Refundability,
+  type RefundBlock,
+  type RefundItem,
+  type RefundRequestOutcome,
+  type RefundRow,
+  type RefundTarget,
+} from '../domain/refunds.js';
 import { handleCoachMessage, loadScheduleAssistant, resolvePendingForCoach } from '../domain/assistant.js';
 import { clearCookie, parseCookies, serializeCookie } from '../lib/cookies.js';
-import { answerAskFromWeb, pendingAskForCoach, type PendingAsk } from '../domain/cascade.js';
+import {
+  answerAsk,
+  pendingAskForCoach,
+  rosterOptInLink,
+  runningCascadesForCoach,
+  type OverflowAnswer,
+  type PendingAsk,
+  type RunningCascade,
+} from '../domain/cascade.js';
 import { readStartText, START_COOKIE } from '../lib/startCookie.js';
 import {
   coachHasSchedule,
@@ -40,7 +109,14 @@ import {
   renderSetupPreview,
   type SetupDraft,
 } from '../domain/setup.js';
-import { hasActiveConsent, recordConsent } from '../domain/sms-consent.js';
+import { hasActiveConsent, isOptedOut, optedOutNotice, recordConsent } from '../domain/sms-consent.js';
+import {
+  clientKey,
+  CODE_CHECK_CONTACT_LIMITS,
+  CODE_CHECK_IP_LIMITS,
+  SIGNIN_CODE_LIMITS,
+  takeRequest,
+} from '../domain/requestLimits.js';
 
 // ---- Roster functions (M4 overflow cascade) ----
 
@@ -82,9 +158,26 @@ const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 export const coachRouter = Router();
 
+// Every id in a coach URL is a row id: anything else (abc, 1.5, a number
+// past what the column holds) is a 404 before the route runs.
+for (const name of ['id', 'bookingId', 'slotId', 'sessionId']) {
+  coachRouter.param(name, (req, res, next, value) => {
+    if (rowId(value) === null) {
+      res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
+      return;
+    }
+    next();
+  });
+}
+
 function field(body: unknown, key: string): string {
   const value = (body as Record<string, unknown> | undefined)?.[key];
   return typeof value === 'string' ? value.trim() : '';
+}
+
+async function signedInCoachId(req: Request): Promise<number | null> {
+  const token = parseCookies(req.headers.cookie).cx_session;
+  return token ? getCoachBySessionToken(getDb(), token) : null;
 }
 
 async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -119,6 +212,79 @@ function renderContactForm(value = '', error?: string, saved = false) {
   );
 }
 
+const NOT_TEXTABLE = 'We text only US and Canadian mobile numbers. Use your email instead.';
+/** Code checks: the longest of their windows is an hour. */
+const TOO_MANY_TRIES = 'Too many tries. Try again in an hour.';
+/** Code requests from one address: the longest window is a day. */
+const TOO_MANY_CODE_REQUESTS = 'Too many codes asked for from here. Try again later.';
+const RELAY_BUSY = "We can't send codes right now. Try again in a few minutes.";
+const SEND_FAILED = "We couldn't send a code just now. Try again in a minute.";
+const CODE_ERRORS: Record<Exclude<OtpCheck, { ok: true }>['reason'], string> = {
+  wrong: 'Invalid or expired code.',
+  none: 'Invalid or expired code.',
+  'used-up': 'That code had too many wrong tries. Go back and ask for a new one.',
+};
+
+function optedOutAtSignIn(): string {
+  return optedOutNotice('first, or use your email');
+}
+
+type CodeOutcome = SendOutcome | 'failed';
+
+function signInCodeText(code: string): string {
+  return `Coachatron: your sign-in code is ${code}. Expires in 10 minutes.`;
+}
+
+/** Sends a sign-in code and stores it only once it has gone out, so a
+ * request the send limits refuse leaves no code behind. */
+async function sendCode(
+  db: DbClient,
+  contact: Contact,
+  opts: { coachId: number | null; smsConsent: boolean; text?: (code: string) => string },
+): Promise<CodeOutcome> {
+  const code = newOtpCode();
+  let outcome: SendOutcome;
+  try {
+    outcome =
+      contact.kind === 'email'
+        ? await sendEmailMessage(db, {
+            to: contact.email,
+            ...signInCodeEmail(code),
+            coachId: opts.coachId,
+            template: 'otp',
+            perRecipientDailyMax: OTP_DAILY_MAX_PER_CONTACT,
+          })
+        : await sendText(db, {
+            to: contact.phone,
+            body: (opts.text ?? signInCodeText)(code),
+            coachId: opts.coachId,
+            template: 'otp',
+            perRecipientDailyMax: OTP_DAILY_MAX_PER_CONTACT,
+          });
+  } catch (err) {
+    console.error('sign-in code not sent:', err instanceof Error ? err.message : err);
+    return 'failed';
+  }
+  if (outcome === 'sent') await createOtp(db, contact, { code, smsConsent: opts.smsConsent });
+  return outcome;
+}
+
+/** Counts one code check for this address, and for this phone or email
+ * while it has a live code. With no code out there is nothing to guess,
+ * so checks alone never hold back the next code asked for. */
+async function takeCodeCheck(db: DbClient, req: Request, contact: Contact): Promise<boolean> {
+  const byAddress = await takeRequest(db, CODE_CHECK_IP_LIMITS, clientKey(req));
+  const byContact = (await hasLiveOtp(db, contact)) ? await takeRequest(db, CODE_CHECK_CONTACT_LIMITS, contactKey(contact)) : true;
+  return byAddress && byContact;
+}
+
+/** The texts box ticked when the code was asked for. A STOP sent since
+ * then stands: the number opts back in by texting START. */
+async function recordCodeConsent(db: DbClient, req: Request, phone: string, source: string): Promise<void> {
+  if (await isOptedOut(db, phone)) return;
+  await recordConsent(db, phone, source, { ...consentMeta(req), numberVerified: true });
+}
+
 function smsConsentChecked(body: unknown): boolean {
   const value = (body as Record<string, unknown> | undefined)?.sms_consent;
   return value === '1' || value === 'on' || value === true;
@@ -143,53 +309,46 @@ coachRouter.post('/signin/otp', async (req, res) => {
   const saved = Boolean(readStartText(req.headers.cookie));
   const rawContact = contactField(req.body);
   const contact = parseContact(rawContact);
+  const again = (status: number, error: string) => {
+    res.status(status).send(renderContactForm(rawContact, error, saved));
+  };
   if (!contact) {
-    res.status(422).send(renderContactForm(rawContact, 'Enter an email address or a mobile number.', saved));
+    again(422, 'Enter an email address or a mobile number.');
+    return;
+  }
+  if (contact.kind === 'phone' && !canText(contact.phone)) {
+    again(422, NOT_TEXTABLE);
     return;
   }
   const db = getDb();
-  if (contact.kind === 'phone' && !canText(contact.phone)) {
-    res.status(422).send(renderContactForm(rawContact, "We can't text that number yet. Use your email instead.", saved));
+  if (!(await takeRequest(db, SIGNIN_CODE_LIMITS, clientKey(req)))) {
+    again(429, TOO_MANY_CODE_REQUESTS);
+    return;
+  }
+  if (contact.kind === 'phone' && (await isOptedOut(db, contact.phone))) {
+    again(422, optedOutAtSignIn());
     return;
   }
   // The code is one text the person asked for; the box only covers the
-  // texts after it, so leaving it unchecked never blocks signing in.
-  if (contact.kind === 'phone' && smsConsentChecked(req.body)) {
-    await recordConsent(db, contact.phone, '/signin/otp', consentMeta(req));
-  }
-  const code = await createOtp(db, contact);
-  const outcome =
-    contact.kind === 'email'
-      ? await sendEmailMessage(db, {
-          to: contact.email,
-          ...signInCodeEmail(code),
-          coachId: null,
-          template: 'otp',
-          perRecipientDailyMax: OTP_DAILY_MAX_PER_CONTACT,
-        })
-      : await sendText(db, {
-          to: contact.phone,
-          body: `Coachatron: your sign-in code is ${code}. Expires in 10 minutes.`,
-          coachId: null,
-          template: 'otp',
-          perRecipientDailyMax: OTP_DAILY_MAX_PER_CONTACT,
-        });
-  if (outcome !== 'sent') {
-    const what = contact.kind === 'email' ? 'this email' : 'this number';
-    res
-      .status(outcome === 'refused' ? 422 : 429)
-      .send(
-        renderContactForm(
-          rawContact,
-          outcome === 'refused'
-            ? "We can't text that number yet. Use your email instead."
-            : `Too many codes for ${what} today. Try again tomorrow.`,
-          saved,
-        ),
-      );
+  // texts after it, so leaving it unchecked never blocks signing in. It is
+  // recorded once the code proves the number belongs to whoever ticked it.
+  const outcome = await sendCode(db, contact, {
+    coachId: null,
+    smsConsent: contact.kind === 'phone' && smsConsentChecked(req.body),
+  });
+  if (outcome === 'sent') {
+    res.redirect(303, `/signin/verify?to=${encodeURIComponent(contactValue(contact))}`);
     return;
   }
-  res.redirect(303, `/signin/verify?to=${encodeURIComponent(contactValue(contact))}`);
+  if (outcome === 'capped') {
+    again(429, `Too many codes for ${contact.kind === 'email' ? 'this email' : 'this number'} today. Try again tomorrow.`);
+  } else if (outcome === 'busy') {
+    again(429, RELAY_BUSY);
+  } else if (outcome === 'failed') {
+    again(502, SEND_FAILED);
+  } else {
+    again(422, contact.kind === 'phone' ? optedOutAtSignIn() : SEND_FAILED);
+  }
 });
 
 coachRouter.get('/signin/verify', (req, res) => {
@@ -251,36 +410,61 @@ coachRouter.post('/signin/verify', async (req, res) => {
   }
 
   const db = getDb();
-  const otpId = await checkOtp(db, contact, code);
-  if (!otpId) {
-    res.status(401).send(renderVerifyForm(contact, { code, name, email, tz }, 'Invalid or expired code.'));
+  if (!(await takeCodeCheck(db, req, contact))) {
+    res.status(429).send(renderVerifyForm(contact, { code, name, email, tz }, TOO_MANY_TRIES));
     return;
   }
+  const check = await checkOtp(db, contact, code);
+  if (!check.ok) {
+    res.status(401).send(renderVerifyForm(contact, { code, name, email, tz }, CODE_ERRORS[check.reason]));
+    return;
+  }
+  const otpId = check.id;
 
   let coach: CoachRow | null = await findCoachByContact(db, contact);
   if (!coach) {
+    // An email that only sits, unproved, on an account that signs in by
+    // text does not open that account.
+    const unproved = contact.kind === 'email' && (await findCoachHoldingEmail(db, contact.email)) !== null;
     if (!name) {
-      res.status(422).send(renderVerifyForm(contact, { code, name, email, tz }, 'Enter your name.'));
-      return;
-    }
-    // An optional email given on a phone join must not belong to another coach.
-    const extraEmail = contact.kind === 'phone' ? normalizeEmail(email) : null;
-    if (extraEmail && (await findCoachByEmail(db, extraEmail))) {
       res
         .status(422)
-        .send(renderVerifyForm(contact, { code, name, email, tz }, 'That email already has an account. Sign in with it instead.'));
+        .send(
+          renderVerifyForm(
+            contact,
+            { code, name, email, tz },
+            unproved
+              ? "That email isn't confirmed on an account yet. Sign in with your mobile, or enter your name to start a new account."
+              : 'Enter your name.',
+          ),
+        );
       return;
     }
-    await consumeOtp(db, otpId);
+    // An optional email given on a phone join must not belong to another
+    // coach, and stays unproved until a code sent to it is entered.
+    const extraEmail = contact.kind === 'phone' ? normalizeEmail(email) : null;
+    const holder = extraEmail ? await findCoachHoldingEmail(db, extraEmail) : null;
+    if (holder) {
+      res.status(422).send(renderVerifyForm(contact, { code, name, email, tz }, emailTakenNotice(holder)));
+      return;
+    }
+    if (!(await consumeOtp(db, otpId))) {
+      res.status(401).send(renderVerifyForm(contact, { code, name, email, tz }, CODE_ERRORS.none));
+      return;
+    }
+    if (unproved) await releaseUnprovedEmail(db, contactValue(contact));
     coach = await createCoach(db, {
       phone: contact.kind === 'phone' ? contact.phone : null,
       email: contact.kind === 'email' ? contact.email : (extraEmail ?? ''),
+      emailVerified: contact.kind === 'email',
       name,
       tz: isValidTimeZone(tz) ? tz : DEFAULT_TZ,
     });
-  } else {
-    await consumeOtp(db, otpId);
+  } else if (!(await consumeOtp(db, otpId))) {
+    res.status(401).send(renderVerifyForm(contact, { code, name, email, tz }, CODE_ERRORS.none));
+    return;
   }
+  if (contact.kind === 'phone' && check.smsConsent) await recordCodeConsent(db, req, contact.phone, '/signin/otp');
 
   const token = await createCoachSession(db, coach.id);
   const cookies = [serializeCookie(SESSION_COOKIE, token, 30 * 24 * 60 * 60)];
@@ -299,7 +483,144 @@ coachRouter.post('/signin/verify', async (req, res) => {
   res.redirect(303, '/app/schedule');
 });
 
+// Sign out: ends this browser's session on the server and clears the cookie.
+coachRouter.post('/signout', async (req, res) => {
+  const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
+  if (token) await deleteCoachSession(getDb(), token);
+  res.setHeader('Set-Cookie', clearCookie(SESSION_COOKIE));
+  res.redirect(303, '/signin');
+});
+
+// ---- Screen 1, from a text: the payments link ----
+
+// A coach who only texts gets this link after publishing. It signs them in
+// once and opens Money, where the terms box and the payments button are.
+// Opening it only shows a button: a link preview must not use it up.
+
+function renderPaymentsLinkPage(token: string, coachName: string) {
+  return page(
+    'Set up payments',
+    html`<h1>Set up payments</h1>
+      <p class="muted">Signs you in as ${coachName} and opens payments, so parents can pay you when they book.</p>
+      <form method="post" action="/p/${token}">
+        <button type="submit">Continue</button>
+      </form>`,
+  );
+}
+
+function paymentsLinkDonePage() {
+  return page(
+    'Link expired',
+    html`<h1>That link is done.</h1>
+      <p class="muted">Sign in to set up payments.</p>
+      <a class="action" href="/signin">Sign in</a>`,
+  );
+}
+
+async function answerUsedPaymentsLink(req: Request, res: Response): Promise<void> {
+  if (await signedInCoachId(req)) {
+    res.redirect(303, '/app/money');
+    return;
+  }
+  res.status(410).send(paymentsLinkDonePage());
+}
+
+coachRouter.get('/p/:token', async (req, res) => {
+  const db = getDb();
+  const coachId = await openPaymentsLink(db, req.params.token);
+  const coach = coachId ? await findCoachById(db, coachId) : null;
+  if (!coach) {
+    await answerUsedPaymentsLink(req, res);
+    return;
+  }
+  res.status(200).send(renderPaymentsLinkPage(req.params.token, coach.name));
+});
+
+coachRouter.post('/p/:token', async (req, res) => {
+  const db = getDb();
+  const coachId = await consumePaymentsLink(db, req.params.token);
+  if (!coachId) {
+    await answerUsedPaymentsLink(req, res);
+    return;
+  }
+  const token = await createCoachSession(db, coachId);
+  res.setHeader('Set-Cookie', serializeCookie(SESSION_COOKIE, token, 30 * 24 * 60 * 60));
+  res.redirect(303, '/app/money');
+});
+
 // ---- Screen 4: session types ----
+
+type SessionTypeFields = {
+  name: string;
+  durationMin: number;
+  capacity: number;
+  priceCents: number;
+  backupPayCents: number | null;
+};
+
+function parseSessionTypeBody(body: Record<string, unknown>): SessionTypeFields | null {
+  const name = field(body, 'name');
+  const durationMin = wholeNumber(field(body, 'duration_min'), LIMITS.durationMin);
+  const capacity = wholeNumber(field(body, 'capacity'), LIMITS.capacity);
+  const priceCents = dollarsToCents(field(body, 'price_dollars'), LIMITS.priceCents);
+  const backupPayRaw = field(body, 'backup_pay_dollars');
+  const backupPayCents = backupPayRaw ? dollarsToCents(backupPayRaw, LIMITS.backupPayCents) : null;
+  if (!name || durationMin === null || capacity === null || priceCents === null || (backupPayRaw && backupPayCents === null)) {
+    return null;
+  }
+  return { name, durationMin, capacity, priceCents, backupPayCents };
+}
+
+/** The form's message when a number is missing or out of range. */
+const SESSION_TYPE_RANGES = `Fill in every field: ${LIMITS.durationMin.min}–${LIMITS.durationMin.max} minutes, ${LIMITS.capacity.min}–${LIMITS.capacity.max} athletes, and a price up to ${formatCoachDollars(LIMITS.priceCents.max)}.`;
+
+/** The future session of this type with the most spots taken, when that is
+ * more than the new capacity. Sessions given their own capacity (a backup
+ * coach joined) keep it and are not counted. */
+async function sessionAboveCapacity(
+  db: DbClient,
+  coachId: number,
+  typeId: number,
+  capacity: number,
+): Promise<{ starts_at_utc: string; tz: string; taken: number } | null> {
+  const result = await db.query<{ starts_at_utc: string; tz: string; taken: number }>(
+    `select s.starts_at_utc, s.tz, count(b.id)::int as taken
+     from session s
+     join session_type st on st.id = s.session_type_id
+     join booking b on b.session_id = s.id and ${takesSpotSql('b')}
+     where st.id = $1 and st.coach_id = $2 and s.status = 'scheduled' and s.starts_at_utc > now()
+       and s.capacity_override is null
+     group by s.id
+     having count(b.id) > $3
+     order by count(b.id) desc, s.starts_at_utc
+     limit 1`,
+    [typeId, coachId, capacity],
+  );
+  return result.rows[0] ?? null;
+}
+
+function renderSessionTypeForm(
+  action: string,
+  submitLabel: string,
+  values?: Partial<SessionTypeFields> & { priceDollars?: number; backupPayDollars?: number },
+) {
+  const priceDollars = values?.priceDollars ?? (values?.priceCents != null ? values.priceCents / 100 : undefined);
+  const backupPayDollars =
+    values?.backupPayDollars ?? (values?.backupPayCents != null ? values.backupPayCents / 100 : undefined);
+  return html`<form method="post" action="${action}">
+    <label for="name">Session name</label>
+    <input id="name" name="name" required placeholder="e.g. Group training" value="${values?.name ?? ''}" />
+    <label for="duration_min">Duration (minutes)</label>
+    <input id="duration_min" name="duration_min" type="number" min="${LIMITS.durationMin.min}" max="${LIMITS.durationMin.max}" required value="${values?.durationMin ?? ''}" />
+    <label for="capacity">Capacity</label>
+    <input id="capacity" name="capacity" type="number" min="${LIMITS.capacity.min}" max="${LIMITS.capacity.max}" required value="${values?.capacity ?? ''}" />
+    <label for="price_dollars">Price (dollars)</label>
+    <input id="price_dollars" name="price_dollars" type="number" min="0.01" max="${LIMITS.priceCents.max / 100}" step="0.01" required value="${priceDollars ?? ''}" />
+    <label for="backup_pay_dollars">Backup coach pays (dollars, optional)</label>
+    <input id="backup_pay_dollars" name="backup_pay_dollars" type="number" min="0" max="${LIMITS.backupPayCents.max / 100}" step="0.01" value="${backupPayDollars ?? ''}" />
+    <button type="submit">${submitLabel}</button>
+  </form>`;
+}
 
 coachRouter.get('/app/session-types', requireAuth, async (_req, res) => {
   const db = getDb();
@@ -322,57 +643,32 @@ coachRouter.get('/app/session-types', requireAuth, async (_req, res) => {
         <h1>Session types</h1>
         ${types.rows.map(
           (t) =>
-            html`<a class="card" href="/app/session-types/${t.id}/generate-week">
+            html`<div class="card">
               <strong>${t.name}</strong>
               <div class="meta">
-                <span>${t.duration_min} min · ${t.capacity} athletes · $${(t.price_cents / 100).toFixed(2)}</span>
-                <span>Weekly times ›</span>
+                <span>${t.duration_min} min · ${t.capacity} athletes · ${formatCoachDollars(t.price_cents)}</span>
               </div>
-              ${t.backup_pay_cents ? html`<div class="meta"><span>Backup coach pays $${(t.backup_pay_cents / 100).toFixed(2)}</span></div>` : raw('')}
-            </a>`,
+              ${t.backup_pay_cents ? html`<div class="meta"><span>Backup coach pays ${formatCoachDollars(t.backup_pay_cents)}</span></div>` : raw('')}
+              <div class="btn-row">
+                <a class="action ghost" href="/app/session-types/${t.id}/edit">Edit</a>
+                <a class="action" href="/app/session-types/${t.id}/generate-week">Weekly times ›</a>
+              </div>
+            </div>`,
         )}
-        <form method="post" action="/app/session-types">
-          <label for="name">Name</label>
-          <input id="name" name="name" required />
-          <label for="duration_min">Duration (minutes)</label>
-          <input id="duration_min" name="duration_min" type="number" min="1" required />
-          <label for="capacity">Capacity</label>
-          <input id="capacity" name="capacity" type="number" min="1" required />
-          <label for="price_dollars">Price (dollars)</label>
-          <input id="price_dollars" name="price_dollars" type="number" min="0" step="0.01" required />
-          <label for="backup_pay_dollars">Backup coach pays (dollars, optional)</label>
-          <input id="backup_pay_dollars" name="backup_pay_dollars" type="number" min="0" step="0.01" />
-          <button type="submit">Create session type</button>
-        </form>`,
+        ${renderSessionTypeForm('/app/session-types', 'Create session type')}`,
     ),
   );
 });
 
 coachRouter.post('/app/session-types', requireAuth, async (req, res) => {
   const coachId = res.locals.coachId as number;
-  const name = field(req.body, 'name');
-  const durationMin = Number(field(req.body, 'duration_min'));
-  const capacity = Number(field(req.body, 'capacity'));
-  const priceDollars = Number(field(req.body, 'price_dollars'));
-  const priceCents = Math.round(priceDollars * 100);
-  const backupPayRaw = field(req.body, 'backup_pay_dollars');
-  const backupPayCents = backupPayRaw ? Math.round(Number(backupPayRaw) * 100) : null;
-
-  if (
-    !name ||
-    !Number.isInteger(durationMin) ||
-    durationMin <= 0 ||
-    !Number.isInteger(capacity) ||
-    capacity <= 0 ||
-    !Number.isFinite(priceCents) ||
-    priceCents <= 0 ||
-    (backupPayCents !== null && (!Number.isFinite(backupPayCents) || backupPayCents < 0))
-  ) {
+  const parsed = parseSessionTypeBody(req.body as Record<string, unknown>);
+  if (!parsed) {
     res.status(422).send(
       page(
         'Session types',
         html`<h1>Session types</h1>
-          <p class="error">Fill in every field with a positive number.</p>
+          <p class="error">${SESSION_TYPE_RANGES}</p>
           <a class="action" href="/app/session-types">Back</a>`,
       ),
     );
@@ -383,8 +679,95 @@ coachRouter.post('/app/session-types', requireAuth, async (req, res) => {
   await db.query(
     `insert into session_type (coach_id, name, duration_min, capacity, price_cents, backup_pay_cents, active)
      values ($1, $2, $3, $4, $5, $6, true)`,
-    [coachId, name, durationMin, capacity, priceCents, backupPayCents || null],
+    [coachId, parsed.name, parsed.durationMin, parsed.capacity, parsed.priceCents, parsed.backupPayCents || null],
   );
+  res.redirect(303, '/app/session-types');
+});
+
+coachRouter.get('/app/session-types/:id/edit', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const typeId = Number(req.params.id);
+  const typeRows = await db.query<{
+    id: number;
+    name: string;
+    duration_min: number;
+    capacity: number;
+    price_cents: number;
+    backup_pay_cents: number | null;
+  }>(
+    'select id, name, duration_min, capacity, price_cents, backup_pay_cents from session_type where id = $1 and coach_id = $2',
+    [typeId, coachId],
+  );
+  if (typeRows.rows.length === 0) {
+    res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
+    return;
+  }
+  const t = typeRows.rows[0];
+  res.status(200).send(
+    page(
+      'Edit session type',
+      html`${coachNav('types')}
+        <h1>Edit session type</h1>
+        ${renderSessionTypeForm(`/app/session-types/${typeId}/edit`, 'Save changes', {
+          name: t.name,
+          durationMin: t.duration_min,
+          capacity: t.capacity,
+          priceCents: t.price_cents,
+          backupPayCents: t.backup_pay_cents,
+        })}
+        <a class="action ghost" href="/app/session-types">Back</a>`,
+    ),
+  );
+});
+
+coachRouter.post('/app/session-types/:id/edit', requireAuth, async (req, res) => {
+  const coachId = res.locals.coachId as number;
+  const typeId = Number(req.params.id);
+  const parsed = parseSessionTypeBody(req.body as Record<string, unknown>);
+  if (!parsed) {
+    res.status(422).send(
+      page(
+        'Edit session type',
+        html`<h1>Edit session type</h1>
+          <p class="error">${SESSION_TYPE_RANGES}</p>
+          <a class="action" href="/app/session-types/${typeId}/edit">Back</a>`,
+      ),
+    );
+    return;
+  }
+  const db = getDb();
+  const crowded = await sessionAboveCapacity(db, coachId, typeId, parsed.capacity);
+  if (crowded) {
+    res.status(422).send(
+      page(
+        'Edit session type',
+        html`<h1>Edit session type</h1>
+          <p class="error">${formatLocal(crowded.starts_at_utc, crowded.tz)} already has ${crowded.taken} booked. Set the capacity to at least ${crowded.taken}, or cancel that session first.</p>
+          <a class="action" href="/app/session-types/${typeId}/edit">Back</a>`,
+      ),
+    );
+    return;
+  }
+  const updated = await db.query<{ id: number }>(
+    `update session_type
+     set name = $1, duration_min = $2, capacity = $3, price_cents = $4, backup_pay_cents = $5
+     where id = $6 and coach_id = $7
+     returning id`,
+    [
+      parsed.name,
+      parsed.durationMin,
+      parsed.capacity,
+      parsed.priceCents,
+      parsed.backupPayCents || null,
+      typeId,
+      coachId,
+    ],
+  );
+  if (updated.rows.length === 0) {
+    res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
+    return;
+  }
   res.redirect(303, '/app/session-types');
 });
 
@@ -392,8 +775,14 @@ coachRouter.get('/app/session-types/:id/generate-week', requireAuth, async (req,
   const db = getDb();
   const coachId = res.locals.coachId as number;
   const typeId = Number(req.params.id);
-  const typeRows = await db.query<{ id: number; name: string }>(
-    'select id, name from session_type where id = $1 and coach_id = $2',
+  const typeRows = await db.query<{
+    id: number;
+    name: string;
+    duration_min: number;
+    capacity: number;
+    price_cents: number;
+  }>(
+    'select id, name, duration_min, capacity, price_cents from session_type where id = $1 and coach_id = $2',
     [typeId, coachId],
   );
   if (typeRows.rows.length === 0) {
@@ -405,16 +794,17 @@ coachRouter.get('/app/session-types/:id/generate-week', requireAuth, async (req,
 });
 
 function renderWeeklyTimes(
-  type: { id: number; name: string },
+  type: { id: number; name: string; duration_min: number; capacity: number; price_cents: number },
   slots: Array<{ id: number; weekday: number; time_local: string; location_text: string | null }>,
   kept: number,
   error?: string,
 ) {
+  const typeLine = `${type.name} · ${type.duration_min} min · ${type.capacity} athletes · ${formatCoachDollars(type.price_cents)}`;
   return page(
     'Weekly times',
     html`${coachNav('types')}
-      <h1>${type.name}</h1>
-      <p class="muted">Weekly times. Sessions stay on your calendar 8 weeks ahead.</p>
+      <h1>Weekly times</h1>
+      <p class="muted">${typeLine}. Sessions stay on your calendar 8 weeks ahead.</p>
       ${kept > 0
         ? html`<p class="muted">${kept} upcoming ${kept === 1 ? 'session has' : 'sessions have'} bookings and stayed. Cancel ${kept === 1 ? 'it' : 'them'} from the schedule if you need to.</p>`
         : raw('')}
@@ -447,8 +837,14 @@ coachRouter.post('/app/session-types/:id/generate-week', requireAuth, async (req
   const coachId = res.locals.coachId as number;
   const typeId = Number(req.params.id);
 
-  const typeRows = await db.query<{ id: number; name: string }>(
-    'select id, name from session_type where id = $1 and coach_id = $2',
+  const typeRows = await db.query<{
+    id: number;
+    name: string;
+    duration_min: number;
+    capacity: number;
+    price_cents: number;
+  }>(
+    'select id, name, duration_min, capacity, price_cents from session_type where id = $1 and coach_id = $2',
     [typeId, coachId],
   );
   if (typeRows.rows.length === 0) {
@@ -460,21 +856,44 @@ coachRouter.post('/app/session-types/:id/generate-week', requireAuth, async (req
 
   const body = req.body as Record<string, unknown>;
   const locationText = field(body, 'location') || null;
+  const current = await listWeeklySlots(db, typeId);
+  const refuse = (message: string) => res.status(422).send(renderWeeklyTimes(typeRows.rows[0], current, 0, message));
   const slots: WeeklySlot[] = [];
   for (let i = 0; i < 7; i += 1) {
     const checked = field(body, `day_${i}`) === '1';
-    const timeLocal = field(body, `time_${i}`);
-    if (checked && /^\d{2}:\d{2}$/.test(timeLocal)) {
-      slots.push({ weekday: i, timeLocal, locationText });
+    const raw = field(body, `time_${i}`);
+    if (!checked || !raw) continue;
+    const timeLocal = clockTime(raw);
+    if (!timeLocal) {
+      refuse(`${WEEKDAY_LABELS[i]}: use a time from 00:00 to 23:59.`);
+      return;
     }
+    slots.push({ weekday: i, timeLocal, locationText });
   }
 
   if (slots.length === 0) {
-    res.status(422).send(renderWeeklyTimes(typeRows.rows[0], await listWeeklySlots(db, typeId), 0, 'Pick at least one day and time.'));
+    refuse('Pick at least one day and time.');
+    return;
+  }
+
+  // A weekday and time the type already has stays as it is, so a new place
+  // for it would not be saved: say so instead of adding the rest.
+  const elsewhere = slots.flatMap((slot) => {
+    const have = current.find((c) => c.weekday === slot.weekday && c.time_local === slot.timeLocal);
+    return have && locationText && (have.location_text ?? '') !== locationText ? [have] : [];
+  });
+  if (elsewhere.length > 0) {
+    const which = elsewhere
+      .map((c) => `${WEEKDAY_LABELS[c.weekday]} ${c.time_local}${c.location_text ? ` (at ${c.location_text})` : ''}`)
+      .join(', ');
+    const are = elsewhere.length === 1 ? 'is already a weekly time and keeps its place' : 'are already weekly times and keep their places';
+    refuse(`${which} ${are}, so nothing was added.`);
     return;
   }
 
   await createWeeklySlots(db, typeId, tz, slots, new Date());
+  const coach = await findCoachById(db, coachId);
+  if (coach) await notePublished(db, coach);
   res.redirect(303, '/app/schedule');
 });
 
@@ -496,8 +915,8 @@ coachRouter.post('/app/session-types/:id/slots/:slotId/remove', requireAuth, asy
 // screen: a coach with nothing on the calendar sees "Tell me your week".
 
 const SETUP_NOTICES: Record<string, string> = {
-  read: "I couldn't read that. Try again, or set it up by hand.",
-  cap: "That's all the reading I can do today. Set it up by hand for now.",
+  read: "I couldn't read that. Try again, or set up with a form instead.",
+  cap: "That's all the reading I can do today. Set up with a form instead for now.",
   stale: 'That setup already went live or was cleared.',
 };
 
@@ -546,29 +965,40 @@ function renderSetupScreen(
       <p class="muted">
         ${hasSchedule
           ? html`<a href="/app/schedule">Back to the schedule</a>`
-          : html`Rather use forms? <a href="/app/session-types">Set it up by hand</a>.`}
+          : html`Rather use forms? <a href="/app/session-types">Set up with a form instead</a>.`}
       </p>`,
   );
 }
 
-async function paymentsConnected(coach: CoachRow): Promise<boolean | null> {
-  try {
-    return (await getSellerStatus(getConnectRecipientKey(coach)))?.chargesEnabled === true;
-  } catch {
-    return null;
-  }
-}
+// Copies the page link and says "Copied" only once it is copied. Where the
+// clipboard API is missing or refused, the older copy command is tried on
+// the selected box; if that fails too, the link is left selected to copy.
+const COPY_LINK_SCRIPT =
+  "var b=this,i=document.getElementById('page-link');i.focus();i.select();" +
+  "function done(){b.textContent='Copied'}" +
+  "function old(){try{if(document.execCommand('copy'))done()}catch(e){}}" +
+  "try{navigator.clipboard.writeText(i.value).then(done,old)}catch(e){old()}";
 
-function renderLiveCard(coach: CoachRow, connected: boolean | null) {
-  const link = `${process.env.APP_BASE_URL ?? APP_BASE_URL}/c/${coach.handle}`;
+/** The coach's page link, always in view on Schedule and Money: one box to
+ * select or copy, and a way to text it. On Schedule the main action is
+ * sharing it, or, until payments work, setting them up. Money has its own. */
+function renderPageLinkCard(coach: CoachRow, opts: { main: 'share' | 'payments' | 'none'; justPublished?: boolean }) {
+  const link = coachPageUrl(coach.handle);
   const share = `sms:?&body=${encodeURIComponent(`Book with me: ${link}`)}`;
-  return html`<div class="card">
-    <p><strong>You're live.</strong> Parents book at ${link.replace(/^https?:\/\//, '')}</p>
-    ${connected === false
-      ? html`<p class="muted">They can't pay you until payments are connected.</p>
-          <a class="action" href="/app/money">Connect payments</a>
-          <a class="action ghost" href="${share}">Share your link</a>`
-      : html`<a class="action" href="${share}">Share your link</a>`}
+  return html`<div class="card page-link">
+    ${opts.justPublished
+      ? html`<p><strong>You're live.</strong> Parents book at ${link.replace(/^https?:\/\//, '')}</p>`
+      : raw('')}
+    <label for="page-link">Your page</label>
+    <input id="page-link" type="text" readonly value="${link}" onfocus="this.select()" />
+    <div class="btn-row">
+      <button type="button" class="ghost" onclick="${COPY_LINK_SCRIPT}">Copy link</button>
+      <a class="action${opts.main === 'share' ? '' : ' ghost'}" href="${share}">Share your link</a>
+    </div>
+    ${opts.main === 'payments'
+      ? html`<p class="muted">Parents can't book until payments are set up.</p>
+          <a class="action" href="/app/money">Connect payments</a>`
+      : raw('')}
   </div>`;
 }
 
@@ -589,8 +1019,12 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
     res.status(200).send(renderSetupScreen(coach, draft, notice, hasSchedule, startText));
     return;
   }
-  const live = req.query.published === '1' ? renderLiveCard(coach, await paymentsConnected(coach)) : raw('');
+  const live = renderPageLinkCard(coach, {
+    main: (await paymentsOpen(db, coach)) ? 'share' : 'payments',
+    justPublished: req.query.published === '1',
+  });
   const askCard = renderAskCard(await pendingAskForCoach(db, coachId));
+  const cascadeCards = renderRunningCascades(await runningCascadesForCoach(db, coachId));
   const phoneState = typeof req.query.phone === 'string' ? req.query.phone : '';
   const phoneCard = coach.phone
     ? phoneState === 'done'
@@ -602,6 +1036,7 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
         typeof req.query.phone === 'string' ? req.query.phone : '',
         typeof req.query.to === 'string' ? req.query.to : '',
       );
+  const emailCard = renderConfirmEmailCard(coach, typeof req.query.email === 'string' ? req.query.email : '');
   const sessions = await db.query<{
     id: number;
     starts_at_utc: string;
@@ -609,9 +1044,11 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
     name: string;
     capacity: number;
     price_cents: number;
+    duration_min: number;
     booked: string;
   }>(
     `select s.id, s.starts_at_utc, s.tz, st.name, coalesce(s.capacity_override, st.capacity) as capacity, st.price_cents,
+            st.duration_min,
             coalesce((select count(*) from booking b where b.session_id = s.id and b.status = 'booked'), 0)::text as booked
      from session s
      join session_type st on st.id = s.session_type_id
@@ -631,8 +1068,10 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
           <h1>Coming up</h1>
           ${live}
           ${askCard}
+          ${cascadeCards}
           ${phoneCard}
-          <p class="muted"><a href="/app/schedule?setup=1">Add more by talking</a></p>
+          ${emailCard}
+          <p><a class="action ghost" href="/app/schedule?setup=1">Add more by talking</a></p>
           ${assistant.reply
             ? html`<div class="card ask-reply">
                 <p>${assistant.reply.body}</p>
@@ -652,13 +1091,13 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
                 (s) =>
                   html`<a class="card" href="/app/sessions/${s.id}">
                     <strong>${formatLocal(s.starts_at_utc, s.tz)}</strong>
-                    <div class="meta"><span>${s.name}</span><span>${s.booked}/${s.capacity} · $${(s.price_cents / 100).toFixed(2)}</span></div>
+                    <div class="meta"><span>${formatTimeRange(s.starts_at_utc, s.duration_min, s.tz)} · ${s.name} · ${s.booked} of ${s.capacity} spots booked · ${formatCoachDollars(s.price_cents)}</span></div>
                   </a>`,
               )}
         </div>
         <div class="schedule-ask">
-          <form method="post" action="/app/schedule/ask">
-            <label for="ask">Text the week</label>
+          <form method="post" action="/app/schedule/ask" onsubmit="this.querySelector('button[type=submit]').disabled=true;this.querySelector('button[type=submit]').textContent='Working…';">
+            <label for="ask">Tell me what to change</label>
             <input id="ask" name="text" type="text" placeholder="Text the week. &quot;who's at 6pm&quot; or &quot;cancel tomorrow&quot;" />
             <button type="submit">Send</button>
           </form>
@@ -669,24 +1108,66 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
 
 // ---- Screen 2 actions: the overflow question and adding a mobile ----
 
+/** The overflow question (SPEC.md §7.3), the same one the text asks:
+ * a second group, a backup coach, or not now. */
 function renderAskCard(ask: PendingAsk | null) {
   if (!ask) return raw('');
-  return html`<div class="card ask-reply">
-    <p><strong>${ask.label} is full</strong>, ${ask.waiting} waiting. Open a second group? We'll ask your roster one at a time.</p>
+  return html`<div class="card ask-reply overflow-ask">
+    <p><strong>${ask.label} is full</strong> with ${ask.waiting} waiting. Open a second group, or add a backup coach? We'll ask your roster one at a time.</p>
     <form class="btn-row" method="post" action="/app/overflow/${ask.sessionId}">
-      <button type="submit" name="answer" value="yes">Ask my roster</button>
+      <button type="submit" name="answer" value="1">Second group</button>
+      <button type="submit" name="answer" value="2" class="ghost">Backup coach</button>
       <button type="submit" name="answer" value="no" class="ghost">Not now</button>
     </form>
   </div>`;
 }
 
+const OVERFLOW_JOB: Record<RunningCascade['kind'], string> = {
+  second_group: 'a second group',
+  backup: 'a backup coach',
+};
+
+/** Where each cascade under way has got to. */
+function renderRunningCascades(cascades: RunningCascade[]) {
+  if (cascades.length === 0) return raw('');
+  return html`${cascades.map(
+    (c) => html`<div class="card overflow-running">
+      <p>Asking your roster for ${OVERFLOW_JOB[c.kind]} for <strong>${c.label}</strong>.
+        ${c.offeredTo ? `Offered to ${c.offeredTo.name} until ${clockInZone(c.offeredTo.expiresAt, c.tz)}.` : ''}</p>
+      ${c.unreachable.length > 0
+        ? html`<p class="muted">Not asked, because they can't get texts yet. Send each their link to opt in:</p>
+            <ul class="unreachable">
+              ${c.unreachable.map((u) => html`<li>${u.name} · <a href="${u.link}">${u.link}</a></li>`)}
+            </ul>`
+        : raw('')}
+    </div>`,
+  )}`;
+}
+
+/** "6:20 PM" in the session's zone. */
+function clockInZone(isoUtc: string, tz: string): string {
+  return new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit' }).format(new Date(isoUtc));
+}
+
+const OVERFLOW_ANSWERS: Record<string, OverflowAnswer> = { '1': 'second_group', '2': 'backup', no: 'no' };
+
 const PHONE_NOTICES: Record<string, string> = {
   bad: 'Enter a US or Canadian mobile number.',
   capped: 'Too many codes for that number today. Try again tomorrow.',
   wrong: 'That code did not match. Try again.',
+  used: 'That code had too many wrong tries. Ask for a new one.',
+  slow: TOO_MANY_TRIES,
+  wait: TOO_MANY_CODE_REQUESTS,
+  busy: "We can't send texts right now. Try again in a few minutes.",
+  failed: SEND_FAILED,
   taken: 'That number is already on another Coachatron account.',
   consent: 'Check the box to get texts from Coachatron.',
 };
+
+function phoneNotice(state: string): string | null {
+  if (state === 'stopped') return optedOutNotice('first');
+  return Object.hasOwn(PHONE_NOTICES, state) ? PHONE_NOTICES[state] : null;
+}
 
 /** For a coach who signed in with a mobile but left the box unchecked: the
  * same box, to turn on texts when a session fills. Until then those go by
@@ -706,9 +1187,9 @@ function renderTextsOnCard(state: string) {
 /** For a coach who joined by email: add a mobile to get texts when a
  * session fills, and to run the week by text. Verified with a text code. */
 function renderAddPhoneCard(state: string, to: string) {
-  const notice = Object.hasOwn(PHONE_NOTICES, state) ? PHONE_NOTICES[state] : null;
+  const notice = phoneNotice(state);
   const parsed = to ? normalizePhone(to) : null;
-  if ((state === 'sent' || state === 'wrong') && parsed) {
+  if ((state === 'sent' || state === 'wrong' || state === 'slow') && parsed) {
     return html`<div class="card">
       <p>We texted a code to ${parsed}.</p>
       <form method="post" action="/app/phone/verify">
@@ -732,10 +1213,92 @@ function renderAddPhoneCard(state: string, to: string) {
   </div>`;
 }
 
+const EMAIL_NOTICES: Record<string, string> = {
+  wrong: 'That code did not match. Try again.',
+  used: 'That code had too many wrong tries. Ask for a new one.',
+  slow: TOO_MANY_TRIES,
+  wait: TOO_MANY_CODE_REQUESTS,
+  capped: 'Too many codes for that email today. Try again tomorrow.',
+  busy: "We can't send email right now. Try again in a few minutes.",
+  failed: SEND_FAILED,
+};
+
+/** For a coach whose email was typed, not proved: a code by email makes
+ * it a way to sign in. Until then only the mobile signs in. */
+function renderConfirmEmailCard(coach: CoachRow, state: string) {
+  if (state === 'done' && coach.email_verified) {
+    return html`<p class="muted">You can sign in with ${coach.email} too.</p>`;
+  }
+  if (!coach.email || coach.email_verified) return raw('');
+  const notice = Object.hasOwn(EMAIL_NOTICES, state) ? EMAIL_NOTICES[state] : null;
+  if (state === 'sent' || state === 'wrong' || state === 'slow') {
+    return html`<div class="card">
+      <p>We emailed a code to ${coach.email}.</p>
+      <form method="post" action="/app/email/verify">
+        <label for="email-code">Code</label>
+        <input id="email-code" name="code" inputmode="numeric" autocomplete="one-time-code" required />
+        <button type="submit" class="ghost">Confirm email</button>
+      </form>
+      ${notice ? html`<p class="error">${notice}</p>` : raw('')}
+    </div>`;
+  }
+  return html`<div class="card">
+    <p class="muted">Confirm ${coach.email} to sign in with it too.</p>
+    <form method="post" action="/app/email">
+      <button type="submit" class="ghost">Email me a code</button>
+    </form>
+    ${notice ? html`<p class="error">${notice}</p>` : raw('')}
+  </div>`;
+}
+
+coachRouter.post('/app/email', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coach = await findCoachById(db, res.locals.coachId as number);
+  if (!coach?.email || coach.email_verified) {
+    res.redirect(303, '/app/schedule');
+    return;
+  }
+  if (!(await takeRequest(db, SIGNIN_CODE_LIMITS, clientKey(req)))) {
+    res.redirect(303, '/app/schedule?email=wait');
+    return;
+  }
+  const outcome = await sendCode(db, { kind: 'email', email: coach.email }, { coachId: coach.id, smsConsent: false });
+  res.redirect(303, `/app/schedule?email=${outcome === 'refused' ? 'failed' : outcome}`);
+});
+
+coachRouter.post('/app/email/verify', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coach = await findCoachById(db, res.locals.coachId as number);
+  if (!coach?.email || coach.email_verified) {
+    res.redirect(303, '/app/schedule');
+    return;
+  }
+  const contact: Contact = { kind: 'email', email: coach.email };
+  if (!(await takeCodeCheck(db, req, contact))) {
+    res.redirect(303, '/app/schedule?email=slow');
+    return;
+  }
+  const check = await checkOtp(db, contact, field(req.body, 'code'));
+  if (!check.ok) {
+    res.redirect(303, `/app/schedule?email=${check.reason === 'used-up' ? 'used' : 'wrong'}`);
+    return;
+  }
+  if (!(await consumeOtp(db, check.id))) {
+    res.redirect(303, '/app/schedule?email=wrong');
+    return;
+  }
+  await markEmailVerified(db, coach.id, coach.email);
+  res.redirect(303, '/app/schedule?email=done');
+});
+
 coachRouter.post('/app/overflow/:sessionId', requireAuth, async (req, res) => {
   const db = getDb();
   const coachId = res.locals.coachId as number;
-  await answerAskFromWeb(db, coachId, Number(req.params.sessionId), field(req.body, 'answer') === 'yes');
+  const answer = field(req.body, 'answer');
+  const sessionId = Number(req.params.sessionId);
+  if (Object.hasOwn(OVERFLOW_ANSWERS, answer) && Number.isInteger(sessionId)) {
+    await answerAsk(db, coachId, OVERFLOW_ANSWERS[answer], sessionId);
+  }
   res.redirect(303, '/app/schedule');
 });
 
@@ -750,17 +1313,22 @@ coachRouter.post('/app/phone', requireAuth, async (req, res) => {
     res.redirect(303, '/app/schedule?phone=consent');
     return;
   }
-  await recordConsent(db, phone, '/app/phone', consentMeta(req));
-  const code = await createOtp(db, { kind: 'phone', phone });
-  const outcome = await sendText(db, {
-    to: phone,
-    body: `Coachatron: your code to add this mobile is ${code}. Expires in 10 minutes.`,
+  if (!(await takeRequest(db, SIGNIN_CODE_LIMITS, clientKey(req)))) {
+    res.redirect(303, '/app/schedule?phone=wait');
+    return;
+  }
+  if (await isOptedOut(db, phone)) {
+    res.redirect(303, '/app/schedule?phone=stopped');
+    return;
+  }
+  // The ticked box is recorded once the code proves the number.
+  const outcome = await sendCode(db, { kind: 'phone', phone }, {
     coachId: res.locals.coachId as number,
-    template: 'otp',
-    perRecipientDailyMax: OTP_DAILY_MAX_PER_CONTACT,
+    smsConsent: true,
+    text: (code) => `Coachatron: your code to add this mobile is ${code}. Expires in 10 minutes.`,
   });
   if (outcome !== 'sent') {
-    res.redirect(303, `/app/schedule?phone=${outcome === 'capped' ? 'capped' : 'bad'}`);
+    res.redirect(303, `/app/schedule?phone=${outcome === 'refused' ? 'stopped' : outcome}`);
     return;
   }
   res.redirect(303, `/app/schedule?phone=sent&to=${encodeURIComponent(phone)}`);
@@ -777,7 +1345,8 @@ coachRouter.post('/app/phone/consent', requireAuth, async (req, res) => {
     res.redirect(303, '/app/schedule?phone=consent');
     return;
   }
-  await recordConsent(db, coach.phone, '/app/phone/consent', consentMeta(req));
+  // The coach's own number, proved when it was added to the account.
+  await recordConsent(db, coach.phone, '/app/phone/consent', { ...consentMeta(req), numberVerified: true });
   res.redirect(303, '/app/schedule?phone=done');
 });
 
@@ -789,8 +1358,17 @@ coachRouter.post('/app/phone/verify', requireAuth, async (req, res) => {
     res.redirect(303, '/app/schedule?phone=bad');
     return;
   }
-  const otpId = await checkOtp(db, { kind: 'phone', phone }, field(req.body, 'code'));
-  if (!otpId) {
+  const contact: Contact = { kind: 'phone', phone };
+  if (!(await takeCodeCheck(db, req, contact))) {
+    res.redirect(303, `/app/schedule?phone=slow&to=${encodeURIComponent(phone)}`);
+    return;
+  }
+  const check = await checkOtp(db, contact, field(req.body, 'code'));
+  if (!check.ok) {
+    res.redirect(303, check.reason === 'used-up' ? '/app/schedule?phone=used' : `/app/schedule?phone=wrong&to=${encodeURIComponent(phone)}`);
+    return;
+  }
+  if (!(await consumeOtp(db, check.id))) {
     res.redirect(303, `/app/schedule?phone=wrong&to=${encodeURIComponent(phone)}`);
     return;
   }
@@ -799,7 +1377,7 @@ coachRouter.post('/app/phone/verify', requireAuth, async (req, res) => {
     res.redirect(303, '/app/schedule?phone=taken');
     return;
   }
-  await consumeOtp(db, otpId);
+  if (check.smsConsent) await recordCodeConsent(db, req, phone, '/app/phone');
   res.redirect(303, '/app/schedule?phone=done');
 });
 
@@ -827,14 +1405,15 @@ coachRouter.post('/app/setup/publish', requireAuth, async (req, res) => {
     res.redirect(303, '/signin');
     return;
   }
-  const counts = await publishSetupPlan(db, coach, Number(field(req.body, 'id')));
+  const counts = await publishSetupPlan(db, coach, rowId(field(req.body, 'id')) ?? 0);
+  if (counts) await notePublished(db, (await findCoachById(db, coach.id)) ?? coach);
   res.redirect(303, counts ? '/app/schedule?published=1' : '/app/schedule?setup=1&e=stale');
 });
 
 coachRouter.post('/app/setup/discard', requireAuth, async (req, res) => {
   const db = getDb();
   const coachId = res.locals.coachId as number;
-  await discardDraft(db, coachId, Number(field(req.body, 'id')));
+  await discardDraft(db, coachId, rowId(field(req.body, 'id')) ?? 0);
   res.redirect(303, '/app/schedule?setup=1');
 });
 
@@ -861,7 +1440,7 @@ coachRouter.post('/app/schedule/confirm', requireAuth, async (req, res) => {
     res.redirect(303, '/signin');
     return;
   }
-  const pendingId = Number(field(req.body, 'id'));
+  const pendingId = rowId(field(req.body, 'id')) ?? 0;
   const yes = field(req.body, 'answer') === 'yes';
   if (Number.isInteger(pendingId) && pendingId > 0) {
     await resolvePendingForCoach(db, coach, pendingId, yes);
@@ -876,9 +1455,10 @@ async function loadSessionForCoach(db: DbClient, coachId: number, sessionId: num
   starts_at_utc: string;
   tz: string;
   name: string;
+  status: string;
 } | null> {
-  const result = await db.query<{ id: number; starts_at_utc: string; tz: string; name: string }>(
-    `select s.id, s.starts_at_utc, s.tz, st.name
+  const result = await db.query<{ id: number; starts_at_utc: string; tz: string; name: string; status: string }>(
+    `select s.id, s.starts_at_utc, s.tz, st.name, s.status
      from session s
      join session_type st on st.id = s.session_type_id
      where s.id = $1 and st.coach_id = $2`,
@@ -899,27 +1479,49 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
   }
   
   // Get bookings for this session
-  const bookings = await db.query<{
-    id: number;
-    athlete_name: string;
-    status: string;
-    manage_token: string;
-  }>(
-    `select id, athlete_name, status, manage_token 
-     from booking 
-     where session_id = $1 
-     order by id`,
+  const bookings = await db.query<SessionBooking>(
+    `select b.id, b.athlete_name, b.status, b.manage_token, b.late_cancel, b.waived_at, b.payment_source, b.gross_cents, b.charge_id,
+            b.credit_id, ${CREDIT_WITHDRAWN_SQL}
+     from booking b
+     where b.session_id = $1
+     order by b.id`,
     [sessionId],
   );
+  const refunds = await refundsByPayment(
+    db,
+    bookings.rows.flatMap((b) => (b.charge_id ? [b.charge_id] : [])),
+  );
+  const refundable = new Map<number, Refundability>();
+  for (const b of bookings.rows) {
+    if ((b.charge_id && (b.gross_cents ?? 0) > 0) || b.credit_id !== null) {
+      refundable.set(b.id, await checkRefund(db, coachId, { bookingId: b.id }));
+    }
+  }
   
+  const reach = session.status === 'cancelled' ? await cancelReach(db, sessionId) : null;
+  const confirmId = Number(typeof req.query.refund === 'string' ? req.query.refund : '');
+  const confirm =
+    Number.isInteger(confirmId) && confirmId > 0 && bookings.rows.some((b) => b.id === confirmId)
+      ? await checkRefund(db, coachId, { bookingId: confirmId })
+      : null;
+  const notice = refundNotice(req.query.notice);
+
   res.status(200).send(
     page(
       session.name,
       html`${coachNav('schedule')}
         <h1>${session.name}</h1>
         <p class="muted">${formatLocal(session.starts_at_utc, session.tz)}</p>
+        ${notice ? html`<div class="card"><p>${notice}</p></div>` : raw('')}
+        ${confirm
+          ? renderRefundConfirm(confirm, {
+              action: `/app/sessions/${sessionId}/bookings/${confirmId}/refund`,
+              keepHref: `/app/sessions/${sessionId}`,
+            })
+          : raw('')}
+        ${reach ? renderCancelReach(reach) : raw('')}
         
-        <h2>Roster (${bookings.rows.length} attendees)</h2>
+        <h2>Booked (${bookings.rows.filter((b) => b.status === 'booked').length})</h2>
         ${bookings.rows.length === 0
           ? html`<p class="muted">No bookings yet.</p>`
           : html`<ul>
@@ -928,8 +1530,18 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
                 return html`<li class="card">
                   <strong>${b.athlete_name}</strong> — 
                   ${b.status === 'booked' ? html`<span>Ready to mark</span>` : 
+                    b.status === 'cancelled' && b.late_cancel ? html`<span class="muted">Cancelled late</span>` :
                     b.status === 'cancelled' ? html`<span class="muted">Cancelled</span>` :
+                    b.status === 'refunded' ? html`<span class="muted">Refunded</span>` :
                     html`<span class="${statusClass}">${b.status}</span>`}
+                  ${b.waived_at
+                    ? html`<p class="muted">Credit given back.</p>`
+                    : canWaive(b)
+                      ? html`<form method="post" action="/app/sessions/${sessionId}/bookings/${b.id}/waive">
+                          <p class="muted">The credit was used${b.status === 'noshow' ? ' (no-show)' : ' (cancelled inside your window)'}.</p>
+                          <button type="submit" class="ghost">Give the credit back</button>
+                        </form>`
+                      : raw('')}
                   ${b.status === 'booked' ? html`
                     <form method="post" action="/app/sessions/${sessionId}/bookings/${b.id}/attendance">
                       <label><input type="radio" name="status" value="attended" checked /> Attended</label>
@@ -937,18 +1549,195 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
                       <button type="submit">Mark attendance</button>
                     </form>
                   ` : raw('')}
+                  ${renderBookingPayment(b, refunds, refundable.get(b.id) ?? null, `/app/sessions/${sessionId}?refund=${b.id}#refund`)}
                 </li>`;
               })}
             </ul>`}
         
         <h2>Action</h2>
-        <form method="post" action="/app/sessions/${sessionId}/cancel">
-          <button type="submit" class="action">Cancel session</button>
-        </form>
+        ${session.status === 'scheduled' && new Date(session.starts_at_utc) >= new Date()
+          ? html`<a class="action" href="/app/sessions/${sessionId}/cancel">Cancel session</a>`
+          : raw('')}
         
         <a class="action" href="/app/schedule">Back to schedule</a>`,
     ),
   );
+});
+
+interface SessionBooking {
+  id: number;
+  athlete_name: string;
+  status: string;
+  manage_token: string;
+  late_cancel: boolean;
+  waived_at: string | null;
+  credit_withdrawn: boolean;
+  payment_source: string | null;
+  gross_cents: number | null;
+  charge_id: string | null;
+  credit_id: number | null;
+}
+
+/** A paid booking's payment on screen 3: what was paid, and its refund,
+ * the Refund link, or why it cannot be refunded here. A booking paid with a
+ * session credit points to the payment the credit came from. */
+function renderBookingPayment(
+  b: Pick<SessionBooking, 'payment_source' | 'gross_cents' | 'charge_id'>,
+  refunds: Map<string, RefundRow>,
+  check: Refundability | null,
+  refundHref: string,
+) {
+  if (!b.charge_id || (b.gross_cents ?? 0) <= 0) {
+    if (check && !check.ok && check.block.kind === 'paid_with_credit') {
+      return html`<p class="muted">${describeRefundBlock(check.block)}</p>
+        ${creditPurchaseLink(check.block)}`;
+    }
+    return raw('');
+  }
+  const paid = `Paid ${formatCoachDollars(b.gross_cents ?? 0)} · ${purchaseLabel(b.payment_source)}`;
+  const refund = refunds.get(b.charge_id);
+  if (refund && !canTryAgain(refund)) {
+    return html`<p class="muted">${paid} · ${refundLabel(refund)}</p>`;
+  }
+  if (check && !check.ok) {
+    return html`<p class="muted">${paid}${refund ? ` · ${refundLabel(refund)}` : ''}. ${describeRefundBlock(check.block)}</p>`;
+  }
+  return html`<p class="muted">${paid}${refund ? ` · ${refundLabel(refund)}` : ''}</p>
+    <a class="action ghost" href="${refundHref}">${refund ? 'Try the refund again' : 'Refund'}</a>`;
+}
+
+/** A link to the payment a session credit came from, on Money (screen 7). */
+function creditPurchaseLink(block: Extract<RefundBlock, { kind: 'paid_with_credit' }>) {
+  return block.purchaseBookingId === null
+    ? raw('')
+    : html`<a class="action ghost" href="/app/money?refund=b${block.purchaseBookingId}#refund">See the payment the credit came from</a>`;
+}
+
+const PLAN_KIND: Record<string, string> = {
+  'drop-in': 'drop-in',
+  package: 'package',
+  pack: 'one-time pack',
+  'kept-payment': 'payment',
+};
+
+/** The step before a refund is sent (screens 3 and 7): what it refunds and
+ * what else it changes, or why this payment cannot be refunded here. */
+function renderRefundConfirm(check: Refundability, opts: { action: string; keepHref: string; hidden?: Record<string, string> }) {
+  if (!check.ok) {
+    return html`<div class="card" id="refund">
+      <p><strong>Refund</strong></p>
+      <p>${describeRefundBlock(check.block)}</p>
+      ${check.block.kind === 'paid_with_credit' ? creditPurchaseLink(check.block) : raw('')}
+      <a class="action ghost" href="${opts.keepHref}">Back</a>
+    </div>`;
+  }
+  const plan = check.plan;
+  const amount = plan.amountCents === null ? 'this payment' : formatCoachDollars(plan.amountCents);
+  const who = plan.athleteName ?? 'the parent';
+  const what =
+    plan.sessionName && plan.startsAtUtc && plan.tz
+      ? `${who} · ${PLAN_KIND[plan.kind]} · ${plan.sessionName}, ${formatLocal(plan.startsAtUtc, plan.tz)}`
+      : `${who} · ${PLAN_KIND[plan.kind]}`;
+  const effects: string[] = [];
+  if (plan.releasesBooking) {
+    // A payment for several children ends each of their bookings that stands.
+    const whose = plan.endsFor.length > 0 ? namesList(plan.endsFor) : who;
+    const several = plan.endsFor.length > 1;
+    const bookings = several ? 'bookings are' : 'booking is';
+    effects.push(
+      plan.sessionStarted
+        ? `${whose}'s ${bookings} marked refunded.`
+        : `${whose}'s ${bookings} cancelled and the ${several ? 'spots are' : 'spot is'} free again.`,
+    );
+  } else if (plan.bookingStatus === 'cancelled' && plan.creditsWithdrawn === 0) {
+    effects.push(`${who}'s booking was already cancelled, so nothing else changes.`);
+  }
+  if (plan.creditsWithdrawn > 0) {
+    effects.push(`The ${plan.creditsWithdrawn} unused session ${plan.creditsWithdrawn === 1 ? 'credit' : 'credits'} it bought ${plan.creditsWithdrawn === 1 ? 'is' : 'are'} withdrawn.`);
+  }
+  if (plan.kind === 'kept-payment') effects.push('This payment booked nothing, so nothing else changes.');
+  effects.push(`The whole ${amount} goes back to the card it came from. Coachatron's ${APP_FEE_BPS / 100}% fee is returned with it; Stripe keeps its card processing fee.`);
+  effects.push(
+    plan.reachable
+      ? 'The parent is told by text if they chose texts, and by email if they gave one.'
+      : 'We have no way to reach this parent, so please tell them yourself.',
+  );
+  return html`<div class="card" id="refund">
+    <p><strong>Refund ${amount}?</strong></p>
+    <p class="muted">${what}</p>
+    <ul class="muted">
+      ${effects.map((e) => html`<li>${e}</li>`)}
+    </ul>
+    <form method="post" action="${opts.action}">
+      ${Object.entries(opts.hidden ?? {}).map(([k, v]) => html`<input type="hidden" name="${k}" value="${v}" />`)}
+      <div class="btn-row">
+        <button type="submit" class="action danger">Confirm refund</button>
+        <a class="action ghost" href="${opts.keepHref}">Keep payment</a>
+      </div>
+    </form>
+  </div>`;
+}
+
+const REFUND_NOTICES: Record<string, string> = {
+  'refund-refunded': 'Refunded.',
+  'refund-pending': 'Refund sent. Stripe confirms it shortly.',
+  'refund-failed': 'The refund did not go through. See the payment below.',
+  'refund-unavailable': 'Payments did not answer. Try again in a minute: the refund will not be made twice.',
+  'refund-blocked': 'This payment cannot be refunded again here.',
+};
+
+function refundNotice(value: unknown): string | null {
+  return typeof value === 'string' && Object.hasOwn(REFUND_NOTICES, value) ? REFUND_NOTICES[value] : null;
+}
+
+function refundOutcomeNotice(outcome: RefundRequestOutcome): string {
+  return `refund-${outcome.kind}`;
+}
+
+const UNREACHED_REASON: Record<CancelReach['unreached'][number]['reason'], string> = {
+  'no-texts': 'has not opted in to texts',
+  'not-sent': 'text not sent (daily limit)',
+  failed: 'text failed to send',
+};
+
+/** The cancel's confirmation on screen 3: how many parents were texted, and
+ * who still needs to be told by the coach. */
+function renderCancelReach(reach: CancelReach) {
+  const parents = reach.athletesTotal === 1 ? 'parent' : 'parents';
+  const credits = reach.creditsReturned === 1 ? 'credit' : 'credits';
+  if (reach.athletesTotal === 0) return html`<div class="card cancel-reach"><p><strong>Cancelled.</strong></p></div>`;
+  return html`<div class="card cancel-reach">
+    <p><strong>Cancelled.</strong> Texted ${reach.athletesNotified} of ${reach.athletesTotal} ${parents}. ${reach.creditsReturned} ${credits} returned${dropInCreditNote(reach)}.</p>
+    ${reach.unreached.length > 0
+      ? html`<p class="error">Not reached — please contact them yourself:</p>
+          <ul class="unreached">
+            ${reach.unreached.map(
+              (u) => html`<li>${u.athleteName} · <a href="tel:${u.contactPhone}">${u.contactPhone}</a> · ${UNREACHED_REASON[u.reason]}</li>`,
+            )}
+          </ul>`
+      : raw('')}
+  </div>`;
+}
+
+coachRouter.post('/app/sessions/:id/bookings/:bookingId/refund', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coach = await findCoachById(db, res.locals.coachId as number);
+  const sessionId = Number(req.params.id);
+  const bookingId = Number(req.params.bookingId);
+  const session = coach ? await loadSessionForCoach(db, coach.id, sessionId) : null;
+  const inSession = session
+    ? await db.query<{ id: number }>('select id from booking where id = $1 and session_id = $2', [bookingId, sessionId])
+    : null;
+  if (!coach || !session || !inSession || inSession.rows.length === 0) {
+    res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
+    return;
+  }
+  const outcome = await requestRefund(db, coach, { bookingId });
+  if (outcome.kind === 'blocked') {
+    res.redirect(303, `/app/sessions/${sessionId}?refund=${bookingId}#refund`);
+    return;
+  }
+  res.redirect(303, `/app/sessions/${sessionId}?notice=${refundOutcomeNotice(outcome)}`);
 });
 
 coachRouter.post('/app/sessions/:id/bookings/:bookingId/attendance', requireAuth, async (req, res) => {
@@ -978,22 +1767,35 @@ coachRouter.post('/app/sessions/:id/bookings/:bookingId/attendance', requireAuth
   res.redirect(303, `/app/sessions/${sessionId}`);
 });
 
-coachRouter.post('/app/sessions/:id/cancel', requireAuth, async (req, res) => {
+// A no-show or a late cancel uses the booking's credit (SPEC.md §9.5); the
+// coach can give it back, once.
+coachRouter.post('/app/sessions/:id/bookings/:bookingId/waive', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const sessionId = Number(req.params.id);
+  const bookingId = Number(req.params.bookingId);
+  if (!Number.isInteger(sessionId) || !Number.isInteger(bookingId) || !(await loadSessionForCoach(db, coachId, sessionId))) {
+    res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
+    return;
+  }
+  await waiveBooking(db, coachId, sessionId, bookingId);
+  res.redirect(303, `/app/sessions/${sessionId}`);
+});
+
+coachRouter.get('/app/sessions/:id/cancel', requireAuth, async (req, res) => {
   const db = getDb();
   const coachId = res.locals.coachId as number;
   const sessionId = Number(req.params.id);
 
-  // Verify session belongs to this coach
   const session = await loadSessionForCoach(db, coachId, sessionId);
   if (!session) {
     res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
     return;
   }
-
-  // starts_at_utc is already an absolute instant (timestamptz); compare it
-  // directly against "now" - no per-connection SET timezone dance needed
-  // (and `SET timezone TO $1` is not even valid SQL: SET does not accept a
-  // bind parameter).
+  if (session.status === 'cancelled') {
+    res.redirect(303, '/app/schedule');
+    return;
+  }
   if (new Date(session.starts_at_utc) < new Date()) {
     res.status(409).send(
       page('Cannot cancel', html`<h1>Session already started</h1>
@@ -1003,36 +1805,93 @@ coachRouter.post('/app/sessions/:id/cancel', requireAuth, async (req, res) => {
     return;
   }
 
-  // Idempotent: a double-submitted cancel must not re-send cancellation
-  // texts to everyone a second time.
-  const cancelled = await db.query<{ contact_phone: string; athlete_name: string }>(
-    `update booking set status = 'cancelled'
-     where session_id = $1 and status in ('booked', 'attended', 'noshow')
-     returning contact_phone, athlete_name`,
-    [sessionId],
+  const preview = await previewSessionCancel(db, sessionId);
+  const when = formatLocal(session.starts_at_utc, session.tz);
+  const untextable = preview.total - preview.textable;
+  res.status(200).send(
+    page(
+      'Cancel session',
+      html`${coachNav('schedule')}
+        <h1>Cancel session</h1>
+        <p>Cancel ${when}? ${preview.textable} ${preview.textable === 1 ? 'athlete' : 'athletes'} will get a text.</p>
+        ${untextable > 0
+          ? html`<p class="muted">${untextable} ${untextable === 1 ? 'parent has' : 'parents have'} not opted in to texts. You'll see who to contact after you cancel.</p>`
+          : raw('')}
+        <form method="post" action="/app/sessions/${sessionId}/cancel">
+          <div class="btn-row">
+            <button type="submit" class="action danger">Confirm cancel</button>
+            <a class="action ghost" href="/app/sessions/${sessionId}">Keep session</a>
+          </div>
+        </form>`,
+    ),
   );
+});
 
-  for (const athlete of cancelled.rows) {
-    await sendText(db, {
-      to: athlete.contact_phone,
-      body: `${athlete.athlete_name}'s ${session.name} on ${formatLocal(session.starts_at_utc, session.tz)} has been cancelled.`,
-      coachId,
-      template: 'session-cancelled',
-    });
+coachRouter.post('/app/sessions/:id/cancel', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const sessionId = Number(req.params.id);
+
+  const session = await loadSessionForCoach(db, coachId, sessionId);
+  if (!session) {
+    res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
+    return;
   }
 
-  await db.query("update session set status = 'cancelled' where id = $1", [sessionId]);
+  const result = await cancelScheduledSession(db, coachId, sessionId);
+  if (result.kind === 'not_found') {
+    res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
+    return;
+  }
+  if (result.kind === 'already_started') {
+    res.status(409).send(
+      page('Cannot cancel', html`<h1>Session already started</h1>
+        <p class="error">This session has already passed and cannot be cancelled.</p>
+        <a class="action" href="/app/sessions/${sessionId}">Back to session detail</a>`),
+    );
+    return;
+  }
 
-  res.redirect(303, '/app/schedule');
+  // The session screen shows who was texted and who was not reached.
+  res.redirect(303, `/app/sessions/${sessionId}`);
 });
 
 // ---- Screen 5: pricing (packages and plans) ----
+
+/** The booking policy on the Pricing screen (SPEC.md §9.5): what each
+ * rule does now, and a form to change the two numbers. */
+function renderPolicySection(policy: BookingPolicy, error?: string) {
+  const hours = policy.cancelWindowHours;
+  const window = hours === 0 ? 'up to the start' : `more than ${hours} ${hours === 1 ? 'hour' : 'hours'} before a session`;
+  const children = policy.childrenPerBooking;
+  return html`<h2 id="policy">Booking policy</h2>
+    <div class="card policy">
+      <p><strong>No-show:</strong> the booking's credit is used. You can give it back on the session's screen.</p>
+      <p><strong>Cancelling:</strong> a parent who cancels ${window} gets their credit back (a paid drop-in becomes a session credit).${hours === 0
+        ? ''
+        : ` Inside ${hours} ${hours === 1 ? 'hour' : 'hours'} it counts as a no-show, and you can give it back.`}</p>
+      <p><strong>Children:</strong> a parent can book up to ${children} ${children === 1 ? 'child' : 'children'} at once. Each takes a spot and uses a credit or a drop-in.</p>
+      <p class="muted">Card refunds are separate: they go through Coachatron support.</p>
+    </div>
+    <details${error ? raw(' open') : raw('')}>
+      <summary>Change the policy</summary>
+      <form method="post" action="/app/pricing/policy">
+        <label for="cancel_window_hours">Cancellation window (hours before a session)</label>
+        <input id="cancel_window_hours" name="cancel_window_hours" type="number" min="0" max="${MAX_CANCEL_WINDOW_HOURS}" required value="${hours}" />
+        <label for="children_per_booking">Children per booking</label>
+        <input id="children_per_booking" name="children_per_booking" type="number" min="1" max="${MAX_CHILDREN_PER_BOOKING}" required value="${children}" />
+        <button type="submit">Save policy</button>
+      </form>
+      ${error ? html`<p class="error">${error}</p>` : raw('')}
+    </details>`;
+}
 
 coachRouter.get('/app/pricing', requireAuth, async (_req, res) => {
   const db = getDb();
   const coachId = res.locals.coachId as number;
   const packagesList = await getPackagesForCoach(db, coachId);
   const plansList = await getPlansForCoach(db, coachId);
+  const policy = await getBookingPolicy(db, coachId);
 
   res.status(200).send(
     page(
@@ -1042,71 +1901,94 @@ coachRouter.get('/app/pricing', requireAuth, async (_req, res) => {
         <h2>Session packages</h2>
         ${packagesList.length === 0
           ? html`<p class="muted">No packages yet.</p>`
-          : packagesList.map(
-              (p) =>
-                html`<div class="card">
-                  <strong>${p.name}</strong><br />
-                  ${p.credits} sessions — $${(p.price_cents / 100).toFixed(2)}
-                  ${p.expires_days ? html`<br /><span class="muted">Expires in ${p.expires_days} days</span>` : raw('')}
-                </div>`,
-            )}
-        <form method="post" action="/app/pricing/package">
-          <label for="pkg_name">Package name</label>
-          <input id="pkg_name" name="name" required />
-          <label for="pkg_credits">Number of sessions</label>
-          <input id="pkg_credits" name="credits" type="number" min="1" required />
-          <label for="pkg_price_dollars">Price (dollars)</label>
-          <input id="pkg_price_dollars" name="price_dollars" type="number" min="0" step="0.01" required />
-          <label for="pkg_expires_days">Expires after days (optional)</label>
-          <input id="pkg_expires_days" name="expires_days" type="number" min="1" />
-          <button type="submit">Create package</button>
-        </form>
+          : packagesList.map((p) => {
+              const expiry = p.expires_days ? ` · Expires after ${p.expires_days} days` : '';
+              return html`<div class="card">${p.name} · ${formatCoachDollars(p.price_cents)}${expiry}</div>`;
+            })}
+        <details>
+          <summary>+ New package</summary>
+          <form method="post" action="/app/pricing/package">
+            <label for="pkg_name">Package name</label>
+            <input id="pkg_name" name="name" required placeholder="e.g. 10-session pack" />
+            <label for="pkg_credits">Number of sessions</label>
+            <input id="pkg_credits" name="credits" type="number" min="${LIMITS.credits.min}" max="${LIMITS.credits.max}" required placeholder="e.g. 10" />
+            <label for="pkg_price_dollars">Price (dollars)</label>
+            <input id="pkg_price_dollars" name="price_dollars" type="number" min="0.01" max="${LIMITS.priceCents.max / 100}" step="0.01" required placeholder="e.g. 150" />
+            <label for="pkg_expires_days">Expires after days (optional)</label>
+            <input id="pkg_expires_days" name="expires_days" type="number" min="${LIMITS.expiresDays.min}" max="${LIMITS.expiresDays.max}" placeholder="e.g. 60" />
+            <button type="submit">Create package</button>
+          </form>
+        </details>
 
-        <h2>Monthly plans</h2>
+        <h2>One-time packs</h2>
+        <p class="muted">Charged once. The sessions do not expire.</p>
         ${plansList.length === 0
-          ? html`<p class="muted">No monthly plans yet.</p>`
+          ? html`<p class="muted">No one-time packs yet.</p>`
           : plansList.map(
               (p) =>
-                html`<div class="card">
-                  <strong>${p.name}</strong><br />
-                  $${(p.price_cents / 100).toFixed(2)} / month — ${p.credits_per_month} sessions
-                </div>`,
+                html`<div class="card">${p.name} · ${formatCoachDollars(p.price_cents)} · ${p.credits_per_month} ${p.credits_per_month === 1 ? 'session' : 'sessions'}, one-time</div>`,
             )}
-        <form method="post" action="/app/pricing/plan">
-          <label for="plan_name">Plan name</label>
-          <input id="plan_name" name="name" required />
-          <label for="plan_price_dollars">Price (dollars)</label>
-          <input id="plan_price_dollars" name="price_dollars" type="number" min="0" step="0.01" required />
-          <label for="plan_credits">Sessions per month</label>
-          <input id="plan_credits" name="credits_per_month" type="number" min="1" required />
-          <button type="submit">Create plan</button>
-        </form>`,
+        <details>
+          <summary>+ New one-time pack</summary>
+          <form method="post" action="/app/pricing/plan">
+            <label for="plan_name">Pack name</label>
+            <input id="plan_name" name="name" required placeholder="e.g. 4-session pack" />
+            <label for="plan_price_dollars">Price (dollars)</label>
+            <input id="plan_price_dollars" name="price_dollars" type="number" min="0.01" max="${LIMITS.priceCents.max / 100}" step="0.01" required placeholder="e.g. 120" />
+            <label for="plan_credits">Sessions in the pack</label>
+            <input id="plan_credits" name="credits_per_month" type="number" min="${LIMITS.credits.min}" max="${LIMITS.credits.max}" required placeholder="e.g. 4" />
+            <button type="submit">Create pack</button>
+          </form>
+        </details>
+        ${renderPolicySection(policy)}`,
     ),
   );
+});
+
+coachRouter.post('/app/pricing/policy', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const policy = parseBookingPolicy(field(req.body, 'cancel_window_hours'), field(req.body, 'children_per_booking'));
+  if (!policy) {
+    res.status(422).send(
+      page(
+        'Pricing',
+        html`${coachNav('pricing')}
+          <h1>Pricing & credits</h1>
+          ${renderPolicySection(
+            await getBookingPolicy(db, coachId),
+            `Use a window of 0 to ${MAX_CANCEL_WINDOW_HOURS} hours and 1 to ${MAX_CHILDREN_PER_BOOKING} children.`,
+          )}
+          <a class="action ghost" href="/app/pricing">Back</a>`,
+      ),
+    );
+    return;
+  }
+  await setBookingPolicy(db, coachId, policy);
+  res.redirect(303, '/app/pricing#policy');
 });
 
 coachRouter.post('/app/pricing/package', requireAuth, async (req, res) => {
   const db = getDb();
   const coachId = res.locals.coachId as number;
   const name = field(req.body, 'name');
-  const credits = Number(field(req.body, 'credits'));
-  const priceDollars = Number(field(req.body, 'price_dollars'));
+  const credits = wholeNumber(field(req.body, 'credits'), LIMITS.credits);
+  const priceCents = dollarsToCents(field(req.body, 'price_dollars'), LIMITS.priceCents);
   const expiresDaysRaw = field(req.body, 'expires_days');
-  const expiresDays = expiresDaysRaw ? Number(expiresDaysRaw) : undefined;
+  const expiresDays = expiresDaysRaw ? wholeNumber(expiresDaysRaw, LIMITS.expiresDays) : undefined;
 
-  if (!name || !Number.isInteger(credits) || credits <= 0 || priceDollars <= 0 || (expiresDays !== undefined && !Number.isInteger(expiresDays))) {
+  if (!name || credits === null || priceCents === null || expiresDays === null) {
     res.status(422).send(
       page(
         'Pricing',
         html`<h1>Pricing & credits</h1>
-          <p class="error">Fill in package details correctly.</p>
+          <p class="error">Fill in the package: ${LIMITS.credits.min}–${LIMITS.credits.max} sessions, a price up to ${formatCoachDollars(LIMITS.priceCents.max)}, and, if it expires, ${LIMITS.expiresDays.min}–${LIMITS.expiresDays.max} days.</p>
           <a class="action" href="/app/pricing">Back</a>`,
       ),
     );
     return;
   }
 
-  const priceCents = Math.round(priceDollars * 100);
   await createPackage(db, coachId, name, credits, priceCents, expiresDays);
   res.redirect(303, '/app/pricing');
 });
@@ -1115,22 +1997,21 @@ coachRouter.post('/app/pricing/plan', requireAuth, async (req, res) => {
   const db = getDb();
   const coachId = res.locals.coachId as number;
   const name = field(req.body, 'name');
-  const priceDollars = Number(field(req.body, 'price_dollars'));
-  const creditsPerMonth = Number(field(req.body, 'credits_per_month'));
+  const priceCents = dollarsToCents(field(req.body, 'price_dollars'), LIMITS.priceCents);
+  const creditsPerMonth = wholeNumber(field(req.body, 'credits_per_month'), LIMITS.credits);
 
-  if (!name || !Number.isInteger(creditsPerMonth) || creditsPerMonth <= 0 || priceDollars <= 0) {
+  if (!name || creditsPerMonth === null || priceCents === null) {
     res.status(422).send(
       page(
         'Pricing',
         html`<h1>Pricing & credits</h1>
-          <p class="error">Fill in plan details correctly.</p>
+          <p class="error">Fill in the pack: a price up to ${formatCoachDollars(LIMITS.priceCents.max)} and ${LIMITS.credits.min}–${LIMITS.credits.max} sessions.</p>
           <a class="action" href="/app/pricing">Back</a>`,
       ),
     );
     return;
   }
 
-  const priceCents = Math.round(priceDollars * 100);
   await createPlan(db, coachId, name, priceCents, creditsPerMonth);
   res.redirect(303, '/app/pricing');
 });
@@ -1142,8 +2023,10 @@ coachRouter.get('/app/roster', requireAuth, async (_req, res) => {
   const coachId = res.locals.coachId as number;
   const members = await listRosterMembers(db, coachId);
   const consented = new Set<string>();
+  const optInLinks = new Map<number, string>();
   for (const m of members) {
     if (await hasActiveConsent(db, m.phone)) consented.add(m.phone);
+    else optInLinks.set(m.id, await rosterOptInLink(db, m.id));
   }
 
   res.status(200).send(
@@ -1158,9 +2041,12 @@ coachRouter.get('/app/roster', requireAuth, async (_req, res) => {
                 (m) =>
                   html`<li class="card">
                     <div class="row"><span>${m.name}</span><span class="muted">${m.phone}</span></div>
-                    <p class="muted">${consented.has(m.phone) ? 'Texts on' : 'Not opted in yet: no offers until they do'}</p>
+                    ${consented.has(m.phone)
+                      ? html`<p class="muted">Texts on</p>`
+                      : html`<p class="muted">Not opted in yet: no offers until they do. Send them their link to opt in:</p>
+                          <p class="optin-link"><a href="${optInLinks.get(m.id) ?? ''}">${optInLinks.get(m.id) ?? ''}</a></p>`}
                     <form class="roster-priority-form" method="post" action="/app/roster/${m.id}/priority">
-                      <input type="number" name="priority" value="${m.priority}" min="0" required aria-label="Priority for ${m.name}" />
+                      <input type="number" name="priority" value="${m.priority}" min="${LIMITS.rosterPriority.min}" max="${LIMITS.rosterPriority.max}" required aria-label="Priority for ${m.name}" />
                       <button type="submit">Update priority</button>
                     </form>
                   </li>`,
@@ -1174,7 +2060,7 @@ coachRouter.get('/app/roster', requireAuth, async (_req, res) => {
           <input id="phone" name="phone" type="tel" required />
           <button type="submit">Add to roster</button>
         </form>
-        <p class="muted">We don't text the people you add. Ask them to opt in at ${APP_BASE_URL}/sms with this number. Offers go only to people who have.</p>`,
+        <p class="muted">We don't text the people you add. Send each one their opt-in link. Offers go only to people who have opted in.</p>`,
     ),
   );
 });
@@ -1205,10 +2091,12 @@ coachRouter.post('/app/roster/:id/priority', requireAuth, async (req, res) => {
   const db = getDb();
   const coachId = res.locals.coachId as number;
   const id = Number(req.params.id);
-  const newPriority = Number(field(req.body, 'priority'));
+  const newPriority = wholeNumber(field(req.body, 'priority'), LIMITS.rosterPriority);
 
-  if (!Number.isInteger(newPriority) || newPriority < 0) {
-    res.status(422).send(page('Error', html`<h1>Invalid priority</h1>`));
+  if (newPriority === null) {
+    res.status(422).send(
+      page('Error', html`<h1>Invalid priority</h1><p class="error">Use a whole number from ${LIMITS.rosterPriority.min} to ${LIMITS.rosterPriority.max}.</p>`),
+    );
     return;
   }
 
@@ -1229,9 +2117,12 @@ type PaymentsState =
   | { kind: 'start' }
   | { kind: 'unavailable' };
 
-async function loadPaymentsState(coach: CoachRow): Promise<PaymentsState> {
+/** Asks the relay, and saves the answer: this is where a coach lands back
+ * from onboarding (?seller=connected|pending|failed). */
+async function loadPaymentsState(db: DbClient, coach: CoachRow): Promise<PaymentsState> {
   try {
     const status = await getSellerStatus(getConnectRecipientKey(coach));
+    await recordSellerStatus(db, coach, status);
     if (status?.chargesEnabled) return { kind: 'connected', payoutsEnabled: status.payoutsEnabled };
     if (status?.agreementVersion === SELLER_AGREEMENT_VERSION) return { kind: 'finish' };
     return { kind: 'start' };
@@ -1271,7 +2162,7 @@ function renderPaymentsCard(state: PaymentsState, notice: string | null, error: 
               <ul class="muted">
                 <li>You are the merchant. Payments settle to your own account; Coachatron never holds them.</li>
                 <li>Coachatron keeps ${feePercent} of each payment, on top of card processing.</li>
-                <li>Ask Coachatron to refund an athlete; Coachatron's fee is returned with the refund. A card dispute is charged to your payment account.</li>
+                <li>You refund a payment here or on its session; Coachatron's fee is returned with the refund. A card dispute is charged to your payment account.</li>
               </ul>
               <form method="post" action="/app/money/payments">
                 <label><input type="checkbox" name="agree" value="1" /> I accept the Coachatron marketplace terms (${SELLER_AGREEMENT_VERSION}).</label>
@@ -1285,10 +2176,115 @@ function renderPaymentsCard(state: PaymentsState, notice: string | null, error: 
     </div>`;
 }
 
-async function renderMoney(res: Response, coach: CoachRow, opts: { status?: number; notice?: string | null; error?: string | null } = {}) {
+/** Payments that did not simply become a booking, and refunds that did not
+ * go through, for the coach to sort out with the parent. Each kept payment
+ * can be refunded with one tap (and a confirmation). */
+function renderPaymentAttention(items: AttentionItem[], refunds: Map<string, RefundRow>, needing: RefundItem[]) {
+  if (items.length === 0 && needing.length === 0) return raw('');
+  return html`<h2>Payments to resolve</h2>
+    <p class="muted">These payments reached you but did not book as they stood, or a refund did not go through. Contact the parent to sort each one out, or refund it.</p>
+    ${items.map((item) => {
+      const refund = item.payment_ref ? refunds.get(item.payment_ref) : undefined;
+      const amount = item.amount_cents === null ? 'amount unknown' : formatCoachDollars(item.amount_cents);
+      return html`<div class="card payment-attention">
+        <p><strong>${item.athlete_name ?? 'Unknown athlete'}</strong>${item.contact_phone ? html` · <a href="tel:${item.contact_phone}">${item.contact_phone}</a>` : raw('')}
+          · ${amount}</p>
+        ${item.session_name && item.starts_at_utc && item.tz
+          ? html`<p class="muted">${item.session_name} — ${formatLocal(item.starts_at_utc, item.tz)}</p>`
+          : raw('')}
+        <p>${describeAttention(item)}</p>
+        ${refund ? html`<p class="muted">${describeRefund(refund)}</p>` : raw('')}
+        ${item.payment_ref && (!refund || canTryAgain(refund))
+          ? html`<a class="action ghost" href="/app/money?refund=a${item.id}#refund">${refund ? 'Try the refund again' : `Refund ${amount}`}</a>`
+          : raw('')}
+      </div>`;
+    })}
+    ${needing.map(
+      (r) => html`<div class="card refund-attention">
+        <p><strong>${r.athlete_name ?? 'Unknown athlete'}</strong>${r.contact_phone ? html` · <a href="tel:${r.contact_phone}">${r.contact_phone}</a>` : raw('')}
+          · ${r.amount_cents === null ? 'amount unknown' : formatCoachDollars(r.amount_cents)}</p>
+        ${r.session_name && r.starts_at_utc && r.tz ? html`<p class="muted">${r.session_name} — ${formatLocal(r.starts_at_utc, r.tz)}</p>` : raw('')}
+        <p>${describeRefund(r)}</p>
+        ${canTryAgain(r) && r.booking_id !== null
+          ? html`<a class="action ghost" href="/app/money?refund=b${r.booking_id}#refund">Try the refund again</a>`
+          : raw('')}
+      </div>`,
+    )}`;
+}
+
+const DISPUTE_STATE: Record<string, string> = { open: 'Open', won: 'Decided for you', lost: 'Decided for the cardholder' };
+
+/** Card disputes on the coach's payments, as Stripe reports them. */
+function renderDisputes(items: DisputeItem[]) {
+  if (items.length === 0) return raw('');
+  return html`<h2>Card disputes</h2>
+    <p class="muted">Stripe handles card disputes between a parent's bank and your payment account. Coachatron holds no funds and does not decide them.</p>
+    ${items.map(
+      (d) => html`<div class="card payment-dispute">
+        <p><strong>${d.athlete_name ?? 'Unknown athlete'}</strong>${d.contact_phone ? html` · <a href="tel:${d.contact_phone}">${d.contact_phone}</a>` : raw('')}
+          · ${d.amount_cents === null ? 'amount unknown' : formatCoachDollars(d.amount_cents)} · ${DISPUTE_STATE[d.state] ?? d.state}</p>
+        ${d.session_name && d.starts_at_utc && d.tz ? html`<p class="muted">${d.session_name} — ${formatLocal(d.starts_at_utc, d.tz)}</p>` : raw('')}
+        <p>${describeDispute(d)}</p>
+      </div>`,
+    )}`;
+}
+
+/** Refunds on their way or done, newest first. */
+function renderRefunds(items: RefundItem[]) {
+  if (items.length === 0) return raw('');
+  return html`<h2>Refunds</h2>
+    ${items.map(
+      (r) => html`<div class="card refund-item">
+        <p><strong>${r.athlete_name ?? 'Unknown athlete'}</strong> · ${r.amount_cents === null ? 'amount unknown' : formatCoachDollars(r.amount_cents)} · ${refundLabel(r)}</p>
+        ${r.session_name && r.starts_at_utc && r.tz ? html`<p class="muted">${r.session_name} — ${formatLocal(r.starts_at_utc, r.tz)}</p>` : raw('')}
+        <p class="muted">${describeRefund(r)}</p>
+      </div>`,
+    )}`;
+}
+
+/** The latest card payments that bought a booking, each with its Refund. */
+function renderRecentPayments(items: PaymentItem[], refunds: Map<string, RefundRow>, checks: Map<number, Refundability>) {
+  if (items.length === 0) return raw('');
+  return html`<h2>Recent payments</h2>
+    ${items.map(
+      (p) => html`<div class="card recent-payment">
+        <p><strong>${p.athlete_name}</strong> · ${formatCoachDollars(p.gross_cents)}</p>
+        <p class="muted">${p.session_name} — ${formatLocal(p.starts_at_utc, p.tz)}</p>
+        ${renderBookingPayment(p, refunds, checks.get(p.booking_id) ?? null, `/app/money?refund=b${p.booking_id}#refund`)}
+      </div>`,
+    )}`;
+}
+
+/** `b12` is booking 12's payment, `a5` the kept payment 5. */
+function parseRefundTarget(value: unknown): RefundTarget | null {
+  const match = typeof value === 'string' ? /^([ab])(\d{1,9})$/.exec(value) : null;
+  if (!match) return null;
+  const id = Number(match[2]);
+  return match[1] === 'b' ? { bookingId: id } : { attentionId: id };
+}
+
+async function renderMoney(
+  res: Response,
+  coach: CoachRow,
+  opts: { status?: number; notice?: string | null; error?: string | null; refund?: RefundTarget | null } = {},
+) {
   const db = getDb();
   const summary = await summarizeMoney(db, coach.id, new Date());
-  const payments = await loadPaymentsState(coach);
+  const payments = await loadPaymentsState(db, coach);
+  const attention = await listPaymentAttention(db, coach.id);
+  const refundList = await listRefunds(db, coach.id);
+  const disputes = await listDisputes(db, coach.id);
+  const recent = await listRecentPayments(db, coach.id);
+  const refunds = await refundsByPayment(db, [
+    ...attention.flatMap((a) => (a.payment_ref ? [a.payment_ref] : [])),
+    ...recent.map((p) => p.charge_id),
+  ]);
+  const checks = new Map<number, Refundability>();
+  for (const p of recent) checks.set(p.booking_id, await checkRefund(db, coach.id, { bookingId: p.booking_id }));
+  const attentionRefs = new Set(attention.flatMap((a) => (a.payment_ref ? [a.payment_ref] : [])));
+  const needing = refundList.filter((r) => needsAttention(r) && !attentionRefs.has(r.payment_ref));
+  const confirm = opts.refund ? await checkRefund(db, coach.id, opts.refund) : null;
+  const confirmTarget = opts.refund ? ('bookingId' in opts.refund ? `b${opts.refund.bookingId}` : `a${opts.refund.attentionId}`) : '';
 
   // Format dollars for display
   const formatDollars = (cents: number) => `$${(cents / 100).toFixed(2)}`;
@@ -1298,11 +2294,18 @@ async function renderMoney(res: Response, coach: CoachRow, opts: { status?: numb
       'Money',
       html`${coachNav('money')}
         <h1>Money</h1>
+        ${confirm ? renderRefundConfirm(confirm, { action: '/app/money/refund', keepHref: '/app/money', hidden: { target: confirmTarget } }) : raw('')}
         ${renderPaymentsCard(payments, opts.notice ?? null, opts.error ?? null)}
+        ${renderPaymentAttention(attention, refunds, needing)}
+        ${renderDisputes(disputes)}
+        ${renderPageLinkCard(coach, { main: 'none' })}
         <h2>This week</h2>
         <p class="money-figure">${formatDollars(summary.collectedThisWeekCents)}</p>
         <p class="muted">Collected (gross): ${formatDollars(summary.collectedThisWeekCents)}</p>
         <p class="muted"><strong>${summary.bookedThisWeekCount} sessions booked</strong> — Value: ${formatDollars(summary.bookedThisWeekCents)}</p>
+        ${summary.refundedThisWeekCount > 0
+          ? html`<p class="muted">Refunded: ${formatDollars(summary.refundedThisWeekCents)} (${summary.refundedThisWeekCount} ${summary.refundedThisWeekCount === 1 ? 'payment' : 'payments'}). Refunded bookings are not counted above.</p>`
+          : raw('')}
         <h2>Credits</h2>
         <div class="card">
           <p><strong>${summary.outstandingCreditCount} credits outstanding</strong></p>
@@ -1312,7 +2315,12 @@ async function renderMoney(res: Response, coach: CoachRow, opts: { status?: numb
           <p><strong>${summary.nextWeekCount} sessions projected</strong></p>
           <p class="muted">Value: ${formatDollars(summary.nextWeekCents)}</p>
         </div>
-        <a class="action" href="/app/schedule">Back to schedule</a>`,
+        ${renderRecentPayments(recent, refunds, checks)}
+        ${renderRefunds(refundList.filter((r) => !needsAttention(r)))}
+        <a class="action" href="/app/schedule">Back to schedule</a>
+        <form method="post" action="/signout">
+          <button type="submit" class="ghost">Sign out</button>
+        </form>`,
     ),
   );
 }
@@ -1324,7 +2332,31 @@ coachRouter.get('/app/money', requireAuth, async (req, res) => {
     return;
   }
   const returned = typeof req.query.seller === 'string' ? req.query.seller : '';
-  await renderMoney(res, coach, { notice: Object.hasOwn(RETURN_NOTICES, returned) ? RETURN_NOTICES[returned] : null });
+  await renderMoney(res, coach, {
+    notice: Object.hasOwn(RETURN_NOTICES, returned) ? RETURN_NOTICES[returned] : refundNotice(req.query.notice),
+    refund: parseRefundTarget(req.query.refund),
+  });
+});
+
+/** The confirmed refund of a booking's payment or of a kept payment. */
+coachRouter.post('/app/money/refund', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coach = await findCoachById(db, res.locals.coachId as number);
+  if (!coach) {
+    res.redirect(303, '/signin');
+    return;
+  }
+  const target = parseRefundTarget(field(req.body, 'target'));
+  if (!target) {
+    res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
+    return;
+  }
+  const outcome = await requestRefund(db, coach, target);
+  if (outcome.kind === 'blocked') {
+    res.redirect(303, `/app/money?refund=${field(req.body, 'target')}#refund`);
+    return;
+  }
+  res.redirect(303, `/app/money?notice=${refundOutcomeNotice(outcome)}`);
 });
 
 coachRouter.post('/app/money/payments', requireAuth, async (req, res) => {
@@ -1333,9 +2365,11 @@ coachRouter.post('/app/money/payments', requireAuth, async (req, res) => {
     res.redirect(303, '/signin');
     return;
   }
+  const db = getDb();
   const sellerKey = getConnectRecipientKey(coach);
   try {
     const status = await getSellerStatus(sellerKey);
+    await recordSellerStatus(db, coach, status);
     if (status?.agreementVersion !== SELLER_AGREEMENT_VERSION) {
       if (field(req.body, 'agree') !== '1') {
         await renderMoney(res, coach, { status: 422, error: 'Check the box to accept the marketplace terms.' });
@@ -1343,9 +2377,17 @@ coachRouter.post('/app/money/payments', requireAuth, async (req, res) => {
       }
       await acceptSellerAgreement(sellerKey, SELLER_AGREEMENT_VERSION);
     }
+    await markPaymentsStarted(db, coach.id);
+    // What the app already knows, so the provider's form asks for less.
     const url = await startSellerOnboarding(sellerKey, {
-      returnUrl: `${process.env.APP_BASE_URL ?? APP_BASE_URL}/app/money`,
+      returnUrl: `${appBaseUrl()}/app/money`,
       email: coach.email,
+      profile: {
+        phone: coach.phone,
+        entityType: 'individual',
+        businessUrl: coachPageUrl(coach.handle),
+        productDescription: SELLER_PRODUCT_DESCRIPTION,
+      },
     });
     res.redirect(303, url);
   } catch {

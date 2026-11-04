@@ -45,7 +45,7 @@ test('full session + a waiting athlete sends exactly one SMS to the coach, no of
   });
 });
 
-test('coach YES creates exactly one offer for the highest-priority roster member and texts only them', async () => {
+test('coach 2 creates exactly one offer for the highest-priority roster member and texts only them', async () => {
   await withRelay(async (relay) => {
     const db = await freshDb();
     const seed = await seedCoachWithSession(db, { capacity: 1 });
@@ -57,7 +57,7 @@ test('coach YES creates exactly one offer for the highest-priority roster member
     await checkOverflow(db, seed.sessionId);
 
     await withServer(async (base) => {
-      const res = await smsTo(base, seed.coach.phone, 'Y');
+      const res = await smsTo(base, seed.coach.phone, '2');
       assert.equal(res.status, 200);
     });
 
@@ -84,7 +84,7 @@ test('accepting stops the cascade; a different member replying YES afterward has
     await seedBookedSession(db, seed.sessionId, 'Athlete One', '+15550000001');
     await seedWaitlistEntry(db, seed.sessionId, 'Athlete Two', '+15550000002');
     await checkOverflow(db, seed.sessionId);
-    await startCascade(db, seed.sessionId);
+    await startCascade(db, seed.sessionId, 'backup');
 
     const offerRows = await db.query<{ id: number }>('select id from offer where session_id = $1', [seed.sessionId]);
     const offerId = offerRows.rows[0].id;
@@ -101,7 +101,8 @@ test('accepting stops the cascade; a different member replying YES afterward has
     // A second member was never offered, so their YES has no offer to act
     // on; explicitly re-running startCascade (simulating any duplicate
     // trigger) must also be a no-op once someone has accepted.
-    await startCascade(db, seed.sessionId);
+    await startCascade(db, seed.sessionId, 'backup');
+    await startCascade(db, seed.sessionId, 'second_group');
     assert.equal(await countOffers(db, seed.sessionId), 1, 'no second offer after an acceptance');
 
     const stillAccepted = await acceptOffer(db, offerId);
@@ -122,7 +123,7 @@ test('an expired offer advances the cascade to the next roster member', async ()
     await seedBookedSession(db, seed.sessionId, 'Athlete One', '+15550000001');
     await seedWaitlistEntry(db, seed.sessionId, 'Athlete Two', '+15550000002');
     await checkOverflow(db, seed.sessionId);
-    await startCascade(db, seed.sessionId);
+    await startCascade(db, seed.sessionId, 'backup');
 
     assert.equal(relay.sms.filter((m) => m.to === first.phone).length, 1);
 
@@ -152,7 +153,7 @@ test('roster member N declines and advances the cascade immediately, without wai
     await seedBookedSession(db, seed.sessionId, 'Athlete One', '+15550000001');
     await seedWaitlistEntry(db, seed.sessionId, 'Athlete Two', '+15550000002');
     await checkOverflow(db, seed.sessionId);
-    await startCascade(db, seed.sessionId);
+    await startCascade(db, seed.sessionId, 'backup');
 
     await withServer(async (base) => {
       const res = await smsTo(base, first.phone, 'N');
@@ -186,7 +187,7 @@ test('STOP opts a roster member out; the cascade skips them without ever offerin
     await seedBookedSession(db, seed.sessionId, 'Athlete One', '+15550000001');
     await seedWaitlistEntry(db, seed.sessionId, 'Athlete Two', '+15550000002');
     await checkOverflow(db, seed.sessionId);
-    await startCascade(db, seed.sessionId);
+    await startCascade(db, seed.sessionId, 'backup');
 
     const offers = await db.query<{ roster_member_id: number }>('select roster_member_id from offer where session_id = $1', [
       seed.sessionId,
