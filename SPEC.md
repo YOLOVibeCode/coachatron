@@ -150,8 +150,11 @@ the solo coach. They return only when a paying customer is blocked without them.
 4. Picks recurring times on a weekly grid (tap the slots). Sessions are generated
    8 weeks ahead, rolling. *(Implemented: each weekly time is a `weekly_slot`,
    topped up by the one-minute tick job.)*
-5. Connects payments (Square OAuth, one redirect). **Skippable** — the coach can
+5. Connects payments on the Money screen: accepts the marketplace terms (v1),
+   then a relay link opens Stripe's hosted onboarding (identity and bank
+   details) and brings them back. **Skippable** — the coach can
    share a booking link immediately and connect before the first payout.
+   *(Updated 2026-11-03: Stripe Connect through the relay, not Square OAuth.)*
 6. Gets their link: `coachatron.com/c/<handle>`. Done.
 
 Steps 5 and 6 are the only places a coach can fail. Everything before is
@@ -173,7 +176,8 @@ one-field-per-screen.
    A plan is charged once, so parents and coaches see it as a one-time pack.
    Credits are used once the phone is proven: a code texted to it at
    checkout, or arriving from a manage link that was proven the same way.)*
-4. Pays. Square hosted checkout — we never touch card data.
+4. Pays. A signed relay buy link opens Stripe's hosted checkout — we never touch
+   card data.
 5. Gets an SMS + email confirmation with a manage link (reschedule/cancel within
    policy). *(Implemented 2026-11-03: a text when the parent chose texts, an
    email when they gave an address, and the manage link on the page they
@@ -201,12 +205,14 @@ money or commitment moves.** The system proposes; the coach disposes.
 
 ### 7.4 Coach gets paid
 
-Money settles directly into the coach's Square account on Square's normal
-schedule. Coachatron's fee is deducted at the time of the charge as an
-application fee. There is no payout screen, no balance, no withdrawal. A coach
-who wants to know what they earned looks at their own Square dashboard, or at our
-read-only **Money** screen, which shows: booked this week, collected this week,
-outstanding package credits (a liability), and next week's projected.
+Money settles directly into the coach's own Stripe account, and Stripe pays it
+out to their bank on Stripe's schedule. Coachatron's fee is deducted at the time
+of the charge as an application fee. There is no payout screen, no balance, no
+withdrawal. The coach has no Stripe dashboard (§9.1), so a coach who wants to
+know what they earned looks at our read-only **Money** screen, which shows:
+booked this week, collected this week, outstanding package credits (a
+liability), and next week's projected. Bank and identity details change in the
+same Stripe-hosted form, opened from the Money screen.
 *(Updated 2026-11-03: when the coach cancels a session, a parent who paid a
 drop-in for it gets one session credit with the coach, with no expiry, as
 package and pack bookings get their credit back. A returned credit goes back
@@ -236,14 +242,14 @@ Ship nothing else until a real coach has taken real money through this.
 **Athlete-facing (4)**
 8. Coach's public page — open sessions list
 9. Booking form — athlete details
-10. Checkout — pick drop-in / package / plan, then Square hosted payment
+10. Checkout — pick drop-in / package / plan, then Stripe hosted payment
 11. Manage booking — magic-link page to cancel or reschedule
 
 **Assistant-facing (1)**
 12. Offer response page — deep link from SMS; accept or decline (SMS reply also
     works; this page is the fallback)
 
-**Included non-screen work:** Square OAuth connect, SMS send/receive via the
+**Included non-screen work:** Stripe Connect onboarding, SMS send/receive via the
 Noctusoft relay, overflow cascade engine, package-credit ledger, recurring
 session generation, cancellation policy enforcement.
 
@@ -258,7 +264,9 @@ session generation, cancellation policy enforcement.
 
 ### 8.3 Slice 3 — only if pulled
 
-- Stripe as an alternative to Square
+- ~~Stripe as an alternative to Square~~ Stripe is the processor today (§9.1).
+  A second processor would be a relay change behind its neutral store
+  contract, not Coachatron code.
 - Multi-coach accounts (a business with employees, not a roster)
 - Niche landing pages (§12)
 
@@ -268,23 +276,39 @@ session generation, cancellation policy enforcement.
 
 ### 9.1 Architecture
 
-Uses the **Noctusoft Connect Hub** pattern already specified for the relay:
-Square Connect with **application fees** (Path A). The coach is the merchant of
-record. Funds never enter a Noctusoft-controlled balance. This is a hard
-architectural constraint, not a preference — holding funds would make us a money
-transmitter.
+Uses the **Noctusoft Connect Hub** on the relay's neutral store contract
+("v1"): **Stripe Connect** (Accounts v2) with **application fees**. Each coach
+is a connected account and the merchant of record; charges are made on the
+coach's own account. Funds never enter a Noctusoft-controlled balance. This is a
+hard architectural constraint, not a preference — holding funds would make us a
+money transmitter. *(Updated 2026-11-03: this section first described Square.)*
 
-Connect Hub Slice 1 is **built and tested** (~1,050 LOC, 68 passing tests,
-mounted at `/connect/:productKey/*`) and already covers OAuth connect, a
-runtime-enforced versioned recipient agreement, one-time charges with
-`application_fee_money` and per-transaction override, and the full subscription
-lifecycle. **Build against it; do not implement Square directly.**
+How the relay sets up each coach's account (`stripe/adapter.js` in the relay):
 
-What it has never done is run against a real Square Application. Eight
-out-of-code activation steps gate the first real charge, three of them legal
-(attorney review, recipient agreement, chargeback handoff). Those have no code
-dependency and must start in parallel with Slice 1 or they become the critical
-path to first revenue. Detail in `docs/PLATFORM.md` §2.
+- **No Stripe dashboard** (`dashboard: "none"`). The coach never makes a Stripe
+  login. The Money screen is their window onto bookings and collections.
+- **Stripe collects its fees and carries losses**
+  (`responsibilities: { fees_collector: "stripe", losses_collector: "stripe" }`).
+  Stripe takes its processing fee from the coach's account, and a negative
+  balance (after a dispute, say) is Stripe's to recover, not Noctusoft's.
+- **Onboarding is Stripe-hosted.** After the coach accepts the marketplace
+  terms (v1) on the Money screen, a relay link opens Stripe's form for identity
+  and bank details, then returns to `/app/money`.
+- **Platform fee: 500 bps (5%)**, held on the relay's Connect row for the
+  product (§9.3). Coachatron never sends the fee; the relay applies it.
+
+Checkout is a signed relay buy link (`GET /buy/connect/coachatron/:seller`)
+that opens Stripe's hosted page. Coachatron hears back through signed store
+events at `/webhooks/store` and holds no Stripe key, id, or card data.
+
+Connect Hub (mounted at `/connect/:productKey/*`) also covers a
+runtime-enforced versioned seller agreement, refunds, and seller
+subscriptions. **Build against it; do not call Stripe or any processor
+directly.** Coachatron uses the agreement, onboarding, seller status, and the
+one-time buy link today: the monthly plan is charged once (§9.2) and refunds
+are not built (§9.4). The legal steps (attorney review of the marketplace
+terms, parent terms, and payments privacy notice) have no code dependency;
+drafts are in `docs/legal/`. Detail in `docs/PLATFORM.md` §2.
 
 ### 9.2 What an athlete can buy
 
@@ -292,7 +316,7 @@ path to first revenue. Detail in `docs/PLATFORM.md` §2.
 |---|---|---|
 | **Drop-in** | One session, one charge | Default. Always available. |
 | **Package** | N sessions prepaid, credits drawn down per booking | Credits are a liability; surface on the Money screen. Expiry optional, default none. |
-| **Subscription** | Monthly recurring, grants N credits/month | Unused credits expire at period end by default. |
+| **Subscription** | Monthly recurring, grants N credits/month | Unused credits expire at period end by default. *Today the plan is charged once, at purchase, for the first month's credits (no expiry date is set yet); monthly renewal is not built.* |
 
 Credits are tracked per **phone number**, not per account, so a parent booking
 for two children with one phone draws from one pool.
@@ -300,11 +324,12 @@ for two children with one phone draws from one pool.
 ### 9.3 Our cut
 
 **Locked 2026-09-22: free to the coach, 5% application fee on each transaction**,
-on top of Square's processing (~2.6% + 10¢ card-present, 2.9% + 30¢ online).
+on top of Stripe's processing (its standard US online card rate, 2.9% + 30¢,
+when this was written), which Stripe takes from the coach's account.
 
 The rate is the ease. A coach has a bookable link in five minutes, a parent
 pays with no account, and a full session texts the next coach. On a $35
-session that is $1.75, on top of Square. The text assistant — set something up
+session that is $1.75, on top of Stripe. The text assistant — set something up
 by text, or ask and wait for Y — is included. It is the same work for a small
 book and a large one, so the rate stays 5% rather than climbing with the
 lessons. A lower rate is still how the product spreads: one coach's athletes
@@ -324,9 +349,17 @@ supports this).
 
 ### 9.4 Refunds
 
-Refunds are issued through Square by the coach. Coachatron reverses the package
-credit and releases the session slot when the webhook arrives. **We do not
-refund our application fee on partial refunds in v1** — this is stated plainly in
+**Not built yet.** Coachatron has no refund button, and the coach has no Stripe
+dashboard to refund from (§9.1), so today a refund is a request to Coachatron
+support; the Money screen says so. The relay already has a seller refund route
+(`POST /connect/:productKey/recipients/:seller/refunds`, `refund()` in
+`packages/store-client`). A later change will call it, and on the
+`purchase.refunded` event reverse the package credit and release the session
+slot. *(Updated 2026-11-03: this first said the coach refunds in Square.)*
+
+**We return our application fee with a refund** (in proportion for a partial
+refund): the relay's seller refund does this, and the Money screen tells the
+coach before they connect payments. As before, this is stated plainly in
 the coach's terms rather than hidden.
 
 ---
@@ -404,7 +437,7 @@ Decisions that can be made cheaply now; anything not listed is deliberately open
   local time. Half of all scheduling bugs live here.
 - **Money:** integer minor units (cents). Never floats.
 - **Idempotency:** every payment and every SMS send carries an idempotency key.
-  Webhook handlers must be safe to replay — Square will replay them.
+  Webhook handlers must be safe to replay — the relay will replay them.
 
 ### 11.1 Data model sketch
 
@@ -428,6 +461,13 @@ message_log(id, to_phone, template, body, provider_id, sent_at, status)
 
 `credit.contact_phone` is the join key for a buyer, by design (§9.2). Normalize
 to E.164 on write.
+
+Two column names predate the move to Stripe and were kept: `square_merchant_id`
+is unused (a coach reaches their Stripe account through
+`coach.connect_recipient_key`, the relay's seller key), and
+`square_subscription_id` holds the relay's opaque payment reference for a plan
+purchase. `booking.charge_id` holds the same kind of reference. Coachatron
+stores no Stripe id.
 
 ---
 
