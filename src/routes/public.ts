@@ -584,7 +584,7 @@ function renderCheckout(
         (p) => html`<form method="post" action="${action}">
           <input type="hidden" name="mode" value="plan" />
           <input type="hidden" name="plan_id" value="${p.id}" />
-          <button type="submit">Subscribe to ${p.name} — $${(p.price_cents / 100).toFixed(2)}/mo</button>
+          <button type="submit">Buy ${p.name} — ${p.credits_per_month} ${p.credits_per_month === 1 ? 'session' : 'sessions'} for $${(p.price_cents / 100).toFixed(2)}, one-time</button>
         </form>`,
       )}
       ${error ? raw(`<p class="error">${error}</p>`) : raw('')}`,

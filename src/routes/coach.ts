@@ -1518,23 +1518,24 @@ coachRouter.get('/app/pricing', requireAuth, async (_req, res) => {
           </form>
         </details>
 
-        <h2>Monthly plans</h2>
+        <h2>One-time packs</h2>
+        <p class="muted">Charged once. The sessions do not expire.</p>
         ${plansList.length === 0
-          ? html`<p class="muted">No monthly plans yet.</p>`
+          ? html`<p class="muted">No one-time packs yet.</p>`
           : plansList.map(
               (p) =>
-                html`<div class="card">${p.name} · ${formatCoachDollars(p.price_cents)} · ${p.credits_per_month} sessions per month</div>`,
+                html`<div class="card">${p.name} · ${formatCoachDollars(p.price_cents)} · ${p.credits_per_month} ${p.credits_per_month === 1 ? 'session' : 'sessions'}, one-time</div>`,
             )}
         <details>
-          <summary>+ New plan</summary>
+          <summary>+ New one-time pack</summary>
           <form method="post" action="/app/pricing/plan">
-            <label for="plan_name">Plan name</label>
-            <input id="plan_name" name="name" required placeholder="e.g. Monthly" />
+            <label for="plan_name">Pack name</label>
+            <input id="plan_name" name="name" required placeholder="e.g. 4-session pack" />
             <label for="plan_price_dollars">Price (dollars)</label>
-            <input id="plan_price_dollars" name="price_dollars" type="number" min="0" step="0.01" required placeholder="e.g. 300" />
-            <label for="plan_credits">Sessions per month</label>
-            <input id="plan_credits" name="credits_per_month" type="number" min="1" required placeholder="e.g. 20" />
-            <button type="submit">Create plan</button>
+            <input id="plan_price_dollars" name="price_dollars" type="number" min="0" step="0.01" required placeholder="e.g. 120" />
+            <label for="plan_credits">Sessions in the pack</label>
+            <input id="plan_credits" name="credits_per_month" type="number" min="1" required placeholder="e.g. 4" />
+            <button type="submit">Create pack</button>
           </form>
         </details>`,
     ),
@@ -1579,7 +1580,7 @@ coachRouter.post('/app/pricing/plan', requireAuth, async (req, res) => {
       page(
         'Pricing',
         html`<h1>Pricing & credits</h1>
-          <p class="error">Fill in plan details correctly.</p>
+          <p class="error">Fill in the pack details correctly.</p>
           <a class="action" href="/app/pricing">Back</a>`,
       ),
     );

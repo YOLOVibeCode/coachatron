@@ -575,7 +575,7 @@ export function renderSetupPreview(plan: SetupPlan, coach: CoachRow, now: Date =
       (p) => html`<div class="meta"><span>${p.name}: ${p.credits} sessions for ${money(p.price_cents)}${p.expires_days ? `, use within ${p.expires_days} days` : ''}</span></div>`,
     )}
     ${plan.plans.map(
-      (p) => html`<div class="meta"><span>${p.name}: ${money(p.price_cents)}/mo, ${p.credits_per_month} sessions</span></div>`,
+      (p) => html`<div class="meta"><span>${p.name}: ${p.credits_per_month} sessions for ${money(p.price_cents)}, one-time</span></div>`,
     )}
     ${first ? html`<p class="muted">First session: ${first}. Times in ${zoneName(tz, now)}.</p>` : raw('')}
     <p class="muted">Your link: ${APP_BASE_URL.replace(/^https?:\/\//, '')}/c/${coach.handle}</p>
