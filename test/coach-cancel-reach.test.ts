@@ -11,6 +11,10 @@ import { handleCoachMessage } from '../src/domain/assistant.js';
 import { createCoachSession } from '../src/domain/auth.js';
 import { addCalendarDays, zonedParts, zonedTimeToUtc } from '../src/domain/scheduling.js';
 import { resetComplete, setComplete } from '../src/llm/complete.js';
+import { bookOnline, postCheckout } from './helpers/booking.js';
+import { buyerFromLocation, postStorePaid } from './helpers/store-event.js';
+import { segmentCount } from '../src/domain/outbound.js';
+import { summarizeMoney } from '../src/domain/money.js';
 import type { DbClient } from '../src/db/client.js';
 
 /** A coach's cancel tells the coach how many parents were texted and who
@@ -172,6 +176,109 @@ test("the assistant's cancel question says when every parent will be texted, or 
       const all = await handleCoachMessage(db, seed.coach, "cancel tomorrow's 6pm", 'sms');
       assert.match(all.text, /\? 2 athletes, all will be texted\. Reply Y\.$/);
       assert.ok(all.text.length <= 160);
+    } finally {
+      resetComplete();
+    }
+  });
+});
+
+/** A drop-in booked and paid through the booking form, checkout and a paid event. */
+async function payDropIn(base: string, handle: string, sessionId: number, athlete: string, phone: string, paymentId: string): Promise<void> {
+  const b = await bookOnline(base, handle, sessionId, athlete, phone);
+  assert.ok(b.key, `booked (${b.status})`);
+  const pay = await postCheckout(base, handle, b.key, { mode: 'dropin' });
+  const paid = await postStorePaid(base, { userId: buyerFromLocation(pay.headers.get('location')), amountCents: 3500, paymentId });
+  assert.equal(paid.status, 200);
+}
+
+test('a paid drop-in becomes one session credit with the coach when the coach cancels, and the text and summary say so', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 6, priceCents: 3500 });
+    const packCredit = await bookWithCredit(db, seed.coach.id, seed.sessionId, 'Pack Pat', '+15550000041');
+    await seedBookedSession(db, seed.sessionId, 'Free Fay', '+15550000042');
+    const cookie = `cx_session=${await createCoachSession(db, seed.coach.id)}`;
+    await withServer(async (base) => {
+      await payDropIn(base, seed.coach.handle, seed.sessionId, 'Drop Dana', '5550000043', 'ch_dropin_paid');
+
+      const res = await fetch(`${base}/app/sessions/${seed.sessionId}/cancel`, {
+        method: 'POST',
+        headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+        body: '',
+        redirect: 'manual',
+      });
+      assert.equal(res.status, 303);
+      const detail = await (await fetch(`${base}/app/sessions/${seed.sessionId}`, { headers: { cookie } })).text();
+      assert.match(detail, /Texted 3 of 3 parents\. 2 credits returned, 1 of them for a paid drop-in\./);
+    });
+
+    const dropIn = await db.query<{ id: number; remaining: number; source: string; expires_at: string | null; package_id: number | null }>(
+      "select id, remaining, source, expires_at, package_id from credit where coach_id = $1 and contact_phone = '+15550000043'",
+      [seed.coach.id],
+    );
+    assert.equal(dropIn.rows.length, 1);
+    assert.deepEqual(
+      { ...dropIn.rows[0], id: undefined },
+      { id: undefined, remaining: 1, source: `cancelled-session:${seed.sessionId}`, expires_at: null, package_id: null },
+      'one session, no expiry, as a payment for a cancelled session becomes',
+    );
+    const booking = await db.query<{ status: string; credit_id: number | null }>(
+      "select status, credit_id from booking where contact_phone = '+15550000043'",
+    );
+    assert.deepEqual(booking.rows[0], { status: 'cancelled', credit_id: dropIn.rows[0].id });
+    assert.equal(await creditLeft(db, packCredit), 3, 'the pack credit comes back as before');
+    const free = await db.query("select id from credit where contact_phone = '+15550000042'");
+    assert.equal(free.rows.length, 0, 'a free drop-in gets no credit');
+
+    const textTo = (phone: string) => relay.sms.filter((m) => m.to === phone && /cancelled/.test(m.body));
+    const dropInText = textTo('+15550000043');
+    assert.equal(dropInText.length, 1);
+    assert.match(dropInText[0].body, /^Coachatron: Goalkeeper Group on .+ is cancelled for Drop Dana\. Your payment is now 1 session credit with Jamie Coach\. Reply STOP to opt out\.$/);
+    assert.equal(segmentCount(dropInText[0].body), 1);
+    assert.match(textTo('+15550000041')[0].body, /^Coachatron: Goalkeeper Group on .+ is cancelled for Pack Pat\. Your session credit with Jamie Coach is back\. Reply STOP/);
+    assert.doesNotMatch(textTo('+15550000042')[0].body, /credit/);
+
+    // The drop-in's payment reached the coach and now stands as credit.
+    const start = (await db.query<{ starts_at_utc: string }>('select starts_at_utc from session where id = $1', [seed.sessionId])).rows[0];
+    assert.equal((await summarizeMoney(db, seed.coach.id, new Date(start.starts_at_utc))).collectedThisWeekCents, 3500);
+
+    assert.equal((await cancelScheduledSession(db, seed.coach.id, seed.sessionId)).kind, 'already_cancelled');
+    const again = await db.query<{ remaining: number }>("select remaining from credit where contact_phone = '+15550000043'");
+    assert.deepEqual(again.rows.map((r) => r.remaining), [1], 'a second run adds no second credit');
+  });
+});
+
+test('long names still leave the cancel and the whole credit line in one segment', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 6, priceCents: 3500 });
+    await db.query("update coach set name = 'Zoë Montgomery-Fairweather' where id = $1", [seed.coach.id]);
+    await withServer(async (base) => {
+      await payDropIn(base, seed.coach.handle, seed.sessionId, 'Maximiliana Alexandrina Cortés-Villanueva', '5550000051', 'ch_long_name');
+    });
+    assert.equal((await cancelScheduledSession(db, seed.coach.id, seed.sessionId)).kind, 'cancelled');
+    const text = relay.sms.filter((m) => m.to === '+15550000051' && /cancelled/.test(m.body)).at(-1);
+    assert.ok(text);
+    assert.equal(segmentCount(text.body), 1, text.body);
+    assert.match(text.body, /^Coachatron: Goalkeeper Group on \w{3} \w{3} \d{1,2}, \d{1,2}:\d{2}[ap]m is cancelled/, 'what, when and the cancel stay whole; the name is shortened');
+    assert.match(text.body, /Your payment is now 1 session credit with Zoe Montgomery-Fairweather\. Reply STOP to opt out\.$/);
+  });
+});
+
+test("the assistant's cancel reply counts a paid drop-in's credit", async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 6, priceCents: 3500 });
+    await db.query('update session set starts_at_utc = $1 where id = $2', [tomorrowAt(seed.coach.tz, 18).toISOString(), seed.sessionId]);
+    await withServer(async (base) => {
+      await payDropIn(base, seed.coach.handle, seed.sessionId, 'Drop Dana', '5550000061', 'ch_assistant');
+    });
+    setComplete(fakeComplete(new Error('the model must not run')));
+    try {
+      await handleCoachMessage(db, seed.coach, "cancel tomorrow's 6pm", 'sms');
+      const done = await handleCoachMessage(db, seed.coach, 'Y', 'sms');
+      assert.match(done.text, /Cancelled\. 1 of 1 athletes texted, 1 credits returned, 1 of them for a paid drop-in\./);
+      assert.ok(done.text.length <= 160);
     } finally {
       resetComplete();
     }

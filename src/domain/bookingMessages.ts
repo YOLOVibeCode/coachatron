@@ -37,7 +37,7 @@ export function deliverableEmail(email: string | null): string | null {
 }
 
 /** Plain letters only, so a name with an accent keeps the text in GSM-7. */
-function plain(text: string): string {
+export function plain(text: string): string {
   return text
     .normalize('NFKD')
     .replace(/[̀-ͯ]/g, '')

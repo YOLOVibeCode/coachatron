@@ -6,6 +6,7 @@ import { createWebhookHandler } from '../lib/store-client.js';
 import { parseBuyerRef, type PayMode } from '../relay/buy-link.js';
 import {
   bookPendingBooking,
+  cancelledSessionCreditSource,
   creditCancelledBooking,
   ensureSubscriptionRecord,
   getBooking,
@@ -106,7 +107,7 @@ async function paidItem(db: DbClient, coachId: number, session: PaidSession, ses
       sessions: 1,
       packageId: null,
       planId: null,
-      source: `cancelled-session:${sessionId}`,
+      source: cancelledSessionCreditSource(sessionId),
       expiresAt: null,
     };
   }

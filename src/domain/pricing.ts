@@ -349,6 +349,13 @@ export async function bookPendingBooking(
   });
 }
 
+/** The source of the credit a drop-in payment becomes when its session is
+ * cancelled: one session with the same coach. A drop-in has no package,
+ * so no expiry applies. */
+export function cancelledSessionCreditSource(sessionId: number): string {
+  return `cancelled-session:${sessionId}`;
+}
+
 export interface CreditGrant {
   coachId: number;
   contactPhone: string;

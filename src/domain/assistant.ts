@@ -15,7 +15,7 @@ import {
   type IntentName,
 } from '../llm/schema.js';
 import { clipSms, formatConfirmWhen, formatLocal } from '../lib/time.js';
-import { cancelScheduledSession, previewSessionCancel } from './cancelSession.js';
+import { cancelScheduledSession, dropInCreditNote, previewSessionCancel } from './cancelSession.js';
 import { sendText } from './outbound.js';
 import {
   consumePending,
@@ -541,7 +541,7 @@ async function executeCancel(db: DbClient, coach: CoachRow, sessionId: number): 
   if (result.kind === 'already_cancelled') return 'That session is already cancelled.';
   const notReached = result.unreached.length > 0 ? ` Not reached: ${result.unreached.map((u) => u.athleteName).join(', ')}.` : '';
   return clipSms(
-    `Cancelled. ${result.athletesNotified} of ${result.athletesTotal} athletes texted, ${result.creditsReturned} credits returned.${notReached}`,
+    `Cancelled. ${result.athletesNotified} of ${result.athletesTotal} athletes texted, ${result.creditsReturned} credits returned${dropInCreditNote(result)}.${notReached}`,
   );
 }
 

@@ -48,7 +48,7 @@ import {
 } from '../domain/payments.js';
 import { createWeeklySlots, deactivateSlot, listWeeklySlots, type WeeklySlot } from '../domain/scheduling.js';
 import { coachNav, html, oneTimeCodeNote, page, raw, smsConsentCheckbox } from '../lib/html.js';
-import { cancelReach, cancelScheduledSession, previewSessionCancel, type CancelReach } from '../domain/cancelSession.js';
+import { cancelReach, cancelScheduledSession, dropInCreditNote, previewSessionCancel, type CancelReach } from '../domain/cancelSession.js';
 import { DEFAULT_TZ, formatCoachDollars, formatLocal, formatTimeRange, isValidTimeZone } from '../lib/time.js';
 import { getPackagesForCoach, getPlansForCoach, createPackage, createPlan } from '../domain/pricing.js';
 import { summarizeMoney } from '../domain/money.js';
@@ -1403,7 +1403,7 @@ function renderCancelReach(reach: CancelReach) {
   const credits = reach.creditsReturned === 1 ? 'credit' : 'credits';
   if (reach.athletesTotal === 0) return html`<div class="card cancel-reach"><p><strong>Cancelled.</strong></p></div>`;
   return html`<div class="card cancel-reach">
-    <p><strong>Cancelled.</strong> Texted ${reach.athletesNotified} of ${reach.athletesTotal} ${parents}. ${reach.creditsReturned} ${credits} returned.</p>
+    <p><strong>Cancelled.</strong> Texted ${reach.athletesNotified} of ${reach.athletesTotal} ${parents}. ${reach.creditsReturned} ${credits} returned${dropInCreditNote(reach)}.</p>
     ${reach.unreached.length > 0
       ? html`<p class="error">Not reached — please contact them yourself:</p>
           <ul class="unreached">
