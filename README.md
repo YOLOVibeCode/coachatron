@@ -16,8 +16,8 @@ that there's too much of it.
 Coachatron does three things and refuses the rest:
 
 - **Sell sessions** — drop-in, prepaid packages, or a monthly plan
-- **Take the money** — straight into the coach's own merchant account; we never
-  hold funds
+- **Take the money** — straight into the coach's own Stripe account (Stripe
+  Connect, through the Noctusoft relay); we never hold funds
 - **Find a second coach** — when a session fills past a threshold, text the
   backup roster in priority order until someone claims it
 
@@ -32,7 +32,7 @@ Later, the coach runs all of it by texting the number in plain English.
   [PGlite](https://pglite.dev) (Postgres compiled to WASM, in-memory).
 - No accounts to create and no secrets required to run locally. Payments
   and SMS go through an in-process fake relay in tests (`test/fakes/relay.ts`),
-  never a real Square or Twilio account.
+  never a real Stripe or Twilio account.
 
 ## Run it
 
@@ -59,16 +59,16 @@ PGlite with no `DATABASE_URL` at all.
 
 ## Status
 
-Slice 1 is implemented: all twelve screens below, tested against fakes of
-the Square/Twilio-shaped relay (`docs/PLATFORM.md`). See `ROADMAP.md` for
-the milestone-by-milestone build log.
+Slice 1 is implemented: all twelve screens below, tested against a fake of
+the relay's marketplace (Stripe Connect behind it) and its SMS and email
+(`docs/PLATFORM.md`). See `ROADMAP.md` for the milestone-by-milestone build log.
 
 📄 **[SPEC.md](SPEC.md)** — full specification: scope, domain model, journeys,
 payments, messaging, data model, and the explicit non-goals.
 
 📄 **[docs/PLATFORM.md](docs/PLATFORM.md)** — what we *don't* build, because the
-Noctusoft relay already has it: email, SMS, inbound routing, and Square
-marketplace payments. Also the design for SMS natural-language control
+Noctusoft relay already has it: email, SMS, inbound routing, and marketplace
+payments on Stripe Connect. Also the design for SMS natural-language control
 (Slice 2 — Slice 1 ships the `Y`/`N`/`STOP`/`HELP` keyword layer only).
 
 ## Design constraints
@@ -132,13 +132,16 @@ Do not commit secrets. `npm test` uses the in-process fake in `test/fakes/relay.
   confirmation; Slice 1 as built sends SMS only (the relay's `/email/send`
   exists and is exercised by the fake in tests, but nothing calls it yet).
   Tracked as `SPEC.md §15` item 7.
-- **Monthly plan renewal isn't automated.** A parent's first month of
-  credits is granted at purchase; granting the next month's credits each
-  billing cycle needs a Connect Hub webhook this slice doesn't implement
+- **The monthly plan is charged once.** Checkout charges the plan's price
+  one time and grants the first month's credits; nothing renews it. Renewal
+  would use the relay's seller subscriptions, which this slice doesn't call
   (see `ROADMAP.md` M3).
-- **No refund-webhook automation.** Refunds are issued through the coach's
-  own Square dashboard (`SPEC.md §9.4`); Coachatron doesn't automatically
-  reverse a package credit if the coach later issues a partial refund.
+- **Refunds are not built.** Coaches have no Stripe dashboard, so there is
+  no refund button anywhere yet; the Money screen tells a coach to ask
+  Coachatron. The relay already has a seller refund route
+  (`POST /connect/:productKey/recipients/:seller/refunds`, which returns
+  Coachatron's fee with the refund). A later change will call it and reverse
+  a credit when `purchase.refunded` arrives (`SPEC.md §9.4`).
 - **The overflow cascade reuses the original session**, rather than
   creating a literal second "parallel session" row — the accepted backup
   coach is recorded on the same session via `assigned_roster_member_id`.
