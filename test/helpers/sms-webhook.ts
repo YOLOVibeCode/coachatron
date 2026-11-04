@@ -43,10 +43,12 @@ export async function postSignedSms(
   return fetch(`${base}/webhooks/sms`, { method: 'POST', headers, body });
 }
 
+/** Posts a delivery status callback the way the relay forwards one, with
+ * x-relay-twilio-verified as for postSignedSms. */
 export async function postSignedSmsStatus(
   base: string,
   fields: Record<string, string>,
-  opts: { secret?: string; publicUrl?: string; signature?: string | null } = {},
+  opts: { secret?: string; publicUrl?: string; signature?: string | null; twilioVerified?: string | null } = {},
 ): Promise<Response> {
   const body = encodeForm(fields);
   const publicUrl = opts.publicUrl ?? `${base}/webhooks/sms-status`;
@@ -57,5 +59,7 @@ export async function postSignedSmsStatus(
   }
   const headers: Record<string, string> = { 'content-type': 'application/x-www-form-urlencoded' };
   if (signature) headers['x-relay-signature'] = signature;
+  const verified = opts.twilioVerified === undefined ? '1' : opts.twilioVerified;
+  if (verified !== null) headers['x-relay-twilio-verified'] = verified;
   return fetch(`${base}/webhooks/sms-status`, { method: 'POST', headers, body });
 }
