@@ -7,7 +7,20 @@ export interface SendSmsRequest {
 
 export type SendSmsResult =
   | { ok: true; id: string }
-  | { ok: false; code: number; message: string };
+  /** code is Twilio's (or the relay's own, e.g. 20429 for its caps);
+   * status is the relay's HTTP status, 429 when its limits refused. */
+  | { ok: false; code: number; message: string; status: number };
+
+/** The relay answers { success, message: { twilio_sid, ... } }; the sid is
+ * what Twilio's status callbacks name (MessageSid), so it is the id the log
+ * keeps. A captured dev text has no sid. An older { id } answer still works. */
+function providerId(json: unknown): string {
+  const body = (json ?? {}) as { id?: unknown; message?: { twilio_sid?: unknown } | null };
+  const sid = body.message?.twilio_sid;
+  if (typeof sid === 'string' && sid) return sid;
+  if (typeof body.id === 'string' && body.id) return body.id;
+  return 'unknown';
+}
 
 export async function sendSms(req: SendSmsRequest): Promise<SendSmsResult> {
   // X-App-Env (from RELAY_APP_ENV): dev is captured in smtp4dev as an email
@@ -22,8 +35,7 @@ export async function sendSms(req: SendSmsRequest): Promise<SendSmsResult> {
     { appEnv: true },
   );
   if (res.ok) {
-    const json = (await res.json()) as { id?: string };
-    return { ok: true, id: json.id ?? 'unknown' };
+    return { ok: true, id: providerId(await res.json().catch(() => ({}))) };
   }
   let code = res.status;
   let message = `relay sms send failed: ${res.status}`;
@@ -34,5 +46,5 @@ export async function sendSms(req: SendSmsRequest): Promise<SendSmsResult> {
   } catch {
     // keep defaults
   }
-  return { ok: false, code, message };
+  return { ok: false, code, message, status: res.status };
 }

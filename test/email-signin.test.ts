@@ -226,19 +226,21 @@ test('a coach with no phone gets the overflow question by email and answers it o
     await withServer(async (base) => {
       const cookie = `cx_session=${await createCoachSession(db, coach.id)}`;
       const schedule = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
-      assert.match(schedule, /Ask my roster/);
+      assert.match(schedule, /Second group/);
+      assert.match(schedule, /Backup coach/);
       assert.match(schedule, new RegExp(`action="/app/overflow/${sessionId}"`));
 
       // Another coach cannot answer this coach's question.
       const other = `cx_session=${await createCoachSession(db, outsider.id)}`;
-      await post(base, `/app/overflow/${sessionId}`, { answer: 'yes' }, other);
+      await post(base, `/app/overflow/${sessionId}`, { answer: '2' }, other);
       assert.equal(relay.sms.filter((m) => m.to === backup.phone).length, 0);
 
-      const yes = await post(base, `/app/overflow/${sessionId}`, { answer: 'yes' }, cookie);
+      const yes = await post(base, `/app/overflow/${sessionId}`, { answer: '2' }, cookie);
       assert.equal(yes.status, 303);
       assert.equal(relay.sms.filter((m) => m.to === backup.phone).length, 1, 'the roster is asked after the coach says yes');
       const after = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
-      assert.doesNotMatch(after, /Ask my roster/);
+      assert.doesNotMatch(after, /name="answer"/);
+      assert.match(after, /Asking your roster for a backup coach/);
     });
   });
 });

@@ -4,13 +4,18 @@ import { getDb } from '../db/client.js';
 import {
   createCoach,
   createCoachSession,
+  emailTakenNotice,
   findCoachByPhone,
+  findCoachHoldingEmail,
+  normalizeEmail,
   normalizePhone,
   type CoachRow,
 } from '../domain/auth.js';
-import { consumeStartLink, getOpenStartLink } from '../domain/startLink.js';
+import { consumeStartLink, getOpenStartLink, reopenStartLink } from '../domain/startLink.js';
+import { clientKey, START_BOX_LIMITS, takeRequest } from '../domain/requestLimits.js';
 import { handleSetupMessage } from '../domain/setup.js';
-import { html, landingPage, page, raw } from '../lib/html.js';
+import { html, landingPage, page, raw, smsConsentCheckbox } from '../lib/html.js';
+import { recordConsent } from '../domain/sms-consent.js';
 import { clearCookie, serializeCookie } from '../lib/cookies.js';
 import {
   encodeStartCookie,
@@ -102,7 +107,7 @@ function renderLanding(): string {
       </section>
       <footer class="colophon">
         <p>Already set up? <a href="/signin">Sign in</a></p>
-        <p>Prefer forms? <a href="/signin">Set it up by hand</a></p>
+        <p>Prefer forms? <a href="/signin">Set up with a form instead</a></p>
       </footer>
     </div>`,
   );
@@ -112,7 +117,18 @@ landingRouter.get('/', (_req, res) => {
   res.status(200).send(renderLanding());
 });
 
-landingRouter.post('/start', (req, res) => {
+landingRouter.post('/start', async (req, res) => {
+  if (!(await takeRequest(getDb(), START_BOX_LIMITS, clientKey(req)))) {
+    res.status(429).send(
+      page(
+        'Slow down',
+        html`<h1>Too many tries.</h1>
+          <p class="muted">Wait a few minutes, then try again.</p>
+          <a class="action" href="/">Say your week</a>`,
+      ),
+    );
+    return;
+  }
   const text = field(req.body, 'text');
   if (!text) {
     res.setHeader('Set-Cookie', clearCookie(START_COOKIE));
@@ -126,6 +142,22 @@ landingRouter.post('/start', (req, res) => {
 const TZ_SCRIPT = raw(
   `<script>try{var t=document.getElementById('tz');if(t&&!t.value)t.value=Intl.DateTimeFormat().resolvedOptions().timeZone||''}catch(e){}</script>`,
 );
+
+function smsConsentChecked(body: unknown): boolean {
+  const value = (body as Record<string, unknown> | undefined)?.sms_consent;
+  return value === '1' || value === 'on' || value === true;
+}
+
+const TRY_AGAIN = 'That did not go through. Tap Continue to try again.';
+/** The unique index on a coach's email (migration 0011). */
+const EMAIL_INDEX = 'coach_email_unique';
+
+/** The constraint a unique violation names ('' when it names none), or null for any other error. */
+function uniqueViolation(err: unknown): string | null {
+  if (typeof err !== 'object' || err === null || (err as { code?: unknown }).code !== '23505') return null;
+  const constraint = (err as { constraint?: unknown }).constraint;
+  return typeof constraint === 'string' ? constraint : '';
+}
 
 function gonePage(): string {
   return page(
@@ -151,6 +183,8 @@ function renderStartForm(
         <label for="email">Email (optional)</label>
         <input id="email" name="email" type="email" autocomplete="email" value="${values.email ?? ''}" />
         <input id="tz" name="tz" type="hidden" value="${values.tz ?? ''}" />
+        <p class="muted">Check the box to get your page link and a link to set up payments by text when you go live.</p>
+        ${smsConsentCheckbox()}
         <button type="submit">Continue</button>
       </form>
       ${error ? html`<p class="error">${error}</p>` : raw('')}
@@ -184,19 +218,59 @@ landingRouter.post('/start/:token', async (req, res) => {
     res.status(422).send(renderStartForm(token, { name, email, tz }, 'Enter your name.'));
     return;
   }
+  // The optional email stays unproved, and must not be on another account.
+  // Checked before the link is used, so the coach can fix it and try again
+  // with the same link.
+  const extraEmail = existing ? null : normalizeEmail(email);
+  const holder = extraEmail ? await findCoachHoldingEmail(db, extraEmail) : null;
+  if (holder) {
+    res.status(422).send(renderStartForm(token, { name, email, tz }, emailTakenNotice(holder)));
+    return;
+  }
   const consumed = await consumeStartLink(db, token);
   if (!consumed) {
     res.status(410).send(gonePage());
     return;
   }
-  let coach: CoachRow | null = existing;
-  if (!coach) {
-    coach = await createCoach(db, {
-      phone: consumed.phone,
-      name,
-      email,
-      tz: isValidTimeZone(tz) ? tz : DEFAULT_TZ,
+  // The phone is proven by the text that sent this link. The box is what
+  // allows the texts after this one (SPEC.md §10).
+  if (smsConsentChecked(req.body)) {
+    await recordConsent(db, consumed.phone, '/start', {
+      ip: typeof req.ip === 'string' ? req.ip : null,
+      userAgent: typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : null,
     });
+  }
+  let coach: CoachRow | null = existing;
+  // Two tries: the handle (picked from the name) or the phone can be taken
+  // between the check and the insert by a coach signing up at the same time.
+  for (let attempt = 0; !coach && attempt < 2; attempt += 1) {
+    try {
+      coach = await createCoach(db, {
+        phone: consumed.phone,
+        name,
+        email: extraEmail ?? '',
+        emailVerified: false,
+        tz: isValidTimeZone(tz) ? tz : DEFAULT_TZ,
+      });
+    } catch (err) {
+      const constraint = uniqueViolation(err);
+      if (constraint === null) throw err;
+      if (constraint === EMAIL_INDEX) {
+        await reopenStartLink(db, token);
+        // Said the same way as when the email was already taken above.
+        const taken = extraEmail ? await findCoachHoldingEmail(db, extraEmail) : null;
+        res.status(422).send(renderStartForm(token, { name, email, tz }, emailTakenNotice(taken ?? { email_verified: false })));
+        return;
+      }
+      // The phone was proven by the text with this link, so the coach who
+      // now has it is this coach; otherwise the next try picks another handle.
+      coach = await findCoachByPhone(db, consumed.phone);
+    }
+  }
+  if (!coach) {
+    await reopenStartLink(db, token);
+    res.status(422).send(renderStartForm(token, { name, email, tz }, TRY_AGAIN));
+    return;
   }
   const session = await createCoachSession(db, coach.id);
   const cookies = [serializeCookie(SESSION_COOKIE, session, 30 * 24 * 60 * 60)];

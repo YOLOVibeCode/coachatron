@@ -35,3 +35,15 @@ export async function relayFetch(
   const url = `${relayBaseUrl()}${path.startsWith('/') ? path : `/${path}`}`;
   return fetch(url, { ...init, headers });
 }
+
+/** A relay answer that was not a success, with its HTTP status (429 when
+ * the relay's own limits refused the request). */
+export class RelayHttpError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'RelayHttpError';
+    this.status = status;
+  }
+}

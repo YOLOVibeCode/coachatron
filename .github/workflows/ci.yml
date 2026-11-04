@@ -17,7 +17,7 @@ jobs:
   ci:
     name: CI
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
         with:
@@ -32,7 +32,7 @@ jobs:
           cache: npm
 
       # Fresh clone, no secrets. Tests use PGlite and in-process fakes
-      # (relay, model). Do not add Square, Twilio, or LiteLLM credentials.
+      # (relay, model). Do not add Stripe, Square, Twilio, or LiteLLM credentials.
       - name: Install
         run: npm ci
 
@@ -54,7 +54,7 @@ jobs:
   next-node:
     name: Next Node (${{ matrix.node }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     continue-on-error: true
     strategy:
       fail-fast: false

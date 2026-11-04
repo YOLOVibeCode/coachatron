@@ -30,11 +30,11 @@ test('tick advances an expired offer to the next roster member, naming the sessi
 
     await checkOverflow(db, seed.sessionId);
     const ask = relay.sms.find((m) => m.to === seed.coach.phone);
-    assert.match(ask!.body, /Goalkeeper Group is full, 1 waiting/);
+    assert.match(ask!.body, /Goalkeeper Group is full with 1 waiting\. Reply 1 to open a second group, 2 to add a backup coach, N for no\./);
 
-    await startCascade(db, seed.sessionId);
+    await startCascade(db, seed.sessionId, 'backup');
     const offer = relay.sms.find((m) => m.to === first.phone);
-    assert.match(offer!.body, /Goalkeeper Group, 1 athletes, pays \$80\. Reply Y/);
+    assert.match(offer!.body, /Backup coach for Goalkeeper Group .*, 1 athlete, pays \$80\. Reply Y to claim \(20 min\)\./);
     assert.ok(offer!.body.length <= 160);
 
     await runTick(db, new Date(Date.now() + 21 * 60 * 1000));

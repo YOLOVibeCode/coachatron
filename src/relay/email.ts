@@ -1,4 +1,4 @@
-import { relayFetch } from './http.js';
+import { RelayHttpError, relayFetch } from './http.js';
 import { coachatronEmailFrom } from '../config.js';
 
 export interface SendEmailRequest {
@@ -29,7 +29,7 @@ export async function sendEmail(req: SendEmailRequest): Promise<{ id: string }> 
     },
     { appEnv: true },
   );
-  if (!res.ok) throw new Error(`relay email send failed: ${res.status}`);
+  if (!res.ok) throw new RelayHttpError(`relay email send failed: ${res.status}`, res.status);
   const body = (await res.json().catch(() => ({}))) as { email?: { messageId?: string }; id?: string };
   return { id: String(body.email?.messageId ?? body.id ?? '') };
 }
