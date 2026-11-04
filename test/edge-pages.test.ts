@@ -5,6 +5,8 @@ import { withServer } from './helpers/server.js';
 import { setDb, type DbClient } from '../src/db/client.js';
 import { createCoachSession } from '../src/domain/auth.js';
 import { seedCoachWithSession } from './helpers/fixtures.js';
+import { withRelay } from './helpers/relay.js';
+import { postSignedSms } from './helpers/sms-webhook.js';
 
 /** Runs `fn` with these environment variables set (undefined: unset), then
  * puts them back. */
@@ -89,12 +91,25 @@ test('a body that does not parse gets the branded 400 page and one warning line'
       });
       statuses.push(form.status);
       bodies.push(await form.text());
+      // A body that says it is gzip and is not. body-parser gives this one
+      // no type of its own, only a 400.
+      const gzip = await fetch(`${base}/signin/otp`, {
+        method: 'POST',
+        headers: { ...jsonHeaders, 'content-encoding': 'gzip' },
+        body: 'not gzip at all',
+      });
+      statuses.push(gzip.status);
+      bodies.push(await gzip.text());
     }),
   );
-  assert.deepEqual(statuses, [400, 400]);
+  assert.deepEqual(statuses, [400, 400, 400]);
   for (const body of bodies) assertBranded(body, /<h1>Something was wrong with that<\/h1>/, '400');
   assert.doesNotMatch(bodies[0], /pat@/, 'what was sent is not echoed back');
-  assert.deepEqual(logs.warn, ['400 POST /signin/otp entity.parse.failed', '400 POST /sms querystring.parse.rangeError']);
+  assert.deepEqual(logs.warn, [
+    '400 POST /signin/otp entity.parse.failed',
+    '400 POST /sms querystring.parse.rangeError',
+    '400 POST /signin/otp Error',
+  ]);
   assert.deepEqual(logs.error, []);
 });
 
@@ -144,6 +159,36 @@ test('a fault in a route logs its stack once and shows a branded 500 that gives 
   assert.match(logs.error[0], /^500 GET \/c\/pat: Error: connection to the database was lost\n\s+at /, 'with its stack');
   assert.doesNotMatch(logs.error[0], /secret-link/, 'and without the query');
   assert.deepEqual(logs.warn, []);
+});
+
+test('the relay refusing a reply is a fault here: its message and stack are logged at error level', async () => {
+  const stranger = '+15553217777';
+  let res: Response | undefined;
+  let body = '';
+  const logs = await withRelay(async (relay) => {
+    await freshDb();
+    relay.refuseSmsTo.set(stranger, {
+      status: 400,
+      code: 21211,
+      message: `The 'To' number ${stranger} is not a valid phone number.`,
+    });
+    return captureLogs(() =>
+      withServer(async (base) => {
+        // A stranger's first text, which the app answers with a start link.
+        res = await postSignedSms(base, { From: stranger, To: '+18005550100', Body: 'Tuesdays at 6, 8 kids, $35' });
+        body = await res.text();
+      }),
+    );
+  });
+  assert.equal(res?.status, 500, 'not the relay\'s 400: the request that came in was fine');
+  assertBranded(body, /<h1>Something went wrong<\/h1>/, '500');
+  assert.deepEqual(logs.warn, [], 'not a warning about the request');
+  assert.equal(logs.error.length, 1, 'logged once');
+  assert.match(
+    logs.error[0],
+    /^500 POST \/webhooks\/sms: RelayHttpError: relay sms send failed: 21211 The 'To' number \+15553217777 is not a valid phone number\.\n\s+at /,
+    'with the relay\'s code, its message and the stack',
+  );
 });
 
 test('an address nothing answers gets the same branded Not found page as an unknown coach', async () => {

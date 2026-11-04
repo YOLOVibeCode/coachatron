@@ -25,15 +25,21 @@ export function notFoundHandler(_req: Request, res: Response): void {
   res.status(404).send(notFoundPage());
 }
 
-/** The 4xx status of an error the request itself caused: a body too large
- * or that does not parse (body-parser), or a bad percent-escape in a route
- * parameter (a URIError, which the router marks 400). Null for anything else. */
+/** The 4xx status of an error the request itself caused: a bad
+ * percent-escape in a route parameter (a URIError, which the router marks
+ * 400), or a body body-parser will not read (too large, cut short, does not
+ * parse or inflate, a charset or encoding it does not take). body-parser
+ * makes those with http-errors, which marks a 4xx `expose: true`; a broken
+ * gzip body has no `type`, so the mark is what counts. Null for anything
+ * else, including an error that only carries another service's status, such
+ * as the relay refusing a text (RelayHttpError, SellerError): that went
+ * wrong here, not in the request. */
 function clientErrorStatus(err: unknown): number | null {
   if (err instanceof URIError) return 400;
   if (typeof err !== 'object' || err === null) return null;
-  const { status, statusCode } = err as { status?: unknown; statusCode?: unknown };
-  const code = typeof status === 'number' ? status : statusCode;
-  return typeof code === 'number' && Number.isInteger(code) && code >= 400 && code <= 499 ? code : null;
+  const { status, expose } = err as { status?: unknown; expose?: unknown };
+  if (expose !== true) return null;
+  return typeof status === 'number' && Number.isInteger(status) && status >= 400 && status <= 499 ? status : null;
 }
 
 /** A short name for what went wrong: body-parser's type ("entity.too.large",

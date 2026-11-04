@@ -68,6 +68,9 @@ export interface FakeRelay {
   limited: { sms: boolean; email: boolean };
   /** Numbers whose text the fake refuses with a 502, as if the relay were down. Empty by default. */
   failSmsTo: Set<string>;
+  /** Numbers whose text the fake refuses the way Twilio does, with this
+   * status, code and message. Empty by default. */
+  refuseSmsTo: Map<string, { status: number; code: number; message: string }>;
   buyLinks: FakeBuyLink[];
   onboards: FakeOnboard[];
   /** The relay's current agreement_version for every product. */
@@ -114,6 +117,7 @@ export async function startFakeRelay(): Promise<FakeRelay> {
   const emails: FakeEmail[] = [];
   const buyLinks: FakeBuyLink[] = [];
   const failSmsTo = new Set<string>();
+  const refuseSmsTo = new Map<string, { status: number; code: number; message: string }>();
   const onboards: FakeOnboard[] = [];
   const sellers = new Map<string, FakeSeller>();
   const id = (product: string, sellerKey: string) => `${product}/${sellerKey}`;
@@ -256,6 +260,11 @@ export async function startFakeRelay(): Promise<FakeRelay> {
       res.status(502).json({ error: true, message: 'relay unavailable' });
       return;
     }
+    const refusal = refuseSmsTo.get(to);
+    if (refusal) {
+      res.status(refusal.status).json({ error: true, code: refusal.code, message: refusal.message });
+      return;
+    }
     const body = String(req.body.body);
     const sid = `SMfake${String(sms.length + 1).padStart(26, '0')}`;
     sms.push({ to, body, appEnv: req.header('x-app-env') ?? null, sid });
@@ -305,6 +314,7 @@ export async function startFakeRelay(): Promise<FakeRelay> {
     sms,
     emails,
     failSmsTo,
+    refuseSmsTo,
     buyLinks,
     onboards,
     refunds,
