@@ -49,6 +49,17 @@ export interface FakeOnboard {
   profile?: Record<string, string>;
 }
 
+export interface FakeRefund {
+  product: string;
+  sellerKey: string;
+  paymentRef: string;
+  /** Null when the app asked for the whole payment. */
+  amountCents: number | null;
+  idempotencyKey: string;
+  refundRef: string;
+  status: string;
+}
+
 export interface FakeRelay {
   url: string;
   sms: FakeSms[];
@@ -67,6 +78,14 @@ export interface FakeRelay {
   statusChecks: number;
   /** When true, a seller's status answers 503, as a relay that is down would. */
   statusDown: boolean;
+  /** Refunds the relay made, one per idempotency key. */
+  refunds: FakeRefund[];
+  /** How many refund calls arrived, repeats included. */
+  refundCalls: number;
+  /** The status a new refund answers with. */
+  refundStatus: 'succeeded' | 'pending' | 'failed';
+  /** When set, the refund route answers with this error instead. */
+  refundError: { status: number; code: string } | null;
   seller(product: string, sellerKey: string): FakeSeller | undefined;
   /** What the provider's onboarding does once the coach finishes it. */
   enableCharges(product: string, sellerKey: string): void;
@@ -105,7 +124,11 @@ export async function startFakeRelay(): Promise<FakeRelay> {
     strictOnboard: false,
     statusChecks: 0,
     statusDown: false,
+    refundCalls: 0,
+    refundStatus: 'succeeded' as 'succeeded' | 'pending' | 'failed',
+    refundError: null as { status: number; code: string } | null,
   };
+  const refunds: FakeRefund[] = [];
 
   const seller = '/connect/:product/recipients/:sellerKey';
 
@@ -166,6 +189,44 @@ export async function startFakeRelay(): Promise<FakeRelay> {
       ...(Object.keys(profile).length > 0 ? { profile } : {}),
     });
     res.json({ url: `${base}/connect/${product}/onboard?state=fake-${sellerKey}`, expiresAt: new Date(Date.now() + 3600_000).toISOString() });
+  });
+
+  // The relay's seller refund (store/routes.js refundPayment): one refund per
+  // idempotency key, and never more than the payment, so a second refund of
+  // a whole payment is refused.
+  app.post(`${seller}/refunds`, (req, res) => {
+    if (!requireApiKey(req, res)) return;
+    relay.refundCalls += 1;
+    const { product, sellerKey } = req.params;
+    const { paymentRef, idempotencyKey, amountCents } = (req.body ?? {}) as Record<string, unknown>;
+    if (typeof paymentRef !== 'string' || !paymentRef || typeof idempotencyKey !== 'string' || !idempotencyKey) {
+      res.status(422).json({ code: 'INVALID_REQUEST', error: 'paymentRef and idempotencyKey are required.' });
+      return;
+    }
+    if (relay.refundError) {
+      res.status(relay.refundError.status).json({ code: relay.refundError.code, error: 'refused by the fake relay' });
+      return;
+    }
+    const again = refunds.find((r) => r.idempotencyKey === idempotencyKey);
+    if (again) {
+      res.json({ refundRef: again.refundRef, paymentRef: again.paymentRef, status: again.status, amountCents: again.amountCents });
+      return;
+    }
+    if (refunds.some((r) => r.paymentRef === paymentRef && r.status !== 'failed')) {
+      res.status(422).json({ code: 'REFUND_EXCEEDS_PAYMENT', error: 'The refund is more than is left of the payment.' });
+      return;
+    }
+    const refund: FakeRefund = {
+      product,
+      sellerKey,
+      paymentRef,
+      amountCents: typeof amountCents === 'number' ? amountCents : null,
+      idempotencyKey,
+      refundRef: `ns_rfd_fake${String(refunds.length + 1).padStart(6, '0')}`,
+      status: relay.refundStatus,
+    };
+    refunds.push(refund);
+    res.json({ refundRef: refund.refundRef, paymentRef, status: refund.status, amountCents: refund.amountCents });
   });
 
   app.get('/buy/connect/:product/:seller', (req, res) => {
@@ -246,6 +307,7 @@ export async function startFakeRelay(): Promise<FakeRelay> {
     failSmsTo,
     buyLinks,
     onboards,
+    refunds,
     seller: (product: string, sellerKey: string) => sellers.get(id(product, sellerKey)),
     enableCharges: (product: string, sellerKey: string) => {
       const s = sellers.get(id(product, sellerKey)) ?? { product, sellerKey, agreementVersion: relay.agreementVersion, chargesEnabled: false };
