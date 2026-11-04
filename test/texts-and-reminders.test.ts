@@ -7,7 +7,7 @@ import { postSignedSms } from './helpers/sms-webhook.js';
 import { seedBookedSession, seedCoachWithSession } from './helpers/fixtures.js';
 import { composeText, segmentCount, toGsmLetters } from '../src/domain/outbound.js';
 import { helpReplyText } from '../src/routes/webhooks.js';
-import { runTick } from '../src/jobs/tick.js';
+import { REMINDER_MAX_FAILURES, runTick } from '../src/jobs/tick.js';
 import { SUPPORT_EMAIL } from '../src/config.js';
 import type { DbClient } from '../src/db/client.js';
 
@@ -63,5 +63,33 @@ test('a reminder for an athlete with an accent in their name still says when and
     const reminder = relay.sms.find((m) => m.to === '+15550000001');
     assert.ok(reminder, 'a reminder was sent');
     assert.equal(reminder.body, "Coachatron: Garcia's Goalkeeper Group is Wed Oct 21, 9:00am at Field 3. Reply STOP to opt out.");
+  });
+});
+
+test('a reminder the relay fails to send is sent on a later tick, and the others go out on time', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 4 });
+    await pinSession(db, seed.sessionId, new Date(MORNING.getTime() + 23 * 60 * 60 * 1000));
+    await seedBookedSession(db, seed.sessionId, 'Sam Reyes', '+15550000001');
+    await seedBookedSession(db, seed.sessionId, 'Mia Ortiz', '+15550000002');
+    await seedBookedSession(db, seed.sessionId, 'Ava Chen', '+15550000003');
+    relay.failSmsTo.add('+15550000001');
+    relay.failSmsTo.add('+15550000003');
+    await runTick(db, MORNING);
+    assert.equal(relay.sms.filter((m) => m.to === '+15550000002').length, 1, 'the one after the failure went out the same tick');
+
+    // The relay recovers for one number; the other keeps failing.
+    relay.failSmsTo.delete('+15550000001');
+    for (let minute = 1; minute <= REMINDER_MAX_FAILURES + 2; minute += 1) {
+      await runTick(db, new Date(MORNING.getTime() + minute * 60_000));
+    }
+    for (const phone of ['+15550000001', '+15550000002']) {
+      assert.equal(relay.sms.filter((m) => m.to === phone).length, 1, `${phone} was reminded exactly once`);
+    }
+    const tries = await db.query<{ n: string }>(
+      "select count(*)::text as n from message_log where to_phone = '+15550000003' and template = 'reminder' and status = 'failed'",
+    );
+    assert.equal(Number(tries.rows[0].n), REMINDER_MAX_FAILURES, 'a number that keeps failing is tried a fixed number of times');
   });
 });
