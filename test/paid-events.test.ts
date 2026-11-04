@@ -301,7 +301,7 @@ test('a payment whose session the coach cancels while it is being handled become
       let cancelled = false;
       db.query = (async (sql: string, params?: unknown[]) => {
         const result = await query(sql, params);
-        if (!cancelled && sql.includes('st.capacity, st.price_cents')) {
+        if (!cancelled && sql.includes('select st.coach_id, s.status, s.starts_at_utc')) {
           cancelled = true;
           assert.equal((await cancelScheduledSession(db, seed.coach.id, seed.sessionId)).kind, 'cancelled');
         }

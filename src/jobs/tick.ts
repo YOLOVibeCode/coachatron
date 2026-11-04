@@ -5,6 +5,7 @@ import { clipSms, formatConfirmWhen } from '../lib/time.js';
 import { sendText } from '../domain/outbound.js';
 import { purgeRequestLimits } from '../domain/requestLimits.js';
 import { pollPaymentAccounts, sendDueReadyTexts, sendPaymentReminders } from '../domain/payments.js';
+import { moveWaitlists } from '../domain/waitlist.js';
 
 export { inQuietHours };
 
@@ -69,6 +70,7 @@ type TickStep = (db: DbClient, now: Date) => Promise<unknown>;
 const STEPS: Array<[string, TickStep]> = [
   ['top up weekly slots', topUpAllSlots],
   ['advance overflow cascades', advanceCascade],
+  ['offer open spots to the waitlist', moveWaitlists],
   ['send reminders', sendDueReminders],
   ['check payment accounts', pollPaymentAccounts],
   ['text coaches whose payments are ready', sendDueReadyTexts],

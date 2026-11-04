@@ -7,6 +7,7 @@ import { formatConfirmWhen } from '../lib/time.js';
 import { hasActiveConsent } from './sms-consent.js';
 import { plain, textWithLink } from './bookingMessages.js';
 import { newBookingToken } from './pricing.js';
+import { holdSpotsForWaitlist, offerOpenSpots, sendHeldSpots, spotOffersWaitForMorning, type SpotOffers } from './waitlist.js';
 
 /** The overflow cascade (SPEC.md §7.3). A full session with someone
  * waiting asks the coach one question: open a second group, add a backup
@@ -160,11 +161,12 @@ async function countBooked(db: DbClient, sessionId: number): Promise<number> {
   return Number(result.rows[0]?.count ?? '0');
 }
 
-/** Athletes on the session's waitlist. */
+/** Athletes on the session's waitlist who have not been offered a spot yet. */
 export async function countWaiting(db: DbClient, sessionId: number): Promise<number> {
-  const result = await db.query<{ count: string }>('select count(*)::text as count from waitlist where session_id = $1', [
-    sessionId,
-  ]);
+  const result = await db.query<{ count: string }>(
+    "select count(*)::text as count from waitlist where session_id = $1 and state = 'waiting'",
+    [sessionId],
+  );
   return Number(result.rows[0]?.count ?? '0');
 }
 
@@ -253,7 +255,7 @@ async function askAboutNextFullSession(db: DbClient, coachId: number): Promise<v
      from session s
      join session_type st on st.id = s.session_type_id
      where st.coach_id = $1 and s.status = 'scheduled' and s.starts_at_utc > now()
-       and exists (select 1 from waitlist w where w.session_id = s.id)
+       and exists (select 1 from waitlist w where w.session_id = s.id and w.state = 'waiting')
        and not exists (select 1 from overflow_ask oa where oa.session_id = s.id)
      order by s.starts_at_utc
      limit 20`,
@@ -618,6 +620,9 @@ interface Claimed {
   kind: OverflowKind;
   memberId: number;
   spotsAdded: number;
+  /** Spots held for people waiting, to be sent once the transaction ends. */
+  held: Awaited<ReturnType<typeof holdSpotsForWaitlist>>;
+  waitingForMorning: boolean;
 }
 
 /** The first acceptance takes the job, once. Everything is decided inside
@@ -720,15 +725,29 @@ export async function acceptOffer(db: DbClient, offerId: number): Promise<boolea
       offer.session_id,
       offerId,
     ]);
-    return { sessionId: offer.session_id, targetSessionId: target, kind, memberId: offer.roster_member_id, spotsAdded: added };
+    // The new spots go to the people waiting, in order, before anyone else
+    // can book them: held here, under the same lock, and sent after.
+    const waitingForMorning = await spotOffersWaitForMorning(tx, target);
+    const held = waitingForMorning ? [] : await holdSpotsForWaitlist(tx, target);
+    return {
+      sessionId: offer.session_id,
+      targetSessionId: target,
+      kind,
+      memberId: offer.roster_member_id,
+      spotsAdded: added,
+      held,
+      waitingForMorning,
+    };
   });
   if (!claimed) return false;
-  await tellCoachClaimed(db, claimed, null);
+  let offered = await sendHeldSpots(db, claimed.targetSessionId, claimed.held);
+  if (offered < claimed.held.length) offered += (await offerOpenSpots(db, claimed.targetSessionId)).offered;
+  await tellCoachClaimed(db, claimed, { offered, waitingForMorning: claimed.waitingForMorning });
   return true;
 }
 
 /** SPEC.md §7.3 step 4: the coach hears who took it and what it opened. */
-async function tellCoachClaimed(db: DbClient, claimed: Claimed, offeredToWaitlist: number | null): Promise<void> {
+async function tellCoachClaimed(db: DbClient, claimed: Claimed, spots: SpotOffers): Promise<void> {
   const info = await loadSessionOverflowInfo(db, claimed.sessionId);
   if (!info) return;
   const member = await db.query<{ name: string }>('select name from roster_member where id = $1', [claimed.memberId]);
@@ -737,10 +756,9 @@ async function tellCoachClaimed(db: DbClient, claimed: Claimed, offeredToWaitlis
     claimed.kind === 'second_group'
       ? `${who} took the second group`
       : `${who} is your backup coach, ${claimed.spotsAdded} more ${claimed.spotsAdded === 1 ? 'spot' : 'spots'}`;
-  const offered =
-    offeredToWaitlist === null
-      ? ''
-      : ` ${offeredToWaitlist} waitlisted ${offeredToWaitlist === 1 ? 'parent was' : 'parents were'} offered a spot.`;
+  const offered = spots.waitingForMorning
+    ? ' Waitlisted parents are offered the spots from 8am.'
+    : ` ${spots.offered} waitlisted ${spots.offered === 1 ? 'parent was' : 'parents were'} offered a spot.`;
   await notifyCoach(db, info, 'overflow-claimed', {
     text: keepTail(`Coachatron: ${compactWhen(info)} ${info.name}`, `: ${job}.${offered}`),
     subject: claimed.kind === 'second_group' ? `${who} took the second group` : `${who} is your backup coach`,

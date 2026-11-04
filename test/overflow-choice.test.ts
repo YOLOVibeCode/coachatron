@@ -12,6 +12,7 @@ import { runTick } from '../src/jobs/tick.js';
 import { setComplete, resetComplete } from '../src/llm/complete.js';
 import { fakeComplete } from './fakes/llm.js';
 import type { DbClient } from '../src/db/client.js';
+import { zoneAt } from './helpers/clock.js';
 
 /** SPEC.md §7.3 as decided: the coach picks a second group (1) or a backup
  * coach (2) for each full session, by text or on the schedule, and the
@@ -20,6 +21,8 @@ import type { DbClient } from '../src/db/client.js';
 async function fullSession(db: DbClient, opts: { capacity?: number; location?: string } = {}) {
   const capacity = opts.capacity ?? 1;
   const seed = await seedCoachWithSession(db, { capacity });
+  // Midday for the coach, so spots that open are offered at once.
+  await db.query('update coach set tz = $2 where id = $1', [seed.coach.id, zoneAt(12)]);
   if (opts.location) await db.query('update session set location_text = $2 where id = $1', [seed.sessionId, opts.location]);
   for (let i = 0; i < capacity; i += 1) {
     await seedBookedSession(db, seed.sessionId, `Athlete ${i + 1}`, `+1555000010${i}`);

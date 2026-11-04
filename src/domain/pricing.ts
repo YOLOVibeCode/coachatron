@@ -223,7 +223,7 @@ export interface PendingBooking {
  * of them for one session run one after the other and each counts what the
  * other wrote. A coach's cancel, which closes the session row first, waits
  * for them too, so it sees any booking they made. */
-async function lockSession(tx: DbClient, sessionId: number): Promise<string | null> {
+export async function lockSession(tx: DbClient, sessionId: number): Promise<string | null> {
   const result = await tx.query<{ status: string }>('select status from session where id = $1 for update', [sessionId]);
   return result.rows[0]?.status ?? null;
 }
@@ -258,7 +258,15 @@ export async function createPendingBooking(
        where b.session_id = $1 and ${takesSpotSql('b')} and not (b.status = 'pending' and b.contact_phone = $2)`,
       [args.sessionId, args.contactPhone],
     );
-    if (Number(others.rows[0]?.count ?? '0') >= args.capacity) return null;
+    // People on the waitlist have first claim on a spot that opens; a new
+    // booking takes only what is left after them.
+    const kept = await tx.query<{ count: string }>(
+      `select count(*)::text as count from waitlist w
+       where w.state = 'waiting' and w.contact_phone <> $2
+         and w.session_id = (select coalesce(s.overflow_of, s.id) from session s where s.id = $1)`,
+      [args.sessionId, args.contactPhone],
+    );
+    if (Number(others.rows[0]?.count ?? '0') + Number(kept.rows[0]?.count ?? '0') >= args.capacity) return null;
     await tx.query(
       `update booking set hold_expires_at = now()
        where session_id = $1 and contact_phone = $2 and status = 'pending' and hold_expires_at > now()`,

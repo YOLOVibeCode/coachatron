@@ -55,9 +55,17 @@ import {
 } from '../domain/requestLimits.js';
 import { canText, sendText, type SendOutcome } from '../domain/outbound.js';
 import { paymentsOpen } from '../domain/payments.js';
-import { sendBookingConfirmation } from '../domain/bookingMessages.js';
+import { deliverableEmail, sendBookingConfirmation } from '../domain/bookingMessages.js';
+import { offerOpenSpots } from '../domain/waitlist.js';
 import { hasPaymentHeldForCoach } from '../domain/paymentAttention.js';
-import { OTP_DAILY_MAX_PER_CONTACT, SMS_BRAND, SMS_OPT_IN_CONFIRMATION, SMS_PURPOSE, SUPPORT_EMAIL } from '../config.js';
+import {
+  BOOKING_HOLD_MINUTES,
+  OTP_DAILY_MAX_PER_CONTACT,
+  SMS_BRAND,
+  SMS_OPT_IN_CONFIRMATION,
+  SMS_PURPOSE,
+  SUPPORT_EMAIL,
+} from '../config.js';
 import type { Request } from 'express';
 
 export const publicRouter = Router();
@@ -71,6 +79,8 @@ interface SessionForBooking {
   capacity: number;
   price_cents: number;
   status: string;
+  /** For a second group, the full session whose waitlist it draws from. */
+  overflow_of: number | null;
 }
 
 /** A scheduled session of this coach. `anyStatus` also finds a cancelled
@@ -83,7 +93,7 @@ async function loadSessionForCoach(
 ): Promise<SessionForBooking | null> {
   const result = await db.query<SessionForBooking>(
     `select s.id, s.starts_at_utc, s.tz, st.id as session_type_id, st.name, coalesce(s.capacity_override, st.capacity) as capacity,
-            st.price_cents, s.status
+            st.price_cents, s.status, s.overflow_of
      from session s
      join session_type st on st.id = s.session_type_id
      where s.id = $1 and st.coach_id = $2 and ($3::boolean or s.status = 'scheduled')`,
@@ -159,12 +169,13 @@ function renderSessionFull(
   return page(
     'Session full',
     html`<h1>That session just filled up</h1>
-      <p class="muted">Someone booked the last spot, but you can wait for one to open.</p>
+      <p class="muted">Someone booked the last spot, but you can wait for one to open. When one does, we hold it for you for ${BOOKING_HOLD_MINUTES} minutes and send you a link to book it.</p>
       <form method="post" action="/c/${coach.handle}/sessions/${session.id}/waitlist">
         <input type="hidden" name="athlete_name" value="${values.athleteName}" />
         <input type="hidden" name="contact_phone" value="${values.rawPhone}" />
-        <input type="hidden" name="contact_email" value="${values.contactEmail ?? ''}" />
         ${smsConsentCheckbox()}
+        <label for="waitlist_email">Your email (optional), to hear by email instead</label>
+        <input id="waitlist_email" name="contact_email" type="email" value="${values.contactEmail ?? ''}" />
         <button type="submit">Join the waitlist</button>
       </form>
       <a class="action" href="/c/${coach.handle}">See other times</a>`,
@@ -357,7 +368,8 @@ publicRouter.get('/c/:handle', async (req, res) => {
     booked: string;
   }>(
     `select s.id, s.starts_at_utc, s.tz, st.name, coalesce(s.capacity_override, st.capacity) as capacity, st.price_cents,
-            coalesce((select count(*) from booking b where b.session_id = s.id and ${takesSpotSql('b')}), 0)::text as booked
+            (coalesce((select count(*) from booking b where b.session_id = s.id and ${takesSpotSql('b')}), 0)
+             + coalesce((select count(*) from waitlist w where w.session_id = coalesce(s.overflow_of, s.id) and w.state = 'waiting'), 0))::text as booked
      from session s
      join session_type st on st.id = s.session_type_id
      where st.coach_id = $1 and s.status = 'scheduled' and s.starts_at_utc > now()
@@ -573,7 +585,7 @@ publicRouter.post('/c/:handle/sessions/:sessionId/waitlist', async (req, res) =>
 
   const athleteName = field(req.body, 'athlete_name');
   const contactPhone = normalizePhone(field(req.body, 'contact_phone'));
-  // waitlist has no email column (SPEC.md §11.1) — phone is the contact of record.
+  const contactEmail = field(req.body, 'contact_email') || null;
   if (!athleteName || !contactPhone) {
     res.status(422).send(notFound());
     return;
@@ -594,22 +606,32 @@ publicRouter.post('/c/:handle/sessions/:sessionId/waitlist', async (req, res) =>
     const meta = consentMeta(req, `/c/${coach.handle}/sessions/${session.id}/waitlist`);
     await recordConsent(db, contactPhone, meta.source, { ip: meta.ip, userAgent: meta.userAgent });
   }
-  const textsOn = await hasActiveConsent(db, contactPhone);
+  const textsOn = canText(contactPhone) && (await hasActiveConsent(db, contactPhone));
+  const email = deliverableEmail(contactEmail);
 
-  await db.query(
-    'insert into waitlist (session_id, contact_phone, athlete_name) values ($1, $2, $3)',
-    [session.id, contactPhone, athleteName],
-  );
+  // A second group's waitlist is the full session's: one line, in order.
+  const poolId = session.overflow_of ?? session.id;
+  await db.query('insert into waitlist (session_id, contact_phone, athlete_name, contact_email) values ($1, $2, $3, $4)', [
+    poolId,
+    contactPhone,
+    athleteName,
+    contactEmail,
+  ]);
 
-  await checkOverflow(db, session.id);
+  await checkOverflow(db, poolId);
+  // A spot may already be free (a hold ran out): it goes to the line now.
+  await offerOpenSpots(db, session.id);
 
+  const hold = `and hold it for you for ${BOOKING_HOLD_MINUTES} minutes`;
   res.status(200).send(
     page(
       'On the waitlist',
       html`<h1>You're on the waitlist</h1>
         <p class="muted">${session.name} — ${formatLocal(session.starts_at_utc, session.tz)}. ${textsOn
-          ? `We'll text ${contactPhone} if a spot opens.`
-          : `You didn't choose texts, so check back at ${coach.name}'s page for an open spot.`}</p>
+          ? `We'll text ${contactPhone} if a spot opens, ${hold}.`
+          : email
+            ? `We'll email ${email} if a spot opens, ${hold}.`
+            : `You didn't choose texts or give an email, so check back at ${coach.name}'s page for an open spot.`}</p>
         <a class="action" href="/c/${coach.handle}">Back to ${coach.name}'s sessions</a>`,
     ),
   );
@@ -1369,6 +1391,8 @@ publicRouter.post('/booking/:token/cancel', async (req, res) => {
   if (result.rows.length > 0 && booking.credit_id) {
     await restoreCredit(db, booking.credit_id);
   }
+  // The freed spot goes to the waitlist, in order.
+  if (result.rows.length > 0) await offerOpenSpots(db, booking.session_id);
 
   res.redirect(303, `/booking/${req.params.token}`);
 });
