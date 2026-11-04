@@ -1,8 +1,19 @@
 /** Shared wall-clock formatting. Kept out of route modules so the assistant
  * can use it without importing coach.ts. */
 
+/** What a formatter says for a value that is not a date (a model's
+ * "banana"), instead of throwing while a text is being worded. */
+export const NOT_A_TIME = 'an unknown time';
+
+/** True when the value reads as a real instant. */
+export function isValidInstant(value: string | Date | null | undefined): boolean {
+  if (value === null || value === undefined || value === '') return false;
+  return !Number.isNaN(new Date(value).getTime());
+}
+
 export function formatLocal(isoUtc: string, tz: string): string {
   const date = new Date(isoUtc);
+  if (Number.isNaN(date.getTime())) return NOT_A_TIME;
   return new Intl.DateTimeFormat('en-US', {
     timeZone: tz,
     weekday: 'short',
@@ -18,6 +29,7 @@ const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 /** Compact confirm line: "Tue Oct 7, 6:00pm". */
 export function formatConfirmWhen(isoUtc: string, tz: string): string {
   const date = new Date(isoUtc);
+  if (Number.isNaN(date.getTime())) return NOT_A_TIME;
   const dtf = new Intl.DateTimeFormat('en-US', {
     timeZone: tz,
     hourCycle: 'h23',
@@ -41,6 +53,7 @@ export function formatConfirmWhen(isoUtc: string, tz: string): string {
 /** e.g. "5:00 – 6:00 PM" for a session block on the coach schedule. */
 export function formatTimeRange(isoUtc: string, durationMin: number, tz: string): string {
   const start = new Date(isoUtc);
+  if (Number.isNaN(start.getTime())) return NOT_A_TIME;
   const end = new Date(start.getTime() + durationMin * 60_000);
   const startFmt = new Intl.DateTimeFormat('en-US', {
     timeZone: tz,
