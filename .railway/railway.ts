@@ -39,7 +39,9 @@ export default defineRailway((ctx) => {
   const web = service("web", {
     source: github("YOLOVibeCode/coachatron", { branch: env.branch, checkSuites: false }),
     build: "npm run build",
-    start: "npm start",
+    // node itself, not "npm start": Railway's stop signal then reaches the
+    // server, which finishes its requests and exits 0 (src/server.ts).
+    start: "node dist/server.js",
     healthcheck: "/",
     healthcheckTimeout: 30,
     // Seconds between SIGTERM and SIGKILL when a deploy replaces this one.
@@ -53,12 +55,17 @@ export default defineRailway((ctx) => {
     env: {
       APP_BASE_URL: preserve(),
       APP_ENV: preserve(),
+      // production only: the relay routes texts to this number to coachatron.com.
+      COACHATRON_SMS_NUMBER: preserve(),
       DATABASE_URL: preserve(),
       LITELLM_API_KEY: preserve(),
       LITELLM_BASE: preserve(),
       NODE_ENV: preserve(),
       PORT: preserve(),
       RAILPACK_NODE_VERSION: nodeVersion(),
+      // production only: deploy.drainingSeconds, set as a variable because
+      // `railway config apply` fails there (see README).
+      RAILWAY_DEPLOYMENT_DRAINING_SECONDS: preserve(),
       RELAY_API_KEY: preserve(),
       RELAY_BASE_URL: preserve(),
       RELAY_CONNECT_PRODUCT: preserve(),

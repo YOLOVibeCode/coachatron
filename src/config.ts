@@ -20,6 +20,18 @@ export const STORE_WEBHOOK_URL =
 export const RELAY_APP_ENV = process.env.RELAY_APP_ENV ?? '';
 export const SESSION_SECRET = process.env.SESSION_SECRET ?? 'dev-only-not-a-secret';
 export const APP_BASE_URL = process.env.APP_BASE_URL ?? 'https://coachatron.com';
+/** True when APP_BASE_URL is set to an https address, as it is in every
+ * deployed environment. Unset (a local run) counts as not https. Read at
+ * call time so tests can set it. */
+export function appBaseUrlIsHttps(): boolean {
+  return /^https:\/\//i.test((process.env.APP_BASE_URL ?? '').trim());
+}
+/** True only where APP_ENV is "production". Every other environment
+ * (development, uat, a local run) asks search engines to stay away. Read at
+ * call time so tests can set it. */
+export function isProductionSite(): boolean {
+  return (process.env.APP_ENV ?? '').trim().toLowerCase() === 'production';
+}
 export const LITELLM_BASE = process.env.LITELLM_BASE ?? 'https://ai.noctusoft.com/v1';
 export const LITELLM_MODEL = process.env.LITELLM_MODEL ?? 'coachatron';
 export const LITELLM_API_KEY = process.env.LITELLM_API_KEY ?? '';
