@@ -62,6 +62,7 @@ import {
   type BookingPolicy,
 } from '../domain/policy.js';
 import { summarizeMoney } from '../domain/money.js';
+import { namesList } from '../domain/bookingMessages.js';
 import { describeAttention, listPaymentAttention, type AttentionItem } from '../domain/paymentAttention.js';
 import {
   canTryAgain,
@@ -1575,7 +1576,15 @@ function renderRefundConfirm(check: Refundability, opts: { action: string; keepH
       : `${who} · ${PLAN_KIND[plan.kind]}`;
   const effects: string[] = [];
   if (plan.releasesBooking) {
-    effects.push(plan.sessionStarted ? `${who}'s booking is marked refunded.` : `${who}'s booking is cancelled and the spot is free again.`);
+    // A payment for several children ends each of their bookings that stands.
+    const whose = plan.endsFor.length > 0 ? namesList(plan.endsFor) : who;
+    const several = plan.endsFor.length > 1;
+    const bookings = several ? 'bookings are' : 'booking is';
+    effects.push(
+      plan.sessionStarted
+        ? `${whose}'s ${bookings} marked refunded.`
+        : `${whose}'s ${bookings} cancelled and the ${several ? 'spots are' : 'spot is'} free again.`,
+    );
   } else if (plan.bookingStatus === 'cancelled' && plan.creditsWithdrawn === 0) {
     effects.push(`${who}'s booking was already cancelled, so nothing else changes.`);
   }

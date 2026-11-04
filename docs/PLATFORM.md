@@ -266,7 +266,11 @@ SPEC.md §8.1.
   nothing back (what was already used is counted and shown), a
   kept payment is resolved, and the parent is told once: a text with their
   consent, an email to an address they typed. Totals on Money leave the
-  booking out and show what was refunded this week.
+  booking out and show what was refunded this week. A booking pass's
+  payment is on each child's booking (`booking.charge_id`), so its refund
+  covers every booking carrying it: all are ended, every credit they hold is
+  withdrawn, the amount is the sum of their shares, and the parent's notice
+  names each child.
 - **Refunds made elsewhere.** A refund event for a payment Coachatron did not
   refund is applied when it is the whole payment; a part refund is only
   recorded and listed under "Payments to resolve".

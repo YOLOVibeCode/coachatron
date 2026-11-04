@@ -56,7 +56,7 @@ import {
 } from '../domain/requestLimits.js';
 import { canText, sendText, type SendOutcome } from '../domain/outbound.js';
 import { paymentsOpen } from '../domain/payments.js';
-import { deliverableEmail, sendBookingConfirmation } from '../domain/bookingMessages.js';
+import { deliverableEmail, namesList, sendBookingConfirmation } from '../domain/bookingMessages.js';
 import { offerOpenSpots } from '../domain/waitlist.js';
 import { CREDIT_WITHDRAWN_SQL, cancelByParent, cancelCutoff, cancelTerms, getBookingPolicy, MAX_CHILDREN_PER_BOOKING } from '../domain/policy.js';
 import { hasPaymentHeldForCoach } from '../domain/paymentAttention.js';
@@ -197,11 +197,6 @@ function athleteNames(body: unknown): string[] {
   const names = [field(body, 'athlete_name')];
   for (let i = 2; i <= MAX_CHILDREN_PER_BOOKING + 1; i += 1) names.push(field(body, `athlete_name_${i}`));
   return names.filter((n) => n.length > 0);
-}
-
-/** "Mia", "Mia and Leo", "Mia, Leo and Sam". */
-function namesList(names: string[]): string {
-  return names.length <= 1 ? (names[0] ?? '') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 }
 
 function spotsWord(n: number): string {

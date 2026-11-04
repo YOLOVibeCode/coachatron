@@ -459,6 +459,11 @@ out of the coach's Stripe balance and goes back to the card that paid.
   cancelled later gives nothing back); a
   payment under "Payments to resolve" leaves that list; and the parent is
   told once, by text if they chose texts and by email if they gave one.
+- **Several children.** A booking pass (§9.5) is one payment for each child's
+  booking, so its refund is of that whole payment, from any of those
+  bookings: it ends every one that stands, withdraws the credits they left,
+  and is counted once (a session a child's cancel turned into a credit that
+  was spent counts as used). Money lists the payment once, with every child.
 - **Refunds made elsewhere.** A refund event for a payment Coachatron did not
   refund is applied when it covers the whole payment. One for part of a
   payment changes nothing, and Money shows it under "Payments to resolve".
@@ -502,7 +507,9 @@ children. A parent's paid drop-in cancelled before the window becomes one
 session credit with the coach, with no expiry. A late cancel's payment stays
 with the coach and counts as collected. When the coach cancels the session
 itself, a late cancel's credit comes back, and a credit already given back is
-not given twice. The children of one booking pass are held, paid for and
+not given twice. A credit a refund withdrew (§9.4) gives nothing back: a
+booking that drew on it says no credit comes back, and the coach is not
+offered to give one back. The children of one booking pass are held, paid for and
 booked together, each with their own manage link and confirmation. The
 relay's buy link names one open amount with no quantity, so several
 children's drop-ins are one charge of the price for each, and a package or

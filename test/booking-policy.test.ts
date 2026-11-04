@@ -270,3 +270,29 @@ test("when the coach cancels the session, a late cancel's credit comes back, and
     assert.equal(await phoneCredits(db), 5, 'the given-back drop-in credit is not added again');
   });
 });
+
+test('a credit a refund withdrew: the manage page promises nothing back, and nothing is given back', async () => {
+  const db = await freshDb();
+  const seed = await sessionIn(db, 72);
+  const cancelled = await creditBooking(db, seed.coach.id, seed.sessionId);
+  const noShow = await creditBooking(db, seed.coach.id, seed.sessionId);
+  await db.query('update credit set remaining = 0, withdrawn_at = now() where id = any($1::int[])', [[cancelled.creditId, noShow.creditId]]);
+  await withServer(async (base) => {
+    const before = await (await fetch(`${base}/booking/${cancelled.token}`)).text();
+    assert.doesNotMatch(before, /credit comes back/);
+    assert.equal(await cancel(base, cancelled.token), 303);
+    assert.equal(await remaining(db, cancelled.creditId), 0);
+    const after = await (await fetch(`${base}/booking/${cancelled.token}`)).text();
+    assert.match(after, /Cancelled/);
+    assert.doesNotMatch(after, /credit with Jamie Coach is back|credit was used/);
+
+    const cookie = `cx_session=${await createCoachSession(db, seed.coach.id)}`;
+    await post(base, `/app/sessions/${seed.sessionId}/bookings/${noShow.bookingId}/attendance`, { status: 'noshow' }, cookie);
+    const screen = await (await fetch(`${base}/app/sessions/${seed.sessionId}`, { headers: { cookie } })).text();
+    assert.doesNotMatch(screen, /\/waive"/);
+    await post(base, `/app/sessions/${seed.sessionId}/bookings/${noShow.bookingId}/waive`, {}, cookie);
+    assert.equal(await remaining(db, noShow.creditId), 0);
+    const waived = await db.query<{ waived_at: string | null }>('select waived_at from booking where id = $1', [noShow.bookingId]);
+    assert.equal(waived.rows[0].waived_at, null);
+  });
+});
