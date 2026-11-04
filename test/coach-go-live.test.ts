@@ -321,3 +321,45 @@ test('the page link stays on Schedule and Money in a box made to copy', async ()
     });
   });
 });
+
+/** Runs the page's Copy link button the way a browser would, with the
+ * clipboard and the older copy command each working or not. */
+async function pressCopy(
+  pageHtml: string,
+  env: { clipboard: 'resolves' | 'rejects' | 'missing'; copyCommand: boolean },
+): Promise<string> {
+  const attr = /<button type="button" class="ghost" onclick="([^"]*)">Copy link<\/button>/.exec(pageHtml);
+  assert.ok(attr, 'the page has a Copy link button');
+  const script = attr[1]
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+  const button = { textContent: 'Copy link' };
+  const box = { value: 'https://coachatron.com/c/pat-keeper', focus() {}, select() {} };
+  const document = { getElementById: () => box, execCommand: () => env.copyCommand };
+  const clipboard =
+    env.clipboard === 'missing'
+      ? undefined
+      : { writeText: () => (env.clipboard === 'resolves' ? Promise.resolve() : Promise.reject(new Error('not allowed'))) };
+  new Function('document', 'navigator', script).call(button, document, { clipboard });
+  await new Promise((resolve) => setImmediate(resolve));
+  return button.textContent;
+}
+
+test('Copy link says Copied only once the link is copied', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const { cookie } = await textingCoach(db);
+    await withServer(async (base) => {
+      await publishByHand(base, db, cookie);
+      const page = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
+      assert.equal(await pressCopy(page, { clipboard: 'resolves', copyCommand: false }), 'Copied');
+      assert.equal(await pressCopy(page, { clipboard: 'rejects', copyCommand: true }), 'Copied', 'the older command copies it');
+      assert.equal(await pressCopy(page, { clipboard: 'missing', copyCommand: true }), 'Copied');
+      assert.equal(await pressCopy(page, { clipboard: 'rejects', copyCommand: false }), 'Copy link');
+      assert.equal(await pressCopy(page, { clipboard: 'missing', copyCommand: false }), 'Copy link');
+    });
+  });
+});

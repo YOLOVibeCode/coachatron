@@ -863,11 +863,14 @@ function renderSetupScreen(
   );
 }
 
-// Copies the page link; selecting the box is the fallback where the
-// clipboard is not allowed.
+// Copies the page link and says "Copied" only once it is copied. Where the
+// clipboard API is missing or refused, the older copy command is tried on
+// the selected box; if that fails too, the link is left selected to copy.
 const COPY_LINK_SCRIPT =
-  "var i=document.getElementById('page-link');i.focus();i.select();" +
-  "try{navigator.clipboard.writeText(i.value).then(function(){},function(){});this.textContent='Copied'}catch(e){}";
+  "var b=this,i=document.getElementById('page-link');i.focus();i.select();" +
+  "function done(){b.textContent='Copied'}" +
+  "function old(){try{if(document.execCommand('copy'))done()}catch(e){}}" +
+  "try{navigator.clipboard.writeText(i.value).then(done,old)}catch(e){old()}";
 
 /** The coach's page link, always in view on Schedule and Money: one box to
  * select or copy, and a way to text it. On Schedule the main action is
