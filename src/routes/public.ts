@@ -3,11 +3,15 @@ import { getDb, type DbClient } from '../db/client.js';
 import {
   checkOtp,
   consumeOtp,
+  contactKey,
   createOtp,
   findCoachByHandle,
   getConnectRecipientKey,
+  hasLiveOtp,
+  newOtpCode,
   normalizePhone,
   type CoachRow,
+  type Contact,
 } from '../domain/auth.js';
 import { html, operatorLine, page, raw, smsConsentCheckbox } from '../lib/html.js';
 import { formatLocal } from '../lib/time.js';
@@ -31,8 +35,16 @@ import {
 import { checkOverflow, acceptOffer, declineOffer, describeOffer, getOfferByToken } from '../domain/cascade.js';
 import { buyerEmail, connectBuyUrl } from '../relay/buy-link.js';
 import { hasActiveConsent, isOptedOut, optedOutNotice, recordConsent } from '../domain/sms-consent.js';
-import { clientKey, SMS_OPT_IN_LIMITS, takeRequest, WAITLIST_LIMITS } from '../domain/requestLimits.js';
-import { canText, sendText } from '../domain/outbound.js';
+import {
+  clientKey,
+  CODE_CHECK_CONTACT_LIMITS,
+  CODE_CHECK_IP_LIMITS,
+  SIGNIN_CODE_LIMITS,
+  SMS_OPT_IN_LIMITS,
+  takeRequest,
+  WAITLIST_LIMITS,
+} from '../domain/requestLimits.js';
+import { canText, sendText, type SendOutcome } from '../domain/outbound.js';
 import { paymentsOpen } from '../domain/payments.js';
 import { sendBookingConfirmation } from '../domain/bookingMessages.js';
 import { hasPaymentHeldForCoach } from '../domain/paymentAttention.js';
@@ -796,6 +808,39 @@ function renderCheckout(
   );
 }
 
+const CODE_NOT_SENT: Record<Exclude<SendOutcome, 'sent'> | 'failed', [number, string]> = {
+  capped: [429, 'Too many codes for this number today. Try again tomorrow.'],
+  busy: [429, "We can't send codes right now. Try again in a few minutes."],
+  failed: [502, "We couldn't send a code just now. Try again in a minute."],
+  refused: [422, "We can't text that number."],
+};
+
+const CODE_GONE = {
+  'used-up': 'That code had too many wrong tries. Ask for a new one.',
+  none: 'That code has expired or was already used. Ask for a new one.',
+} as const;
+
+/** Texts a code that proves the booking's phone, and stores it only once
+ * the text has gone out, so a send the limits refuse leaves no code. */
+async function sendCreditCode(db: DbClient, phone: string): Promise<SendOutcome | 'failed'> {
+  const code = newOtpCode();
+  let outcome: SendOutcome;
+  try {
+    outcome = await sendText(db, {
+      to: phone,
+      body: `Coachatron: your code to use your session credits is ${code}. It expires in 10 minutes.`,
+      coachId: null,
+      template: 'otp',
+      perRecipientDailyMax: OTP_DAILY_MAX_PER_CONTACT,
+    });
+  } catch (err) {
+    console.error('checkout code not sent:', err instanceof Error ? err.message : err);
+    return 'failed';
+  }
+  if (outcome === 'sent') await createOtp(db, { kind: 'phone', phone }, { code });
+  return outcome;
+}
+
 publicRouter.post('/c/:handle/checkout/:token', async (req, res) => {
   const db = getDb();
   const coach = await findCoachByHandle(db, req.params.handle);
@@ -846,8 +891,8 @@ publicRouter.post('/c/:handle/checkout/:token', async (req, res) => {
   };
 
   try {
-    // Proving the phone, so its credits can be used: the same one-time codes
-    // and daily limit as signing in.
+    // Proving the phone, so its credits can be used: the same one-time codes,
+    // limits and wrong-try count as signing in.
     if (mode === 'send_code') {
       if (ctx.booking.phone_verified_at) {
         res.redirect(303, `/c/${coach.handle}/checkout/${checkoutToken}`);
@@ -857,27 +902,45 @@ publicRouter.post('/c/:handle/checkout/:token', async (req, res) => {
         await showCheckout(422, "We can't text that number.");
         return;
       }
-      const code = await createOtp(db, { kind: 'phone', phone });
-      const outcome = await sendText(db, {
-        to: phone,
-        body: `Coachatron: your code to use your session credits is ${code}. It expires in 10 minutes.`,
-        coachId: null,
-        template: 'otp',
-        perRecipientDailyMax: OTP_DAILY_MAX_PER_CONTACT,
-      });
+      if (!(await takeRequest(db, SIGNIN_CODE_LIMITS, clientKey(req)))) {
+        await showCheckout(429, 'Too many codes asked for from here. Try again later.');
+        return;
+      }
+      const outcome = await sendCreditCode(db, phone);
       if (outcome === 'sent') {
         res.status(200).send(renderCheckout(coach, ctx.session, checkoutToken, await loadCheckoutOptions(db, coach, ctx.booking, { codeSent: true })));
         return;
       }
-      if (outcome === 'capped') await showCheckout(429, 'Too many codes for this number today. Try again tomorrow.');
-      else await showCheckout(422, "We can't text that number.");
+      if (outcome === 'refused' && (await isOptedOut(db, phone))) {
+        await showCheckout(422, optedOutNotice('to get a code'));
+        return;
+      }
+      const [status, error] = CODE_NOT_SENT[outcome];
+      await showCheckout(status, error);
       return;
     }
 
     if (mode === 'verify_code') {
-      const check = await checkOtp(db, { kind: 'phone', phone }, field(req.body, 'code'));
-      if (!check.ok || !(await consumeOtp(db, check.id))) {
-        await showCheckout(401, "That code didn't work. Check it, or ask for a new one.", { codeSent: true });
+      const contact: Contact = { kind: 'phone', phone };
+      // Counted per address, and per number while it has a live code. Each
+      // code also stops working after a few wrong tries.
+      const byAddress = await takeRequest(db, CODE_CHECK_IP_LIMITS, clientKey(req));
+      const byNumber = (await hasLiveOtp(db, contact)) ? await takeRequest(db, CODE_CHECK_CONTACT_LIMITS, contactKey(contact)) : true;
+      if (!byAddress || !byNumber) {
+        await showCheckout(429, 'Too many tries. Try again in an hour.', { codeSent: true });
+        return;
+      }
+      const check = await checkOtp(db, contact, field(req.body, 'code'));
+      if (!check.ok) {
+        // A wrong code can be tried again; a code that is used up or gone
+        // needs a new one, so the page offers to text one.
+        if (check.reason === 'wrong') await showCheckout(401, "That code didn't work. Check it and try again.", { codeSent: true });
+        else await showCheckout(401, CODE_GONE[check.reason]);
+        return;
+      }
+      // Another request may have used the same code a moment ago.
+      if (!(await consumeOtp(db, check.id))) {
+        await showCheckout(401, CODE_GONE.none);
         return;
       }
       await markPhoneVerified(db, bookingId);

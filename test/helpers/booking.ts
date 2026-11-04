@@ -19,10 +19,11 @@ export async function bookOnline(
   athlete: string,
   phone: string,
   extra: Record<string, string> = {},
+  headers: Record<string, string> = {},
 ): Promise<BookResult> {
   const res = await fetch(`${base}/c/${handle}/sessions/${sessionId}/book`, {
     method: 'POST',
-    headers: json,
+    headers: { ...json, ...headers },
     body: JSON.stringify({ athlete_name: athlete, contact_phone: phone, sms_consent: '1', ...extra }),
     redirect: 'manual',
   });
@@ -31,10 +32,16 @@ export async function bookOnline(
   return { status: res.status, key: match ? match[1] : null, location };
 }
 
-export async function postCheckout(base: string, handle: string, key: string, fields: Record<string, string>): Promise<Response> {
+export async function postCheckout(
+  base: string,
+  handle: string,
+  key: string,
+  fields: Record<string, string>,
+  headers: Record<string, string> = {},
+): Promise<Response> {
   return fetch(`${base}/c/${handle}/checkout/${key}`, {
     method: 'POST',
-    headers: json,
+    headers: { ...json, ...headers },
     body: JSON.stringify(fields),
     redirect: 'manual',
   });

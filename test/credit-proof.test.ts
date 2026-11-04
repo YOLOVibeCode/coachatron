@@ -6,6 +6,7 @@ import { withRelay } from './helpers/relay.js';
 import { seedBookedSession, seedCoachWithSession } from './helpers/fixtures.js';
 import { bookOnline, latestBooking, postCheckout } from './helpers/booking.js';
 import { createCredit } from '../src/domain/pricing.js';
+import { SIGNIN_CODE_LIMITS, takeRequest } from '../src/domain/requestLimits.js';
 import type { DbClient } from '../src/db/client.js';
 
 /** Session credits belong to a phone, so using them needs proof of that
@@ -188,5 +189,122 @@ test('a manage link proves nothing for a different phone, an unproven booking, o
       "select count(*)::text as n from booking where status = 'pending' and phone_verified_at is not null",
     );
     assert.equal(verified.rows[0].n, '0');
+  });
+});
+
+async function codesStored(db: DbClient, phone: string): Promise<number> {
+  return Number((await db.query<{ n: string }>('select count(*)::text as n from otp_code where phone = $1', [phone])).rows[0].n);
+}
+
+test('a checkout code is stored only once its text has gone out', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 3 });
+    await createCredit(db, seed.coach.id, PHONE, null, 'test', 3, null);
+    await withServer(async (base) => {
+      const b = await bookOnline(base, seed.coach.handle, seed.sessionId, 'Alex', '5551112222');
+      assert.ok(b.key);
+
+      relay.limited.sms = true;
+      const busy = await postCheckout(base, seed.coach.handle, b.key, { mode: 'send_code' });
+      assert.equal(busy.status, 429);
+      assert.match(await busy.text(), /send codes right now/);
+      assert.equal(await codesStored(db, PHONE), 0, 'a text the relay held back leaves no code');
+      relay.limited.sms = false;
+
+      for (let i = 0; i < 5; i += 1) {
+        assert.equal((await postCheckout(base, seed.coach.handle, b.key, { mode: 'send_code' })).status, 200, `code ${i + 1}`);
+      }
+      const capped = await postCheckout(base, seed.coach.handle, b.key, { mode: 'send_code' });
+      assert.equal(capped.status, 429);
+      assert.match(await capped.text(), /Too many codes for this number today/);
+      assert.equal(await codesStored(db, PHONE), 5, 'the request over the daily limit stores no code');
+    });
+    assert.equal(relay.sms.filter((m) => m.to === PHONE).length, 5);
+  });
+});
+
+test('wrong checkout codes count toward the code’s limit of tries', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 3 });
+    const creditId = await createCredit(db, seed.coach.id, PHONE, null, 'test', 3, null);
+    await withServer(async (base) => {
+      const b = await bookOnline(base, seed.coach.handle, seed.sessionId, 'Alex', '5551112222');
+      assert.ok(b.key);
+      await postCheckout(base, seed.coach.handle, b.key, { mode: 'send_code' });
+      const code = lastCode(relay.sms, PHONE);
+      const wrong = code === '000000' ? '111111' : '000000';
+
+      for (let i = 0; i < 4; i += 1) {
+        const tried = await postCheckout(base, seed.coach.handle, b.key, { mode: 'verify_code', code: wrong });
+        assert.equal(tried.status, 401, `wrong try ${i + 1}`);
+        assert.match(await tried.text(), /didn&#39;t work|didn't work/);
+      }
+      const fifth = await postCheckout(base, seed.coach.handle, b.key, { mode: 'verify_code', code: wrong });
+      assert.equal(fifth.status, 401);
+      assert.match(await fifth.text(), /too many wrong tries/);
+
+      const right = await postCheckout(base, seed.coach.handle, b.key, { mode: 'verify_code', code });
+      assert.equal(right.status, 401, 'the right code no longer works');
+      const page = await right.text();
+      assert.match(page, /too many wrong tries/);
+      assert.match(page, /Text me a code/, 'the page offers a new code');
+      assert.equal((await postCheckout(base, seed.coach.handle, b.key, { mode: 'credit' })).status, 403);
+
+      await postCheckout(base, seed.coach.handle, b.key, { mode: 'send_code' });
+      const fresh = lastCode(relay.sms, PHONE);
+      assert.equal((await postCheckout(base, seed.coach.handle, b.key, { mode: 'verify_code', code: fresh })).status, 303, 'a new code works');
+      assert.equal((await postCheckout(base, seed.coach.handle, b.key, { mode: 'credit' })).status, 303);
+    });
+    assert.equal(await remaining(db, creditId), 2);
+  });
+});
+
+test('one code sent to two checkouts at once proves only one of them', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 3 });
+    await createCredit(db, seed.coach.id, PHONE, null, 'test', 3, null);
+    const other = await db.query<{ id: number }>(
+      `insert into session (session_type_id, starts_at_utc, tz, status)
+       select session_type_id, starts_at_utc + interval '1 day', tz, 'scheduled' from session where id = $1 returning id`,
+      [seed.sessionId],
+    );
+    await withServer(async (base) => {
+      const first = await bookOnline(base, seed.coach.handle, seed.sessionId, 'Alex', '5551112222');
+      const second = await bookOnline(base, seed.coach.handle, other.rows[0].id, 'Sam', '5551112222');
+      assert.ok(first.key && second.key);
+      await postCheckout(base, seed.coach.handle, first.key, { mode: 'send_code' });
+      const code = lastCode(relay.sms, PHONE);
+      const results = await Promise.all([
+        postCheckout(base, seed.coach.handle, first.key, { mode: 'verify_code', code }),
+        postCheckout(base, seed.coach.handle, second.key, { mode: 'verify_code', code }),
+      ]);
+      assert.deepEqual(results.map((r) => r.status).sort(), [303, 401]);
+    });
+    const proven = await db.query<{ n: string }>('select count(*)::text as n from booking where phone_verified_at is not null');
+    assert.equal(proven.rows[0].n, '1');
+  });
+});
+
+test('checkout code requests from one address are limited like sign-in code requests', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 3 });
+    await createCredit(db, seed.coach.id, PHONE, null, 'test', 3, null);
+    for (let i = 0; i < 10; i += 1) await takeRequest(db, SIGNIN_CODE_LIMITS, '203.0.113.70');
+    await withServer(async (base) => {
+      const b = await bookOnline(base, seed.coach.handle, seed.sessionId, 'Alex', '5551112222');
+      assert.ok(b.key);
+      const held = await postCheckout(base, seed.coach.handle, b.key, { mode: 'send_code' }, { 'x-forwarded-for': '203.0.113.70' });
+      assert.equal(held.status, 429);
+      assert.match(await held.text(), /Too many codes asked for from here/);
+      assert.equal(relay.sms.filter((m) => m.to === PHONE).length, 0);
+      assert.equal(await codesStored(db, PHONE), 0);
+
+      const elsewhere = await postCheckout(base, seed.coach.handle, b.key, { mode: 'send_code' }, { 'x-forwarded-for': '203.0.113.71' });
+      assert.equal(elsewhere.status, 200, 'another address is not held back');
+    });
   });
 });
