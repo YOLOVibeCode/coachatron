@@ -9,6 +9,7 @@ import {
   getPlansForCoach,
   getPlanById,
   getCreditBalance,
+  coachHasOpenCredits,
   decrementCredit,
   createPendingBooking,
   getBooking,
@@ -58,14 +59,17 @@ function needsPayment(session: { price_cents: number }): boolean {
 
 /** What a parent sees instead of a Pay button the coach cannot take yet.
  * Nothing is sent to the payment page, which would answer an error. */
-function bookingOpensSoon(coach: CoachRow) {
+function bookingOpensSoon(coach: CoachRow, note?: string) {
   return page(
     'Booking opens soon',
     html`<h1>Booking opens soon</h1>
       <p class="muted">${coach.name} is still setting up payments. Check back soon to book.</p>
+      ${note ? html`<p class="muted">${note}</p>` : raw('')}
       <a class="action" href="/c/${coach.handle}">See ${coach.name}'s sessions</a>`,
   );
 }
+
+const CREDITS_ONLY_NOTE = 'Only session credits can be used until then.';
 
 function field(body: unknown, key: string): string {
   const value = (body as Record<string, unknown> | undefined)?.[key];
@@ -259,6 +263,8 @@ publicRouter.get('/c/:handle', async (req, res) => {
     [coach.id],
   );
   const open = sessions.rows.some(needsPayment) ? await paymentsOpen(db, coach) : true;
+  // Families who already hold credits can still book with them.
+  const creditsWork = !open && (await coachHasOpenCredits(db, coach.id));
 
   res.status(200).send(
     page(
@@ -278,7 +284,10 @@ publicRouter.get('/c/:handle', async (req, res) => {
                   ? raw('')
                   : open || !needsPayment(s)
                     ? html`<a class="action" href="/c/${coach.handle}/sessions/${s.id}/book">Book</a>`
-                    : html`<p class="muted">Booking opens soon</p>`}
+                    : html`<p class="muted">Booking opens soon</p>
+                        ${creditsWork
+                          ? html`<p class="muted"><a href="/c/${coach.handle}/sessions/${s.id}/book">Have session credits? Book with them</a></p>`
+                          : raw('')}`}
               </div>`;
             })}`,
     ),
@@ -300,7 +309,12 @@ publicRouter.get('/c/:handle/sessions/:sessionId/book', async (req, res) => {
     return;
   }
   if (needsPayment(session) && !(await paymentsOpen(db, coach))) {
-    res.status(200).send(bookingOpensSoon(coach));
+    // Only a family holding credits can book now; the form stays for them.
+    if (!(await coachHasOpenCredits(db, coach.id))) {
+      res.status(200).send(bookingOpensSoon(coach));
+      return;
+    }
+    res.status(200).send(renderBookingForm(coach, session, {}, undefined, { creditsOnly: true }));
     return;
   }
   res.status(200).send(renderBookingForm(coach, session, {}));
@@ -311,11 +325,15 @@ function renderBookingForm(
   session: SessionForBooking,
   values: { athlete_name?: string; contact_phone?: string; contact_email?: string },
   error?: string,
+  opts: { creditsOnly?: boolean } = {},
 ) {
   return page(
     'Book a session',
     html`<h1>${session.name}</h1>
       <p class="muted">${formatLocal(session.starts_at_utc, session.tz)} — $${(session.price_cents / 100).toFixed(2)}</p>
+      ${opts.creditsOnly
+        ? html`<p class="muted">${coach.name} is still setting up payments, so for now you can book only with session credits. Enter the phone number your credits are under.</p>`
+        : raw('')}
       <form method="post" action="/c/${coach.handle}/sessions/${session.id}/book">
         <label for="athlete_name">Athlete name</label>
         <input id="athlete_name" name="athlete_name" value="${values.athlete_name ?? ''}" required />
@@ -324,7 +342,7 @@ function renderBookingForm(
         ${smsConsentCheckbox()}
         <label for="contact_email">Your email (optional)</label>
         <input id="contact_email" name="contact_email" type="email" value="${values.contact_email ?? ''}" />
-        <button type="submit">Continue to payment</button>
+        <button type="submit">${opts.creditsOnly ? 'Continue with a credit' : 'Continue to payment'}</button>
       </form>
       ${error ? raw(`<p class="error">${error}</p>`) : raw('')}`,
   );
@@ -343,10 +361,9 @@ publicRouter.post('/c/:handle/sessions/:sessionId/book', async (req, res) => {
     return;
   }
 
-  if (needsPayment(session) && !(await paymentsOpen(db, coach))) {
-    res.status(409).send(bookingOpensSoon(coach));
-    return;
-  }
+  // While the coach cannot take payments, a family with session credits can
+  // still book; checkout then offers only the credit.
+  const creditsOnly = needsPayment(session) && !(await paymentsOpen(db, coach));
 
   const athleteName = field(req.body, 'athlete_name');
   const rawPhone = field(req.body, 'contact_phone');
@@ -362,8 +379,14 @@ publicRouter.post('/c/:handle/sessions/:sessionId/book', async (req, res) => {
           session,
           { athlete_name: athleteName, contact_phone: rawPhone, contact_email: contactEmail ?? undefined },
           'Enter the athlete’s name and a valid phone number.',
+          { creditsOnly },
         ),
       );
+    return;
+  }
+
+  if (creditsOnly && !(await getCreditBalance(db, coach.id, contactPhone))) {
+    res.status(409).send(bookingOpensSoon(coach, CREDITS_ONLY_NOTE));
     return;
   }
 

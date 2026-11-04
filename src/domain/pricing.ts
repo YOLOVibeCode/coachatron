@@ -89,6 +89,15 @@ export async function getCreditBalance(db: DbClient, coachId: number, contactPho
   return result.rows[0] ?? null;
 }
 
+/** Whether any family holds an unused, unexpired credit with this coach. */
+export async function coachHasOpenCredits(db: DbClient, coachId: number): Promise<boolean> {
+  const result = await db.query(
+    'select 1 from credit where coach_id = $1 and remaining > 0 and (expires_at is null or expires_at > now()) limit 1',
+    [coachId],
+  );
+  return result.rows.length > 0;
+}
+
 /** Decrements one unit off a specific credit row. Returns false if the
  * credit is already exhausted (race with another booking on the same
  * phone). Caller re-fetches the credit immediately before calling this. */

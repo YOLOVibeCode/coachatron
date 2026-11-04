@@ -63,6 +63,8 @@ export interface FakeRelay {
   strictOnboard: boolean;
   /** How many times the app asked for a seller's status. */
   statusChecks: number;
+  /** When true, a seller's status answers 503, as a relay that is down would. */
+  statusDown: boolean;
   seller(product: string, sellerKey: string): FakeSeller | undefined;
   /** What the provider's onboarding does once the coach finishes it. */
   enableCharges(product: string, sellerKey: string): void;
@@ -99,6 +101,7 @@ export async function startFakeRelay(): Promise<FakeRelay> {
     limited: { sms: false, email: false },
     strictOnboard: false,
     statusChecks: 0,
+    statusDown: false,
   };
 
   const seller = '/connect/:product/recipients/:sellerKey';
@@ -106,6 +109,10 @@ export async function startFakeRelay(): Promise<FakeRelay> {
   app.get(seller, (req, res) => {
     if (!requireApiKey(req, res)) return;
     relay.statusChecks += 1;
+    if (relay.statusDown) {
+      res.status(503).json({ code: 'UNAVAILABLE' });
+      return;
+    }
     const s = sellers.get(id(req.params.product, req.params.sellerKey));
     if (!s) {
       res.status(404).json({ code: 'RECIPIENT_NOT_FOUND' });

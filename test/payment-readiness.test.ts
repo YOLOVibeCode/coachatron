@@ -3,14 +3,23 @@ import assert from 'node:assert/strict';
 import { freshDb } from './helpers/db.js';
 import { withServer } from './helpers/server.js';
 import { withRelay } from './helpers/relay.js';
-import { seedCoachWithSession } from './helpers/fixtures.js';
+import { seedCoachWithSession, seedPackage, seedPlan } from './helpers/fixtures.js';
 import { postSellerEvent } from './helpers/store-event.js';
 import { createCoach, createCoachSession, type CoachRow } from '../src/domain/auth.js';
 import { grantSmsConsent } from '../src/domain/sms-consent.js';
 import { createPendingBooking } from '../src/domain/pricing.js';
 import { zonedParts } from '../src/domain/scheduling.js';
-import { getPaymentsRow, markPaymentsStarted, recordChargesEnabled } from '../src/domain/payments.js';
+import {
+  getPaymentsRow,
+  markPaymentsStarted,
+  notePublished,
+  paymentsOpen,
+  PAYMENTS_RETRY_MS,
+  recordChargesEnabled,
+  sendPaymentReminders,
+} from '../src/domain/payments.js';
 import { runTick } from '../src/jobs/tick.js';
+import { runMigrations } from '../src/db/migrate.js';
 import type { DbClient } from '../src/db/client.js';
 
 /** Whether parents can pay a coach yet: saved locally, kept fresh from the
@@ -151,6 +160,58 @@ test('the tick asks about a coach who started, at most every 15 minutes, and sto
   });
 });
 
+test('a check the relay does not answer still waits 15 minutes before the tick asks again', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { paymentsReady: false });
+    await db.query('update coach_payments set checked_at = $2 where coach_id = $1', [
+      seed.coach.id,
+      new Date(MORNING.getTime() - 60 * 60 * 1000).toISOString(),
+    ]);
+    await markPaymentsStarted(db, seed.coach.id, MORNING);
+    relay.statusDown = true;
+    await runTick(db, MORNING);
+    assert.equal(relay.statusChecks, 1);
+    const row = await getPaymentsRow(db, seed.coach.id);
+    assert.equal(row?.charges_enabled, false, 'what was known stays');
+    assert.ok(row?.attempted_at, 'the ask is saved');
+
+    await runTick(db, new Date(MORNING.getTime() + 60 * 1000));
+    await runTick(db, new Date(MORNING.getTime() + 14 * 60 * 1000));
+    assert.equal(relay.statusChecks, 1, 'not again inside 15 minutes');
+
+    relay.statusDown = false;
+    relay.enableCharges('coachatron', seed.coach.handle);
+    await runTick(db, new Date(MORNING.getTime() + 15 * 60 * 1000));
+    assert.equal(relay.statusChecks, 2);
+    assert.equal(await chargesEnabled(db, seed.coach.id), true);
+  });
+});
+
+test('coaches the relay cannot answer for take turns with everyone else in the tick', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const ids: number[] = [];
+    for (let n = 0; n < 26; n += 1) {
+      const coach = await createCoach(db, {
+        name: `Coach ${n}`,
+        phone: `+1555020${String(n).padStart(4, '0')}`,
+        email: '',
+        tz: 'America/Chicago',
+      });
+      await markPaymentsStarted(db, coach.id, MORNING);
+      ids.push(coach.id);
+    }
+    relay.statusDown = true;
+    await runTick(db, MORNING);
+    assert.equal(relay.statusChecks, 25, 'one batch');
+    await runTick(db, new Date(MORNING.getTime() + 60 * 1000));
+    assert.equal(relay.statusChecks, 26, 'the next tick asks about the one left, not the same batch again');
+    const asked = await db.query<{ n: number }>('select count(*)::int as n from coach_payments where attempted_at is not null');
+    assert.equal(asked.rows[0].n, ids.length);
+  });
+});
+
 test('a coach never checked is asked once by the tick, which also learns they started', async () => {
   await withRelay(async (relay) => {
     const db = await freshDb();
@@ -243,24 +304,55 @@ test('a free session stays bookable while payments are not set up', async () => 
   });
 });
 
-test('a parent with session credits can still use one while payments are paused', async () => {
-  await withRelay(async () => {
+test('a family with session credits can still book with them while payments are paused', async () => {
+  await withRelay(async (relay) => {
     const db = await freshDb();
     const seed = await seedCoachWithSession(db, { paymentsReady: false });
+    const packageId = await seedPackage(db, seed.coach.id, 5, 15000);
+    await seedPlan(db, seed.coach.id, 4, 12000);
     await db.query(
-      `insert into credit (coach_id, contact_phone, remaining, source) values ($1, '+15550007777', 3, 'package:1')`,
-      [seed.coach.id],
+      `insert into credit (coach_id, contact_phone, remaining, source) values ($1, '+15550007777', 3, $2)`,
+      [seed.coach.id, `package:${packageId}`],
     );
-    const pending = await createPendingBooking(db, seed.sessionId, 'Sam Reyes', '+15550007777', null);
     await withServer(async (base) => {
-      const path = `/c/${seed.coach.handle}/checkout/${pending}`;
-      const checkout = await (await fetch(`${base}${path}`)).text();
+      const bookPath = `/c/${seed.coach.handle}/sessions/${seed.sessionId}/book`;
+      const coachPage = await (await fetch(`${base}/c/${seed.coach.handle}`)).text();
+      assert.match(coachPage, /Booking opens soon/);
+      assert.doesNotMatch(coachPage, />Book</, 'no Book button');
+      assert.match(coachPage, new RegExp(`<a href="${bookPath}">Have session credits\\? Book with them</a>`));
+
+      const formHtml = await (await fetch(`${base}${bookPath}`)).text();
+      assert.match(formHtml, /only with session credits/);
+      assert.match(formHtml, /Continue with a credit/);
+
+      const none = await form(base, bookPath, { athlete_name: 'Mia Ortiz', contact_phone: '5550008888' });
+      assert.equal(none.status, 409, 'a phone without credits cannot book yet');
+      const noneHtml = await none.text();
+      assert.match(noneHtml, /Booking opens soon/);
+      assert.match(noneHtml, /Only session credits can be used until then/);
+      assert.equal((await db.query('select id from booking where athlete_name = $1', ['Mia Ortiz'])).rows.length, 0);
+
+      const booked = await form(base, bookPath, { athlete_name: 'Sam Reyes', contact_phone: '5550007777' });
+      assert.equal(booked.status, 303);
+      const checkoutPath = booked.headers.get('location') ?? '';
+      assert.match(checkoutPath, new RegExp(`^/c/${seed.coach.handle}/checkout/\\d+$`));
+
+      const checkout = await (await fetch(`${base}${checkoutPath}`)).text();
       assert.match(checkout, /Use 1 of 3 session credits/);
       assert.doesNotMatch(checkout, /Pay \$/);
-      const used = await form(base, path, { mode: 'credit' });
+      assert.doesNotMatch(checkout, /Buy |Subscribe to /);
+
+      const used = await form(base, checkoutPath, { mode: 'credit' });
       assert.equal(used.status, 303);
-      const status = await db.query<{ status: string }>('select status from booking where id = $1', [pending]);
-      assert.equal(status.rows[0].status, 'booked');
+      const rows = await db.query<{ status: string; payment_source: string }>(
+        'select status, payment_source from booking where athlete_name = $1',
+        ['Sam Reyes'],
+      );
+      assert.equal(rows.rows[0].status, 'booked');
+      assert.equal(rows.rows[0].payment_source, 'PackageCredit');
+      const left = await db.query<{ remaining: number }>('select remaining from credit where coach_id = $1', [seed.coach.id]);
+      assert.equal(left.rows[0].remaining, 2);
+      assert.equal(relay.buyLinks.length, 0);
     });
   });
 });
@@ -296,6 +388,78 @@ test('a coach whose readiness was never saved is looked up once, then the saved 
     });
     assert.equal(await chargesEnabled(db, ready.coach.id), true);
     assert.equal(await chargesEnabled(db, notReady.coach.id), false);
+  });
+});
+
+test('while the relay cannot say whether a coach takes payments, booking waits, and the page asks at most once a minute', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db);
+    await db.query('delete from coach_payments');
+    relay.statusDown = true;
+    await withServer(async (base) => {
+      const coachPage = await (await fetch(`${base}/c/${seed.coach.handle}`)).text();
+      assert.match(coachPage, /Booking opens soon/);
+      assert.doesNotMatch(coachPage, />Book</);
+      const bookPath = `/c/${seed.coach.handle}/sessions/${seed.sessionId}/book`;
+      assert.match(await (await fetch(`${base}${bookPath}`)).text(), /Booking opens soon/);
+      const booked = await form(base, bookPath, { athlete_name: 'Mia Ortiz', contact_phone: '5550008888' });
+      assert.equal(booked.status, 409);
+    });
+    assert.equal(relay.statusChecks, 1, 'one ask, then the saved attempt holds the rest');
+    assert.equal(relay.buyLinks.length, 0);
+
+    const asked = (await getPaymentsRow(db, seed.coach.id))?.attempted_at;
+    assert.ok(asked);
+    const soon = new Date(new Date(asked).getTime() + PAYMENTS_RETRY_MS - 1000);
+    assert.equal(await paymentsOpen(db, seed.coach, soon), false);
+    assert.equal(relay.statusChecks, 1);
+
+    relay.statusDown = false;
+    relay.enableCharges('coachatron', seed.coach.handle);
+    const later = new Date(new Date(asked).getTime() + PAYMENTS_RETRY_MS);
+    assert.equal(await paymentsOpen(db, seed.coach, later), true);
+    assert.equal(relay.statusChecks, 2);
+    assert.equal(await chargesEnabled(db, seed.coach.id), true);
+  });
+});
+
+// ---- coaches from before readiness was saved ------------------------------
+
+/** The next whole hour from `from` that is mid-morning in Chicago. */
+function chicagoMorningAfter(from: Date): Date {
+  let at = new Date(Math.ceil(from.getTime() / 3_600_000) * 3_600_000);
+  while (zonedParts(at, 'America/Chicago').hour !== 10) at = new Date(at.getTime() + 3_600_000);
+  return at;
+}
+
+test('a coach with sessions from before readiness was saved gets no go-live text and no reminders', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const before = await seedCoachWithSession(db);
+    // As the database stood before migration 0013 ran.
+    await db.query('delete from coach_payments');
+    await db.query(`delete from schema_migrations where name = '0013_payment_readiness.sql'`);
+    await runMigrations(db);
+    const row = await getPaymentsRow(db, before.coach.id);
+    assert.ok(row?.published_at && row.live_texted_at);
+    assert.equal(row.reminders_sent, 2);
+    assert.equal(row.charges_enabled, null);
+
+    // A coach who goes live after it, as a check that the texts do go out.
+    const after = await seedCoachWithSession(db, { paymentsReady: false });
+    const now = new Date();
+    await notePublished(db, before.coach, now);
+    await notePublished(db, after.coach, now);
+    const later = chicagoMorningAfter(new Date(now.getTime() + 4 * 24 * 3_600_000));
+    await sendPaymentReminders(db, later);
+    await sendPaymentReminders(db, new Date(later.getTime() + 24 * 3_600_000));
+
+    assert.equal(relay.sms.filter((m) => m.to === before.coach.phone).length, 0);
+    const afterTexts = relay.sms.filter((m) => m.to === after.coach.phone).map((m) => m.body);
+    assert.equal(afterTexts.length, 3, 'go-live text and two reminders');
+    assert.match(afterTexts[0], /You're live/);
+    assert.match(afterTexts[1], /Tap to finish/);
   });
 });
 

@@ -22,7 +22,10 @@ const PAYMENTS_POLL_WINDOW_MS = 30 * DAY_MS;
 const PAYMENTS_POLL_BATCH = 25;
 /** A payments link signs the coach in once, within a week. */
 export const PAYMENTS_LINK_TTL_MS = 7 * DAY_MS;
-/** Reminders go about a day and about three days after the first publish. */
+/** A page view does not ask the relay again this soon after it last went unanswered. */
+export const PAYMENTS_RETRY_MS = MINUTE_MS;
+/** Reminders go about a day and about three days after the first publish.
+ * Migration 0013 marks coaches from before it as sent both (reminders_sent = 2). */
 const REMINDER_AFTER_MS = [24 * HOUR_MS, 72 * HOUR_MS];
 const REMINDER_GAP_MS = DAY_MS;
 
@@ -30,6 +33,7 @@ export interface PaymentsRow {
   coach_id: number;
   charges_enabled: boolean | null;
   checked_at: string | null;
+  attempted_at: string | null;
   started_at: string | null;
   published_at: string | null;
   live_texted_at: string | null;
@@ -190,8 +194,15 @@ export async function recordSellerStatus(
   await recordChargesEnabled(db, coach, status?.chargesEnabled === true, now);
 }
 
-/** Asks the relay and saves the answer. null when the relay did not answer. */
+/** Asks the relay and saves the answer. null when the relay did not answer.
+ * The ask itself is saved either way, so a relay that is down is not asked
+ * again on every page view and every tick. */
 export async function refreshPaymentsStatus(db: DbClient, coach: CoachRow, now: Date = new Date()): Promise<boolean | null> {
+  await db.query(
+    `insert into coach_payments (coach_id, attempted_at) values ($1, $2)
+     on conflict (coach_id) do update set attempted_at = excluded.attempted_at`,
+    [coach.id, now.toISOString()],
+  );
   let status: SellerStatus | null;
   try {
     status = await getSellerStatus(getConnectRecipientKey(coach));
@@ -203,12 +214,14 @@ export async function refreshPaymentsStatus(db: DbClient, coach: CoachRow, now: 
 }
 
 /** Whether a parent can pay this coach now. The saved answer when there is
- * one; otherwise the relay is asked once. If it cannot be asked, booking
- * stays open as it was before readiness was tracked. */
+ * one; otherwise the relay is asked, at most once a minute. Until it answers,
+ * paying stays closed (session credits still work), since the payment page
+ * is on the same relay; the tick keeps asking and opens it when it can. */
 export async function paymentsOpen(db: DbClient, coach: CoachRow, now: Date = new Date()): Promise<boolean> {
   const row = await getPaymentsRow(db, coach.id);
   if (row?.charges_enabled != null) return row.charges_enabled;
-  return (await refreshPaymentsStatus(db, coach, now)) ?? true;
+  if (row?.attempted_at && now.getTime() - new Date(row.attempted_at).getTime() < PAYMENTS_RETRY_MS) return false;
+  return (await refreshPaymentsStatus(db, coach, now)) ?? false;
 }
 
 export async function markPaymentsStarted(db: DbClient, coachId: number, now: Date = new Date()): Promise<void> {
@@ -278,14 +291,16 @@ async function eachCoach(db: DbClient, coachIds: number[], fn: (coach: CoachRow)
 
 /** Asks the relay about coaches who started payment setup and cannot take
  * charges yet, at most every 15 minutes each, in case an event was missed.
- * A coach never checked is asked once, which also learns whether they started. */
+ * A coach never checked is asked until the relay answers, which also learns
+ * whether they started. An ask that went unanswered counts, so coaches the
+ * relay cannot answer for take their turn and do not hold up the rest. */
 export async function pollPaymentAccounts(db: DbClient, now: Date): Promise<number> {
   const due = await db.query<{ coach_id: number }>(
     `select coach_id from coach_payments
      where charges_enabled is distinct from true
        and (charges_enabled is null or started_at > $1)
-       and (checked_at is null or checked_at <= $2)
-     order by checked_at nulls first, coach_id
+       and (greatest(checked_at, attempted_at) is null or greatest(checked_at, attempted_at) <= $2)
+     order by greatest(checked_at, attempted_at) nulls first, coach_id
      limit ${PAYMENTS_POLL_BATCH}`,
     [new Date(now.getTime() - PAYMENTS_POLL_WINDOW_MS).toISOString(), new Date(now.getTime() - PAYMENTS_POLL_MS).toISOString()],
   );
