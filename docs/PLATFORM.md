@@ -40,8 +40,9 @@ Per `AGENTS.md`, this is data, not code:
 3. `npm run verify:products` — anything marked **GAP** is a hardcoded config
    needing a code change (`inbound.js ROUTES`, `storage/index.js BROWSER_ORIGINS`)
 4. Follow `docs/NEW-PROPERTY.md` to create the row and issue the product key
-5. `npm run plans:wire -- --alias coachatron`, then
-   `npm run smoke:lifecycle -- --alias coachatron`
+5. Do not run `plans:wire`: Coachatron has no one-store billing row (the
+   manifest says so). Each environment's Connect row on `ns` is the store
+   (below)
 
 ```json
 {
