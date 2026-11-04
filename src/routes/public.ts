@@ -48,15 +48,23 @@ interface SessionForBooking {
   name: string;
   capacity: number;
   price_cents: number;
+  status: string;
 }
 
-async function loadSessionForCoach(db: DbClient, coach: CoachRow, sessionId: number): Promise<SessionForBooking | null> {
+/** A scheduled session of this coach. `anyStatus` also finds a cancelled
+ * one, for a checkout page that has to say so. */
+async function loadSessionForCoach(
+  db: DbClient,
+  coach: CoachRow,
+  sessionId: number,
+  opts: { anyStatus?: boolean } = {},
+): Promise<SessionForBooking | null> {
   const result = await db.query<SessionForBooking>(
-    `select s.id, s.starts_at_utc, s.tz, st.id as session_type_id, st.name, st.capacity, st.price_cents
+    `select s.id, s.starts_at_utc, s.tz, st.id as session_type_id, st.name, st.capacity, st.price_cents, s.status
      from session s
      join session_type st on st.id = s.session_type_id
-     where s.id = $1 and st.coach_id = $2 and s.status = 'scheduled'`,
-    [sessionId, coach.id],
+     where s.id = $1 and st.coach_id = $2 and ($3::boolean or s.status = 'scheduled')`,
+    [sessionId, coach.id, opts.anyStatus === true],
   );
   return result.rows[0] ?? null;
 }
@@ -100,6 +108,15 @@ async function bookingFromLink(db: DbClient, coach: CoachRow, value: unknown): P
 
 function sessionStarted(session: { starts_at_utc: string }): boolean {
   return new Date(session.starts_at_utc) <= new Date();
+}
+
+function renderSessionCancelled(coach: CoachRow, session: SessionForBooking) {
+  return page(
+    'Session cancelled',
+    html`<h1>That session was cancelled</h1>
+      <p class="muted">${session.name} — ${formatLocal(session.starts_at_utc, session.tz)} is no longer running.</p>
+      <a class="action" href="/c/${coach.handle}">See other times</a>`,
+  );
 }
 
 function renderSessionStarted(coach: CoachRow, session: SessionForBooking) {
@@ -564,7 +581,7 @@ publicRouter.post('/c/:handle/sessions/:sessionId/waitlist', async (req, res) =>
 async function loadCheckoutContext(db: DbClient, coach: CoachRow, token: string) {
   const booking = await getBookingByCheckoutToken(db, token);
   if (!booking || !booking.checkout_token) return null;
-  const session = await loadSessionForCoach(db, coach, booking.session_id);
+  const session = await loadSessionForCoach(db, coach, booking.session_id, { anyStatus: true });
   if (!session) return null;
   return { booking, session };
 }
@@ -626,6 +643,10 @@ publicRouter.get('/c/:handle/checkout/:token', async (req, res) => {
   }
   if (ctx.booking.status !== 'pending') {
     res.status(200).send(renderAlreadyBooked(coach, ctx.session, ctx.booking));
+    return;
+  }
+  if (ctx.session.status !== 'scheduled') {
+    res.status(200).send(renderSessionCancelled(coach, ctx.session));
     return;
   }
   // Back from the hosted payment page before its confirmation has arrived.
@@ -774,6 +795,10 @@ publicRouter.post('/c/:handle/checkout/:token', async (req, res) => {
   // One checkout per booking: a booked booking is never sent to pay again.
   if (ctx.booking.status !== 'pending') {
     res.status(409).send(renderAlreadyBooked(coach, ctx.session, ctx.booking));
+    return;
+  }
+  if (ctx.session.status !== 'scheduled') {
+    res.status(409).send(renderSessionCancelled(coach, ctx.session));
     return;
   }
   if (sessionStarted(ctx.session)) {

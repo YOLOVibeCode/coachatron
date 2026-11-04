@@ -52,6 +52,7 @@ import { cancelScheduledSession, countSessionCancelNotifyAthletes } from '../dom
 import { DEFAULT_TZ, formatCoachDollars, formatLocal, formatTimeRange, isValidTimeZone } from '../lib/time.js';
 import { getPackagesForCoach, getPlansForCoach, createPackage, createPlan } from '../domain/pricing.js';
 import { summarizeMoney } from '../domain/money.js';
+import { describeAttention, listPaymentAttention, type AttentionItem } from '../domain/paymentAttention.js';
 import { handleCoachMessage, loadScheduleAssistant, resolvePendingForCoach } from '../domain/assistant.js';
 import { clearCookie, parseCookies, serializeCookie } from '../lib/cookies.js';
 import { answerAskFromWeb, pendingAskForCoach, type PendingAsk } from '../domain/cascade.js';
@@ -1745,10 +1746,29 @@ function renderPaymentsCard(state: PaymentsState, notice: string | null, error: 
     </div>`;
 }
 
+/** Payments that did not simply become a booking, for the coach to sort
+ * out with the parent. */
+function renderPaymentAttention(items: AttentionItem[]) {
+  if (items.length === 0) return raw('');
+  return html`<h2>Payments to resolve</h2>
+    <p class="muted">These payments reached you but did not book as they stood. Contact the parent to sort each one out.</p>
+    ${items.map(
+      (item) => html`<div class="card payment-attention">
+        <p><strong>${item.athlete_name ?? 'Unknown athlete'}</strong>${item.contact_phone ? html` · <a href="tel:${item.contact_phone}">${item.contact_phone}</a>` : raw('')}
+          · ${item.amount_cents === null ? 'amount unknown' : `$${(item.amount_cents / 100).toFixed(2)}`}</p>
+        ${item.session_name && item.starts_at_utc && item.tz
+          ? html`<p class="muted">${item.session_name} — ${formatLocal(item.starts_at_utc, item.tz)}</p>`
+          : raw('')}
+        <p>${describeAttention(item)}</p>
+      </div>`,
+    )}`;
+}
+
 async function renderMoney(res: Response, coach: CoachRow, opts: { status?: number; notice?: string | null; error?: string | null } = {}) {
   const db = getDb();
   const summary = await summarizeMoney(db, coach.id, new Date());
   const payments = await loadPaymentsState(db, coach);
+  const attention = await listPaymentAttention(db, coach.id);
 
   // Format dollars for display
   const formatDollars = (cents: number) => `$${(cents / 100).toFixed(2)}`;
@@ -1759,6 +1779,7 @@ async function renderMoney(res: Response, coach: CoachRow, opts: { status?: numb
       html`${coachNav('money')}
         <h1>Money</h1>
         ${renderPaymentsCard(payments, opts.notice ?? null, opts.error ?? null)}
+        ${renderPaymentAttention(attention)}
         ${renderPageLinkCard(coach, { main: 'none' })}
         <h2>This week</h2>
         <p class="money-figure">${formatDollars(summary.collectedThisWeekCents)}</p>

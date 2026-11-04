@@ -299,6 +299,108 @@ export async function bookPendingBooking(
   return result.rows.length === 1;
 }
 
+export interface CreditGrant {
+  coachId: number;
+  contactPhone: string;
+  packageId: number | null;
+  source: string;
+  remaining: number;
+  expiresAt: Date | null;
+}
+
+/** Adds the credit a paid package or pack leaves after its first session,
+ * and ties it to the booking. One statement, and only while the booking has
+ * no credit yet, so handling the same payment again never adds a second. */
+export async function grantBookingCredit(db: DbClient, bookingId: number, grant: CreditGrant): Promise<number | null> {
+  const result = await db.query<{ credit_id: number }>(
+    `with c as (
+       insert into credit (coach_id, contact_phone, package_id, remaining, source, expires_at)
+       select $2::int, $3::text, $4::int, $5::int, $6::text, $7::timestamptz
+       where exists (select 1 from booking where id = $1 and credit_id is null)
+       returning id
+     )
+     update booking set credit_id = c.id from c
+     where booking.id = $1 and booking.credit_id is null
+     returning booking.credit_id`,
+    [
+      bookingId,
+      grant.coachId,
+      grant.contactPhone,
+      grant.packageId,
+      grant.remaining,
+      grant.source,
+      grant.expiresAt ? grant.expiresAt.toISOString() : null,
+    ],
+  );
+  return result.rows[0]?.credit_id ?? null;
+}
+
+/** A payment for a pending booking whose session was cancelled: the booking
+ * is closed as cancelled with the payment on it, and the whole payment
+ * becomes credit with the coach. One statement, and only while the booking
+ * is still pending. Null when it was not pending. */
+export async function creditCancelledBooking(
+  db: DbClient,
+  bookingId: number,
+  grant: CreditGrant,
+  payment: { paymentSource: string; chargeId: string | null; grossCents: number | null },
+): Promise<number | null> {
+  const result = await db.query<{ credit_id: number }>(
+    `with c as (
+       insert into credit (coach_id, contact_phone, package_id, remaining, source, expires_at)
+       select $2::int, $3::text, $4::int, $5::int, $6::text, $7::timestamptz
+       where exists (select 1 from booking where id = $1 and status = 'pending')
+       returning id
+     )
+     update booking
+     set status = 'cancelled', payment_source = $8, charge_id = $9, gross_cents = $10, credit_id = c.id
+     from c
+     where booking.id = $1 and booking.status = 'pending'
+     returning booking.credit_id`,
+    [
+      bookingId,
+      grant.coachId,
+      grant.contactPhone,
+      grant.packageId,
+      grant.remaining,
+      grant.source,
+      grant.expiresAt ? grant.expiresAt.toISOString() : null,
+      payment.paymentSource,
+      payment.chargeId,
+      payment.grossCents,
+    ],
+  );
+  return result.rows[0]?.credit_id ?? null;
+}
+
+/** Records a pack purchase once per payment. */
+export async function ensureSubscriptionRecord(db: DbClient, planId: number, contactPhone: string, paymentRef: string): Promise<void> {
+  await db.query(
+    `insert into subscription (plan_id, contact_phone, square_subscription_id, status)
+     select $1::int, $2::text, $3::text, 'active'
+     where not exists (select 1 from subscription where plan_id = $1 and contact_phone = $2 and square_subscription_id = $3)`,
+    [planId, contactPhone, paymentRef],
+  );
+}
+
+/** A package by id for a paid event: a payment made before the coach
+ * retired the package still counts. */
+export async function getPackageForPayment(db: DbClient, coachId: number, packageId: number): Promise<PackageRow | null> {
+  const result = await db.query<PackageRow>(
+    'select id, coach_id, name, credits, price_cents, expires_days from package where id = $1 and coach_id = $2',
+    [packageId, coachId],
+  );
+  return result.rows[0] ?? null;
+}
+
+export async function getPlanForPayment(db: DbClient, coachId: number, planId: number): Promise<PlanRow | null> {
+  const result = await db.query<PlanRow>(
+    'select id, coach_id, name, price_cents, credits_per_month from plan where id = $1 and coach_id = $2',
+    [planId, coachId],
+  );
+  return result.rows[0] ?? null;
+}
+
 /** The parent proved they hold this booking's phone. */
 export async function markPhoneVerified(db: DbClient, bookingId: number): Promise<void> {
   await db.query('update booking set phone_verified_at = now() where id = $1 and phone_verified_at is null', [bookingId]);
