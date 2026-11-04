@@ -593,7 +593,7 @@ async function startProblem(
   return dup ? clipSms(`You already have ${dup.name} ${formatConfirmWhen(iso(dup.starts_at_utc), dup.tz)}.`) : null;
 }
 
-/** " Overlaps Keeper Group at 6:00pm." when another scheduled session of the
+/** " Overlaps Group Session at 6:00pm." when another scheduled session of the
  * coach's runs during the new one, so the coach's Y covers it. */
 async function overlapNote(
   db: DbClient,
