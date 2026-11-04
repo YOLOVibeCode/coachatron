@@ -22,17 +22,6 @@ function poolSql(s: string): string {
   return `coalesce(${s}.overflow_of, ${s}.id)`;
 }
 
-/** Spots the waitlist has first claim on: one per person still waiting for
- * an offer. New bookings from the public page leave them free. */
-export async function spotsKeptForWaitlist(db: DbClient, sessionId: number): Promise<number> {
-  const result = await db.query<{ n: string }>(
-    `select count(*)::text as n from waitlist w
-     where w.state = 'waiting' and w.session_id = (select ${poolSql('s')} from session s where s.id = $1)`,
-    [sessionId],
-  );
-  return Number(result.rows[0]?.n ?? '0');
-}
-
 /** Quiet hours (SPEC.md §10) hold spot offers until 8am in the coach's
  * zone, so a parent asleep does not lose their turn. A session that starts
  * before then is offered now, or never. */

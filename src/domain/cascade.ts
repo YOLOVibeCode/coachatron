@@ -87,7 +87,7 @@ interface SessionOverflowInfo {
   capacity: number;
   typeCapacity: number;
   overflowThreshold: number;
-  /** "Tue Oct 7, 6:00pm Keeper Group", for pages and emails. */
+  /** "Tue Oct 7, 6:00pm Skills Group", for pages and emails. */
   label: string;
   backupPayCents: number | null;
 }
@@ -180,7 +180,7 @@ async function countActiveRoster(db: DbClient, coachId: number): Promise<number>
 
 // ---- the coach's question -------------------------------------------------
 
-/** "Tue Oct 7 6pm Keeper Group is full with 3 waiting. Reply 1 to open a
+/** "Tue Oct 7 6pm Skills Group is full with 3 waiting. Reply 1 to open a
  * second group, 2 to add a backup coach, N for no." The session's name is
  * what gets shortened, never the choices. */
 export function overflowAskText(info: Pick<SessionOverflowInfo, 'startsAtUtc' | 'tz' | 'name'>, waiting: number): string {
