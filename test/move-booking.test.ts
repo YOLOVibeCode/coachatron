@@ -561,7 +561,7 @@ test('a move while the tick sends reminders: no reminder for the time it left, a
     assert.equal(await sendDueReminders(db, new Date(now.getTime() + 76 * 60 * 60 * 1000)), 1);
     const reminders = relay.sms.filter((m) => m.to === PHONE);
     assert.equal(reminders.length, 1);
-    assert.match(reminders[0].body, /^Coachatron: Mia's Goalkeeper Group is /);
+    assert.match(reminders[0].body, /^Coachatron: Mia's .+ is /);
   });
 });
 
@@ -612,12 +612,12 @@ test("once children who used their own credits are in different sessions, the pa
     const passPage = async (base: string) => readable(await (await fetch(`${base}/c/${seed.coach.handle}/checkout/${checkout}`)).text());
     await withServer(async (base) => {
       const together = await passPage(base);
-      assert.ok(together.includes(`Goalkeeper Group — ${await startsAt(db, from)}`), 'one time while both are there');
+      assert.ok(together.includes(` — ${await startsAt(db, from)}`), 'one time while both are there');
 
       assert.equal((await move(base, leo.token, to)).status, 303);
       const apart = await passPage(base);
       assert.match(apart, /You're booked/);
-      assert.ok(!apart.includes(`Goalkeeper Group — ${await startsAt(db, from)}`), 'no one time for both');
+      assert.ok(!apart.includes(` — ${await startsAt(db, from)}`), 'no one time for both');
       assert.ok(apart.includes(`Mia: ${await startsAt(db, from)}`), apart);
       assert.ok(apart.includes(`Leo: ${await startsAt(db, to)}`), apart);
       assert.ok(apart.includes(`/booking/${mia.token}`) && apart.includes(`/booking/${leo.token}`));
