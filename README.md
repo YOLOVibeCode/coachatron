@@ -64,7 +64,11 @@ On SIGTERM or SIGINT it stops taking connections, lets requests in flight and
 a running tick finish, closes the database, and exits; anything still running
 after 10 seconds is cut off, and a database still in use 2 seconds after that
 is left to close on exit. Railway waits 15 seconds before it stops the process
-(`drainingSeconds` in `.railway/railway.ts`).
+(`drainingSeconds` in `.railway/railway.ts`). The signal has to reach node
+itself: Railway starts `node dist/server.js` directly (`.railway/railway.ts`),
+and `npm start` runs `exec node dist/server.js`, so the shell npm starts is
+replaced by node rather than left in between to be stopped in its place
+(`test/start-signal.test.ts`).
 
 ## Status
 
