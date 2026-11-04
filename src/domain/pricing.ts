@@ -196,8 +196,8 @@ export function inPassSql(b: string, param: string): string {
 }
 
 /** A booking that was sold and still has its spot: booked, or already
- * marked attended or no-show. What "N of M spots booked" on the schedule
- * and "Booked (N)" on Session detail count. */
+ * marked attended or no-show. What "N of M spots booked" on the schedule,
+ * "Booked (N)" on Session detail and the texting assistant's "(N/M)" count. */
 export const SOLD_BOOKING_STATUSES: readonly string[] = ['booked', 'attended', 'noshow'];
 
 /** SQL for "this booking was sold and still has its spot". `b` is the
