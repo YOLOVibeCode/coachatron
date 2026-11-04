@@ -150,12 +150,22 @@ taxpayer details for it.]
   the parent terms shown at booking and with applicable law. Returning a
   session credit when you cancel a session (section 8) is separate from a card
   refund.
-- **How a refund is issued today.** Coachatron does not have a refund button
-  yet. To refund a parent, ask Coachatron support at support@coachatron.com. At
-  your request we issue the refund on your Stripe account, to the card the
-  parent paid with. The refund comes out of your Stripe balance.
+- **How you issue a refund.** On the Money screen or a session's screen,
+  tap **Refund** on a payment and confirm. Coachatron asks Stripe to refund
+  the whole payment on your Stripe account, to the card the parent paid
+  with. The refund comes out of your Stripe balance. When it goes through,
+  the booking it paid for is cancelled and its spot opens, the unused
+  session credits it bought are removed, and we tell the parent (by text if
+  they opted in, and by email if they gave one).
+- **What can be refunded in the app.** A whole payment, while nothing it
+  bought beyond its own booking has been used: a session paid by card, or
+  a package or pack none of whose credits has been used. For anything else
+  (for example, part of a package after some sessions were used), ask
+  Coachatron support at support@coachatron.com, and we will issue it at
+  your request.
 - **Our fee on a refund.** When a payment is refunded through Coachatron, our
   platform fee is returned with it, in proportion for a partial refund.
+  Stripe keeps its own processing fee on the original payment.
 - We may issue a refund without your request only where the law, Stripe, or a
   card network requires it, or to correct a charge made in error by
   Coachatron.
@@ -166,12 +176,17 @@ taxpayer details for it.]
   in your Stripe account, and the Money screen lists it under "Payments to
   resolve" with the athlete's name, the parent's mobile number, and the
   reason. You agree to settle each one with the parent, for example by
-  booking another session, giving a credit, or asking support for a refund.
+  booking another session, giving a credit, or refunding it from the Money
+  screen.
+- **Refunds that do not go through.** If Stripe cannot complete a refund,
+  the Money screen lists it under "Payments to resolve", and you may try
+  again or settle it with the parent.
 
-[Attorney: refunds are not built in the app. The relay has a refund route that
-a later change will use; until then refunds go through support. Decide how
-support confirms that a refund request comes from the coach before acting on
-it.]
+[Attorney: the app refunds whole payments only, from the coach's own signed-in
+screens. Partial refunds still go through support; decide how support
+confirms that a request comes from the coach before acting on it, and
+whether the terms should state that Stripe keeps its processing fee on a
+refunded payment.]
 
 [Attorney: decide how soon a coach must settle a payment listed under
 "Payments to resolve", and what Coachatron does if they do not.]
@@ -188,6 +203,9 @@ relay and the Money screen.]
   amount and its dispute fee from your Stripe account, and returns them if the
   dispute is decided in your favor, as Stripe's terms provide. The Money screen
   says this as "A card dispute is charged to your payment account."
+- **What you see.** The Money screen lists each dispute Stripe reports, open
+  or decided, with what it means. A dispute does not change the booking or
+  the credits it paid for; what to do about the session is up to you.
 - **Losses.** Stripe is the party responsible for collecting a negative balance
   on your account (for example, after a dispute you lose when your balance
   cannot cover it), under Stripe's terms. Noctusoft does not cover that loss
@@ -201,9 +219,9 @@ relay and the Money screen.]
 the losses collector on the connected account, and what Stripe may recover
 from the coach directly (for example, by debiting the coach's bank account).]
 
-[Attorney: the app has no dispute screen, and coaches have no Stripe
-dashboard. Decide how a coach submits evidence (through support today) and the
-deadline we promise to pass it on by.]
+[Attorney: the Money screen shows disputes but cannot answer them, and coaches
+have no Stripe dashboard. Decide how a coach submits evidence (through support
+today) and the deadline we promise to pass it on by.]
 
 ## 8. What you promise as a coach
 
@@ -218,9 +236,10 @@ deadline we promise to pass it on by.]
   which parents could not be texted, so you can tell them yourself. If a parent's payment arrives after you cancelled
   the session, the whole payment becomes credit with you, the parent is told,
   and the Money screen lists it.
-  [Attorney: today the credit is automatic and a card refund goes through
-  support. Decide whether these terms let a parent ask for a refund instead
-  of the credit, or leave it to the coach's published policy.]
+  [Attorney: today the credit is automatic, and the coach may refund the
+  card instead from the Money screen while the credit is unused. Decide
+  whether these terms let a parent ask for a refund instead of the credit,
+  or leave it to the coach's published policy.]
 - **Honor prepaid sessions.** Packages, packs, and the credits you give are
   sessions you owe. The Money screen shows the credits outstanding. If you
   stop coaching, you must deliver or refund the credits parents have paid for.

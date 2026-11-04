@@ -51,10 +51,11 @@ number to the relay and Stripe in the email field.]
 
 - **The booking:** the athlete's name, the parent's mobile number and email (if
   given), the session, how it was paid (drop-in, package credit, or one-time
-  pack), its status (pending, booked, cancelled, attended, or no-show), the
-  amount charged, and when it was made; until it is paid, until when its spot
-  is held; whether a code texted to the mobile number showed it is yours; and,
-  if the coach cancelled the session, whether the cancel text reached you.
+  pack), its status (pending, booked, cancelled, attended, no-show, or
+  refunded), the amount charged, and when it was made; until it is paid,
+  until when its spot is held; whether a code texted to the mobile number
+  showed it is yours; and, if the coach cancelled the session, whether the
+  cancel text reached you.
 - **A payment reference** that the relay issues for the Stripe payment.
   Coachatron does not store Stripe's own ids; the relay keeps the link between
   its reference and Stripe's payment.
@@ -65,6 +66,11 @@ number to the relay and Stripe in the email field.]
   handled twice. A payment that could not book (for example, the session
   filled first) is kept with its amount, the reason, the athlete's name, and
   the parent's mobile number, so the coach can sort it out with the parent.
+- **Refunds and disputes:** for a refunded payment, its amount and status,
+  the relay's reference for the refund, how many session credits it
+  removed, and whether you were told; for a card dispute, its amount and
+  whether it is open, won, or lost, with the athlete's name and the
+  parent's mobile number, so the coach can see it.
 - **For coaches:** the key that ties the coach to their Stripe account at the
   relay (by default the coach's handle), the version of the marketplace terms
   they accepted, and the account status Stripe reports (whether it can take

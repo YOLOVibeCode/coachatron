@@ -55,7 +55,7 @@ booking to confirm they are the parent or guardian.]
   out. The page you return to says so; please do not pay again.
 
 [Attorney: a payment that cannot book is settled between the coach and the
-parent today (a booking, a credit, or a refund through support, section 6).
+parent today (a booking, a credit, or a refund the coach issues, section 6).
 Decide what these terms promise the parent and by when.]
 
 [Attorney: confirm the name parents will see on their card statement (Stripe
@@ -121,8 +121,9 @@ credit with that coach, and we tell you by text (if you opted in) or email
 (if you gave one).
 
 [Attorney: today a card-paid booking cancelled by the coach becomes a credit
-automatically; a card refund goes through support (section 6). Decide whether
-a parent may ask for a card refund instead of the credit, and say so here.]
+automatically; the coach may refund the card instead while the credit is
+unused (section 6). Decide whether a parent may ask for a card refund
+instead of the credit, and say so here.]
 
 **If you cancel,** use the manage link from your confirmation.
 
@@ -154,15 +155,21 @@ choose to give the credit back.
 
 - Refunds come from the coach, because the coach is the merchant. Each coach
   decides their refund policy, within these terms and the law.
-- **Today:** Coachatron has no refund button. Ask the coach, or write to
-  support@coachatron.com. Once the coach agrees, the refund goes back to the
-  card you paid with, through Stripe.
-- **Later:** when refunds are built into Coachatron, a refund will still go
-  back to the card you paid with, and any credit it covered will be removed.
+- **How:** ask the coach. The coach refunds a payment in Coachatron, and it
+  goes back to the card you paid with, through Stripe. A refund is for the
+  whole payment.
+- **What a refund ends:** the booking the payment was for is cancelled, and
+  the unused session credits it bought are removed. A package or one-time
+  pack can be refunded this way only while none of its credits has been
+  used; for anything else, the coach or support@coachatron.com can help.
+- **We tell you** when a refund is made: by text if you opted in to texts,
+  and by email if you gave one. Your manage page shows the booking as
+  refunded.
 - A refund can take several business days to reach your card, depending on
   your bank.
 - **Card disputes.** Please contact the coach or us first. A dispute you open
-  with your card issuer is handled by Stripe and your issuer.
+  with your card issuer is handled by Stripe and your issuer; the coach sees
+  that it was opened and how it was decided.
 
 [Attorney: who answers for unused credits if a coach stops coaching or leaves
 Coachatron. The coach terms require the coach to deliver or refund them; decide
