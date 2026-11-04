@@ -24,7 +24,7 @@ export interface AttentionInput {
   paymentRef: string | null;
   athleteName?: string | null;
   contactPhone?: string | null;
-  /** What was done about it, e.g. "credit:1". */
+  /** What was done about it, e.g. "credit:1:told". */
   outcome?: string | null;
 }
 
@@ -112,8 +112,10 @@ export function describeAttention(item: Pick<AttentionItem, 'reason' | 'amount_c
     case 'amount_mismatch':
       return `Paid ${dollars(item.amount_cents)}, but the price was ${dollars(item.expected_cents)}. Not booked.`;
     case 'session_cancelled': {
-      const credits = Number(/^credit:(\d+)$/.exec(item.outcome ?? '')?.[1] ?? '0');
-      return `The session was cancelled before this payment arrived. The parent now has ${credits} session ${credits === 1 ? 'credit' : 'credits'} with you and was told.`;
+      const [, count, told] = /^credit:(\d+):(told|not-told)$/.exec(item.outcome ?? '') ?? [];
+      const credits = Number(count ?? '0');
+      const given = `The session was cancelled before this payment arrived. The parent now has ${credits} session ${credits === 1 ? 'credit' : 'credits'} with you`;
+      return told === 'told' ? `${given} and was told.` : `${given}. They could not be told: please let them know.`;
     }
     case 'session_started':
       return 'The session had already started when this payment arrived. Not booked.';

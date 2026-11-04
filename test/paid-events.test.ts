@@ -213,8 +213,8 @@ test('a payment for a session the coach cancelled becomes credit with that coach
       assert.match(told[0].body, /\/booking\/[A-Za-z0-9_-]+ Reply STOP to opt out\.$/);
     }
     assert.deepEqual((await attention(db)).map((a) => [a.reason, a.outcome]), [
-      ['session_cancelled', 'credit:1'],
-      ['session_cancelled', 'credit:10'],
+      ['session_cancelled', 'credit:1:told'],
+      ['session_cancelled', 'credit:10:told'],
     ]);
   });
 });
@@ -232,5 +232,24 @@ test("a coach sees only their own payments to resolve", async (t) => {
       const other = await moneyPage(base, db, B.coach.id);
       assert.doesNotMatch(other, /Payments to resolve|5551112222/);
     });
+  });
+});
+
+test('a parent who cannot be told about their credit is flagged to the coach', async (t) => {
+  captureErrors(t);
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 3, priceCents: 3500 });
+    await withServer(async (base) => {
+      const b = await bookOnline(base, seed.coach.handle, seed.sessionId, 'Alex', '5551112222', { sms_consent: '' });
+      assert.ok(b.key);
+      const pay = await postCheckout(base, seed.coach.handle, b.key, { mode: 'dropin' });
+      assert.equal((await cancelScheduledSession(db, seed.coach.id, seed.sessionId)).kind, 'cancelled');
+      await postStorePaid(base, { userId: buyerFromLocation(pay.headers.get('location')), amountCents: 3500, paymentId: 'ch_quiet' });
+      assert.match(await moneyPage(base, db, seed.coach.id), /1 session credit with you\. They could not be told: please let them know\./);
+    });
+    assert.equal(relay.sms.filter((m) => m.to === '+15551112222').length, 0);
+    assert.equal(relay.emails.length, 0);
+    assert.deepEqual((await attention(db)).map((a) => a.outcome), ['credit:1:not-told']);
   });
 });

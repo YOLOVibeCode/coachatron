@@ -221,8 +221,9 @@ async function handlePaid(db: DbClient, event: StoreEvent, eventId: string): Pro
       return;
     }
     if (item.planId !== null) await ensureSubscriptionRecord(db, item.planId, booking.contact_phone, paymentRef);
-    await attention('session_cancelled', who, { outcome: `credit:${item.sessions}` });
-    await sendPaymentCredited(db, booking.id, item.sessions);
+    const told = await sendPaymentCredited(db, booking.id, item.sessions);
+    const reached = told.text === 'sent' || told.email === 'sent';
+    await attention('session_cancelled', who, { outcome: `credit:${item.sessions}:${reached ? 'told' : 'not-told'}` });
     return;
   }
   if (session.status !== 'scheduled' || new Date(session.starts_at_utc) <= new Date()) {
