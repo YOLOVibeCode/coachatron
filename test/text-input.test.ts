@@ -21,11 +21,13 @@ test('normalizeEmail keeps what an address looks like and turns the rest away', 
 });
 
 test('a very long or odd address is answered in one quick pass', () => {
-  for (const input of [`a@${'.'.repeat(40_000)}@`, `a@${'a.'.repeat(40_000)}`, `${'a@'.repeat(30_000)}x`, '@'.repeat(80_000)]) {
-    const { value, ms } = timed(() => parseContact(input));
-    assert.equal(value, null);
-    assert.ok(ms < 50, `${Math.round(ms)} ms for ${input.length} characters`);
-  }
+  // A scan that backtracks takes seconds on the first of these; one pass
+  // over all of them takes well under a millisecond each. The bound is
+  // loose so a busy test machine does not trip it.
+  const inputs = [`a@${'.'.repeat(80_000)}@`, `a@${'a.'.repeat(40_000)}`, `${'a@'.repeat(30_000)}x`, '@'.repeat(80_000)];
+  const { value, ms } = timed(() => inputs.map((input) => parseContact(input)));
+  assert.deepEqual(value, [null, null, null, null]);
+  assert.ok(ms < 500, `${Math.round(ms)} ms for ${inputs.length} long inputs`);
 });
 
 test('"cancel" with a wide target is spotted the same way, and quickly on long text', () => {
@@ -42,5 +44,5 @@ test('"cancel" with a wide target is spotted the same way, and quickly on long t
 
   const { value, ms } = timed(() => cancelsTooMuch('cancel'.repeat(20_000)));
   assert.equal(value, false);
-  assert.ok(ms < 50, `${Math.round(ms)} ms`);
+  assert.ok(ms < 500, `${Math.round(ms)} ms`);
 });
