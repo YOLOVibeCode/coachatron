@@ -71,6 +71,8 @@ Noctusoft relay already has it: email, SMS, inbound routing, and marketplace
 payments on Stripe Connect. Also the design for SMS natural-language control
 (Slice 2 — Slice 1 ships the `Y`/`N`/`STOP`/`HELP` keyword layer only).
 
+📄 **[docs/legal/](docs/legal/)** — drafts for attorney review, not in effect: coach marketplace terms (v1), parent terms, payments privacy.
+
 ## Design constraints
 
 The spec enforces these; they're the reason the product exists.
