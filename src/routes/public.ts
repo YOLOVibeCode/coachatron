@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Response } from 'express';
 import { getDb, type DbClient } from '../db/client.js';
 import {
   checkOtp,
@@ -32,7 +32,15 @@ import {
   markPhoneVerified,
   type BookingRow,
 } from '../domain/pricing.js';
-import { checkOverflow, acceptOffer, declineOffer, describeOffer, getOfferByToken } from '../domain/cascade.js';
+import {
+  checkOverflow,
+  acceptOffer,
+  declineOffer,
+  describeOffer,
+  getOfferByToken,
+  rosterMemberByOptInToken,
+  type RosterOptIn,
+} from '../domain/cascade.js';
 import { buyerEmail, cameBackFromPaying, connectBuyUrl } from '../relay/buy-link.js';
 import { hasActiveConsent, isOptedOut, optedOutNotice, recordConsent } from '../domain/sms-consent.js';
 import {
@@ -1108,11 +1116,75 @@ publicRouter.get('/offer/:token', async (req, res) => {
   const db = getDb();
   const offer = await getOfferByToken(db, req.params.token);
   if (!offer) {
+    const member = await rosterMemberByOptInToken(db, req.params.token);
+    if (member) {
+      res.status(200).send(await renderRosterOptIn(db, member));
+      return;
+    }
     res.status(404).send(notFound());
     return;
   }
   res.status(200).send(renderOfferPage(offer.state, await describeOffer(db, offer)));
 });
+
+// Screen 12 in its opt-in state: the link a coach shares with someone on
+// their roster who cannot get texts yet. Opting in follows the same rules
+// as everywhere else: the box is never checked for them, a STOP is lifted
+// only by START from the phone, and a confirmation text goes out.
+
+async function renderRosterOptIn(db: DbClient, member: RosterOptIn, notice?: { kind: 'error' | 'ok'; text: string }) {
+  const masked = maskPhone(member.phone);
+  const optedIn = await hasActiveConsent(db, member.phone);
+  const stopped = !optedIn && (await isOptedOut(db, member.phone));
+  return page(
+    'Get offers',
+    html`<h1>Get offers from ${member.coachName}</h1>
+      <p>${member.coachName} added you to their roster, to coach when one of their sessions fills up. Opt in and we'll text ${masked} when they need someone. Reply Y to an offer to take it.</p>
+      ${optedIn
+        ? html`<p class="good">You're opted in. Offers go to ${masked}. Reply STOP to any text to opt out.</p>`
+        : stopped
+          ? html`<p class="error">${optedOutNotice('to get offers')}</p>`
+          : html`<form method="post">
+              <input type="hidden" name="action" value="optin" />
+              ${smsConsentCheckbox()}
+              <button type="submit">Opt in</button>
+            </form>`}
+      ${notice ? html`<p class="${notice.kind === 'error' ? 'error' : 'muted'}">${notice.text}</p>` : raw('')}`,
+  );
+}
+
+async function rosterOptIn(req: Request, res: Response, db: DbClient, member: RosterOptIn): Promise<void> {
+  if (field(req.body, 'action') !== 'optin') {
+    res.status(422).send(await renderRosterOptIn(db, member));
+    return;
+  }
+  if (!smsConsentChecked(req.body)) {
+    res.status(422).send(await renderRosterOptIn(db, member, { kind: 'error', text: 'Check the box to get texts.' }));
+    return;
+  }
+  if (!(await takeRequest(db, SMS_OPT_IN_LIMITS, clientKey(req)))) {
+    res.status(429).send(await renderRosterOptIn(db, member, { kind: 'error', text: 'Too many tries from here. Try again later.' }));
+    return;
+  }
+  if (await isOptedOut(db, member.phone)) {
+    res.status(422).send(await renderRosterOptIn(db, member));
+    return;
+  }
+  const meta = consentMeta(req, '/offer (roster opt-in)');
+  await recordConsent(db, member.phone, meta.source, { ip: meta.ip, userAgent: meta.userAgent });
+  try {
+    await sendText(db, {
+      to: member.phone,
+      body: SMS_OPT_IN_CONFIRMATION,
+      coachId: null,
+      template: 'opt-in-confirmation',
+      perRecipientDailyMax: 1,
+    });
+  } catch (err) {
+    console.error('roster opt-in confirmation not sent:', err instanceof Error ? err.message : err);
+  }
+  res.status(200).send(await renderRosterOptIn(db, member));
+}
 
 type OfferDescription = Awaited<ReturnType<typeof describeOffer>>;
 
@@ -1146,6 +1218,11 @@ publicRouter.post('/offer/:token', async (req, res) => {
   const db = getDb();
   const offer = await getOfferByToken(db, req.params.token);
   if (!offer) {
+    const member = await rosterMemberByOptInToken(db, req.params.token);
+    if (member) {
+      await rosterOptIn(req, res, db, member);
+      return;
+    }
     res.status(404).send(notFound());
     return;
   }

@@ -29,7 +29,6 @@ import {
   type CoachRow,
 } from '../domain/auth.js';
 import {
-  APP_BASE_URL,
   APP_FEE_BPS,
   OTP_DAILY_MAX_PER_CONTACT,
   SELLER_AGREEMENT_VERSION,
@@ -81,6 +80,7 @@ import { clearCookie, parseCookies, serializeCookie } from '../lib/cookies.js';
 import {
   answerAsk,
   pendingAskForCoach,
+  rosterOptInLink,
   runningCascadesForCoach,
   type OverflowAnswer,
   type PendingAsk,
@@ -1058,6 +1058,12 @@ function renderRunningCascades(cascades: RunningCascade[]) {
     (c) => html`<div class="card overflow-running">
       <p>Asking your roster for ${OVERFLOW_JOB[c.kind]} for <strong>${c.label}</strong>.
         ${c.offeredTo ? `Offered to ${c.offeredTo.name} until ${clockTime(c.offeredTo.expiresAt, c.tz)}.` : ''}</p>
+      ${c.unreachable.length > 0
+        ? html`<p class="muted">Not asked, because they can't get texts yet. Send each their link to opt in:</p>
+            <ul class="unreachable">
+              ${c.unreachable.map((u) => html`<li>${u.name} · <a href="${u.link}">${u.link}</a></li>`)}
+            </ul>`
+        : raw('')}
     </div>`,
   )}`;
 }
@@ -1854,8 +1860,10 @@ coachRouter.get('/app/roster', requireAuth, async (_req, res) => {
   const coachId = res.locals.coachId as number;
   const members = await listRosterMembers(db, coachId);
   const consented = new Set<string>();
+  const optInLinks = new Map<number, string>();
   for (const m of members) {
     if (await hasActiveConsent(db, m.phone)) consented.add(m.phone);
+    else optInLinks.set(m.id, await rosterOptInLink(db, m.id));
   }
 
   res.status(200).send(
@@ -1870,7 +1878,10 @@ coachRouter.get('/app/roster', requireAuth, async (_req, res) => {
                 (m) =>
                   html`<li class="card">
                     <div class="row"><span>${m.name}</span><span class="muted">${m.phone}</span></div>
-                    <p class="muted">${consented.has(m.phone) ? 'Texts on' : 'Not opted in yet: no offers until they do'}</p>
+                    ${consented.has(m.phone)
+                      ? html`<p class="muted">Texts on</p>`
+                      : html`<p class="muted">Not opted in yet: no offers until they do. Send them their link to opt in:</p>
+                          <p class="optin-link"><a href="${optInLinks.get(m.id) ?? ''}">${optInLinks.get(m.id) ?? ''}</a></p>`}
                     <form class="roster-priority-form" method="post" action="/app/roster/${m.id}/priority">
                       <input type="number" name="priority" value="${m.priority}" min="0" required aria-label="Priority for ${m.name}" />
                       <button type="submit">Update priority</button>
@@ -1886,7 +1897,7 @@ coachRouter.get('/app/roster', requireAuth, async (_req, res) => {
           <input id="phone" name="phone" type="tel" required />
           <button type="submit">Add to roster</button>
         </form>
-        <p class="muted">We don't text the people you add. Ask them to opt in at ${APP_BASE_URL}/sms with this number. Offers go only to people who have.</p>`,
+        <p class="muted">We don't text the people you add. Send each one their opt-in link. Offers go only to people who have opted in.</p>`,
     ),
   );
 });

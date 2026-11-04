@@ -5,7 +5,8 @@ import { APP_BASE_URL } from '../config.js';
 import { expireLivePendingForCoach } from './assistantPending.js';
 import { formatConfirmWhen } from '../lib/time.js';
 import { hasActiveConsent } from './sms-consent.js';
-import { plain } from './bookingMessages.js';
+import { plain, textWithLink } from './bookingMessages.js';
+import { newBookingToken } from './pricing.js';
 
 /** The overflow cascade (SPEC.md §7.3). A full session with someone
  * waiting asks the coach one question: open a second group, add a backup
@@ -315,6 +316,8 @@ export async function hasOpenAsk(db: DbClient, coachId: number): Promise<boolean
 interface RunningAsk {
   id: number;
   kind: OverflowKind;
+  /** True when this call recorded the coach's choice. */
+  began?: boolean;
 }
 
 /** Records the coach's choice on the session's live ask, or starts one
@@ -352,7 +355,7 @@ async function runningAsk(db: DbClient, sessionId: number, kind: OverflowKind | 
     [sessionId],
   );
   const row = now.rows[0];
-  return row?.kind ? { id: row.id, kind: row.kind } : null;
+  return row?.kind ? { id: row.id, kind: row.kind, began: true } : null;
 }
 
 /** Starts the roster on the coach's chosen job (`kind`), or, without one,
@@ -369,7 +372,80 @@ export async function startCascade(db: DbClient, sessionId: number, kind?: Overf
   }
   const ask = await runningAsk(db, sessionId, kind);
   if (!ask) return;
+  if (ask.began) await tellCoachWhoCannotBeAsked(db, info, ask);
   await offerToNextMember(db, info, ask);
+}
+
+// ---- roster members who cannot get texts ---------------------------------
+
+export interface UnreachableMember {
+  id: number;
+  name: string;
+  /** Their opt-in link (screen 12, in its opt-in state), to share with them. */
+  link: string;
+}
+
+/** The link a roster member opens to opt in to texts. Made the first time
+ * it is needed and kept. */
+export async function rosterOptInLink(db: DbClient, memberId: number): Promise<string> {
+  const result = await db.query<{ optin_token: string }>(
+    'update roster_member set optin_token = coalesce(optin_token, $2) where id = $1 returning optin_token',
+    [memberId, newBookingToken()],
+  );
+  return `${appBaseUrl()}/offer/${result.rows[0].optin_token}`;
+}
+
+/** Active roster members, in priority order, who cannot be texted an offer:
+ * they have not opted in, or they replied STOP. */
+export async function unreachableRoster(db: DbClient, coachId: number): Promise<{ unreachable: UnreachableMember[]; reachable: number }> {
+  const members = await db.query<{ id: number; name: string; phone: string }>(
+    'select id, name, phone from roster_member where coach_id = $1 and active = true order by priority asc, id asc',
+    [coachId],
+  );
+  const unreachable: UnreachableMember[] = [];
+  let reachable = 0;
+  for (const m of members.rows) {
+    if (await hasActiveConsent(db, m.phone)) reachable += 1;
+    else unreachable.push({ id: m.id, name: m.name, link: await rosterOptInLink(db, m.id) });
+  }
+  return { unreachable, reachable };
+}
+
+/** Says who on the roster was not asked because they cannot get texts,
+ * with the link to send them: one person's own link, or for several, the
+ * roster screen where each one's link is. */
+function unreachableNotice(people: UnreachableMember[], lead: string): { text: string; email: string } {
+  const first = plain(people[0].name) || 'One person';
+  const text =
+    people.length === 1
+      ? textWithLink(`${lead} ${first} can't get texts yet, so wasn't asked. Send them this to opt in:`, people[0].link)
+      : textWithLink(
+          `${lead} ${first} and ${people.length - 1} more on your roster can't get texts yet, so weren't asked. Their opt-in links:`,
+          `${appBaseUrl()}/app/roster`,
+        );
+  const email = `Not asked, because they can't get texts yet. Send each one their link to opt in:\n${people
+    .map((p) => `- ${p.name}: ${p.link}`)
+    .join('\n')}`;
+  return { text, email };
+}
+
+/** When the coach's choice starts the roster, the coach hears once who
+ * will not be asked because they cannot get texts. When nobody can, the
+ * message that nobody was asked says it instead. */
+async function tellCoachWhoCannotBeAsked(db: DbClient, info: SessionOverflowInfo, ask: RunningAsk): Promise<void> {
+  const { unreachable, reachable } = await unreachableRoster(db, info.coachId);
+  if (unreachable.length === 0 || reachable === 0) return;
+  const claimed = await db.query<{ id: number }>(
+    'update overflow_ask set unreachable_told_at = now() where id = $1 and unreachable_told_at is null returning id',
+    [ask.id],
+  );
+  if (claimed.rows.length === 0) return;
+  const notice = unreachableNotice(unreachable, 'Coachatron:');
+  await notifyCoach(db, info, 'overflow-unreachable', {
+    text: notice.text,
+    subject: `Not everyone on your roster could be asked about ${info.label}`,
+    email: `We're asking your roster about ${ask.kind === 'second_group' ? 'a second group' : 'a backup coach'} for ${info.label}.\n\n${notice.email}`,
+  });
 }
 
 type NextStep =
@@ -466,10 +542,20 @@ async function tellCoachExhausted(db: DbClient, info: SessionOverflowInfo, ask: 
     });
     return;
   }
+  const { unreachable } = await unreachableRoster(db, info.coachId);
+  if (unreachable.length > 0) {
+    const notice = unreachableNotice(unreachable, `Coachatron: ${compactWhen(info)}: nobody asked.`);
+    await notifyCoach(db, info, 'overflow-exhausted', {
+      text: notice.text,
+      subject: 'Nobody on your roster could be asked',
+      email: `Nobody on your roster could be asked about ${job} for ${info.label}.\n\n${notice.email}`,
+    });
+    return;
+  }
   await notifyCoach(db, info, 'overflow-exhausted', {
-    text: keepTail(`Coachatron: ${compactWhen(info)} ${info.name}`, `: nobody on your roster can get texts yet, so nobody was asked.`),
+    text: keepTail(`Coachatron: ${compactWhen(info)} ${info.name}`, `: nobody on your roster could get the offer.`),
     subject: 'Nobody on your roster could be asked',
-    email: `Nobody on your roster can get texts yet, so nobody was asked about ${job} for ${info.label}.`,
+    email: `Nobody on your roster could get the offer for ${job} for ${info.label}.`,
   });
 }
 
@@ -731,6 +817,8 @@ export interface RunningCascade {
   kind: OverflowKind;
   /** Who has the offer now, and until when. */
   offeredTo: { name: string; expiresAt: string } | null;
+  /** Who is not being asked because they cannot get texts. */
+  unreachable: UnreachableMember[];
 }
 
 /** Cascades under way for the coach's sessions, for the schedule screen. */
@@ -746,6 +834,7 @@ export async function runningCascadesForCoach(db: DbClient, coachId: number): Pr
     [coachId],
   );
   const out: RunningCascade[] = [];
+  const { unreachable } = rows.rows.length > 0 ? await unreachableRoster(db, coachId) : { unreachable: [] };
   for (const row of rows.rows) {
     const info = await loadSessionOverflowInfo(db, row.session_id);
     if (!info) continue;
@@ -762,7 +851,27 @@ export async function runningCascadesForCoach(db: DbClient, coachId: number): Pr
       tz: info.tz,
       kind: row.kind,
       offeredTo: offer ? { name: offer.name, expiresAt: new Date(offer.expires_at).toISOString() } : null,
+      unreachable,
     });
   }
   return out;
+}
+
+export interface RosterOptIn {
+  memberId: number;
+  phone: string;
+  coachName: string;
+}
+
+/** The roster member an opt-in link belongs to. */
+export async function rosterMemberByOptInToken(db: DbClient, token: string): Promise<RosterOptIn | null> {
+  if (!/^[A-Za-z0-9_-]{16,64}$/.test(token)) return null;
+  const result = await db.query<{ id: number; phone: string; coach_name: string }>(
+    `select rm.id, rm.phone, c.name as coach_name
+     from roster_member rm join coach c on c.id = rm.coach_id
+     where rm.optin_token = $1 and rm.active = true`,
+    [token],
+  );
+  const row = result.rows[0];
+  return row ? { memberId: row.id, phone: row.phone, coachName: row.coach_name } : null;
 }
