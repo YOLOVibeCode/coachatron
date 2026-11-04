@@ -33,6 +33,8 @@ export function connectBuyUrl(args: {
   seller: string;
   amountCents: number;
   bookingId: number;
+  /** The booking's checkout token: the parent comes back to its page. */
+  checkoutToken: string;
   mode: PayMode;
   itemId?: number;
   email: string;
@@ -50,7 +52,7 @@ export function connectBuyUrl(args: {
     user: buyerRef(args.bookingId, args.mode, args.itemId),
     email: args.email,
     description: args.description,
-    returnUrl: `${process.env.APP_BASE_URL ?? APP_BASE_URL}/c/${args.handle}/checkout/${args.bookingId}`,
+    returnUrl: `${process.env.APP_BASE_URL ?? APP_BASE_URL}/c/${args.handle}/checkout/${args.checkoutToken}`,
     baseUrl: storeBaseUrl(),
   });
   return url;

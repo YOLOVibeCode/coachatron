@@ -470,13 +470,14 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           });
           assert.equal(booked.status, 303, 'the booking form goes on to checkout');
           const checkoutPath = booked.headers.get('location') ?? '';
-          const bookingId = Number(new RegExp(`^/c/${handle}/checkout/(\\d+)$`).exec(checkoutPath)?.[1]);
-          assert.ok(bookingId > 0, `checkout is /c/<handle>/checkout/<booking>: ${checkoutPath}`);
-          const pending = await db.query<{ status: string; contact_phone: string; session_id: number }>(
-            'select status, contact_phone, session_id from booking where id = $1',
-            [bookingId],
+          const checkoutToken = new RegExp(`^/c/${handle}/checkout/([A-Za-z0-9_-]{22})$`).exec(checkoutPath)?.[1];
+          assert.ok(checkoutToken, `checkout is /c/<handle>/checkout/<token>: ${checkoutPath}`);
+          const pending = await db.query<{ id: number; status: string; contact_phone: string; session_id: number }>(
+            'select id, status, contact_phone, session_id from booking where checkout_token = $1',
+            [checkoutToken],
           );
-          assert.deepEqual(pending.rows[0], { status: 'pending', contact_phone: PARENT_PHONE, session_id: sessionId });
+          const { id: bookingId, ...pendingRow } = pending.rows[0];
+          assert.deepEqual(pendingRow, { status: 'pending', contact_phone: PARENT_PHONE, session_id: sessionId });
 
           const checkout = visible(await (await get(checkoutPath)).text());
           assert.match(checkout, /this app never sees a card/);
@@ -551,7 +552,7 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           assert.equal(b.payment_source, 'DropIn');
           assert.equal(b.gross_cents, 2500);
           assert.equal(b.charge_id, PAYMENT_ID, 'the payment ref is kept for refunds');
-          assert.match(b.manage_token, /^[a-f0-9]{64}$/);
+          assert.match(b.manage_token, /^[A-Za-z0-9_-]{22}$/);
 
           const back = visible(await (await get(checkoutPath)).text());
           assert.match(back, /You're booked Group — Sat, \w{3} \d{1,2}, 9:00 AM/, 'the return page confirms the booking');

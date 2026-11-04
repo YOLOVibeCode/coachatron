@@ -12,7 +12,7 @@ import {
   coachHasOpenCredits,
   decrementCredit,
   createPendingBooking,
-  getBooking,
+  getBookingByCheckoutToken,
   bookPendingBooking,
   renewHold,
   restoreCredit,
@@ -450,7 +450,7 @@ publicRouter.post('/c/:handle/sessions/:sessionId/book', async (req, res) => {
     res.status(409).send(renderSessionFull(coach, session, { athleteName, rawPhone, contactEmail }));
     return;
   }
-  res.redirect(303, `/c/${coach.handle}/checkout/${pending.id}`);
+  res.redirect(303, `/c/${coach.handle}/checkout/${pending.checkoutToken}`);
 });
 
 // Joining the waitlist for a full session (SPEC.md §7.3 step 1: "the
@@ -516,22 +516,24 @@ publicRouter.post('/c/:handle/sessions/:sessionId/waitlist', async (req, res) =>
 
 // ---- Screen 10: checkout ----
 
-async function loadCheckoutContext(db: DbClient, coach: CoachRow, bookingId: number) {
-  const booking = await getBooking(db, bookingId);
-  if (!booking) return null;
+/** A checkout page is found by its booking's checkout token only. A serial
+ * booking id, or any other wrong token, is a plain 404. */
+async function loadCheckoutContext(db: DbClient, coach: CoachRow, token: string) {
+  const booking = await getBookingByCheckoutToken(db, token);
+  if (!booking || !booking.checkout_token) return null;
   const session = await loadSessionForCoach(db, coach, booking.session_id);
   if (!session) return null;
   return { booking, session };
 }
 
-publicRouter.get('/c/:handle/checkout/:bookingId', async (req, res) => {
+publicRouter.get('/c/:handle/checkout/:token', async (req, res) => {
   const db = getDb();
   const coach = await findCoachByHandle(db, req.params.handle);
   if (!coach) {
     res.status(404).send(notFound());
     return;
   }
-  const ctx = await loadCheckoutContext(db, coach, Number(req.params.bookingId));
+  const ctx = await loadCheckoutContext(db, coach, req.params.token);
   if (!ctx) {
     res.status(404).send(notFound());
     return;
@@ -550,7 +552,7 @@ publicRouter.get('/c/:handle/checkout/:bookingId', async (req, res) => {
     return;
   }
 
-  res.status(200).send(renderCheckout(coach, ctx.session, ctx.booking.id, { packages, plans, credit, canPay }));
+  res.status(200).send(renderCheckout(coach, ctx.session, req.params.token, { packages, plans, credit, canPay }));
 });
 
 function renderAlreadyBooked(coach: CoachRow, session: SessionForBooking) {
@@ -573,11 +575,11 @@ type CheckoutOptions = {
 function renderCheckout(
   coach: CoachRow,
   session: SessionForBooking,
-  bookingId: number,
+  checkoutToken: string,
   options: CheckoutOptions,
   error?: string,
 ) {
-  const action = `/c/${coach.handle}/checkout/${bookingId}`;
+  const action = `/c/${coach.handle}/checkout/${checkoutToken}`;
   const canPay = options.canPay !== false;
   const packages = canPay ? options.packages : [];
   const plans = canPay ? options.plans : [];
@@ -623,15 +625,15 @@ function renderCheckout(
   );
 }
 
-publicRouter.post('/c/:handle/checkout/:bookingId', async (req, res) => {
+publicRouter.post('/c/:handle/checkout/:token', async (req, res) => {
   const db = getDb();
   const coach = await findCoachByHandle(db, req.params.handle);
   if (!coach) {
     res.status(404).send(notFound());
     return;
   }
-  const bookingId = Number(req.params.bookingId);
-  const ctx = await loadCheckoutContext(db, coach, bookingId);
+  const checkoutToken = req.params.token;
+  const ctx = await loadCheckoutContext(db, coach, checkoutToken);
   if (!ctx) {
     res.status(404).send(notFound());
     return;
@@ -650,6 +652,7 @@ publicRouter.post('/c/:handle/checkout/:bookingId', async (req, res) => {
   const mode = field(req.body, 'mode');
   const phone = ctx.booking.contact_phone;
   const recipientKey = getConnectRecipientKey(coach);
+  const bookingId = ctx.booking.id;
   const email = buyerEmail(phone, ctx.booking.contact_email, bookingId);
 
   // Every mode but a credit (or a free drop-in) goes to the payment page.
@@ -684,7 +687,7 @@ publicRouter.post('/c/:handle/checkout/:bookingId', async (req, res) => {
             renderCheckout(
               coach,
               ctx.session,
-              bookingId,
+              checkoutToken,
               { packages, plans, credit: null, canPay: await paymentsOpen(db, coach) },
               'That credit is no longer available.',
             ),
@@ -709,7 +712,7 @@ publicRouter.post('/c/:handle/checkout/:bookingId', async (req, res) => {
         return;
       }
       void checkOverflow(db, ctx.session.id);
-      res.redirect(303, `/c/${coach.handle}/checkout/${bookingId}`);
+      res.redirect(303, `/c/${coach.handle}/checkout/${checkoutToken}`);
       return;
     }
 
@@ -718,6 +721,7 @@ publicRouter.post('/c/:handle/checkout/:bookingId', async (req, res) => {
         seller: recipientKey,
         amountCents: ctx.session.price_cents,
         bookingId,
+        checkoutToken,
         mode: 'dropin',
         email,
         handle: coach.handle,
@@ -738,6 +742,7 @@ publicRouter.post('/c/:handle/checkout/:bookingId', async (req, res) => {
         seller: recipientKey,
         amountCents: pkg.price_cents,
         bookingId,
+        checkoutToken,
         mode: 'package',
         itemId: pkg.id,
         email,
@@ -759,6 +764,7 @@ publicRouter.post('/c/:handle/checkout/:bookingId', async (req, res) => {
         seller: recipientKey,
         amountCents: plan.price_cents,
         bookingId,
+        checkoutToken,
         mode: 'plan',
         itemId: plan.id,
         email,
@@ -780,7 +786,7 @@ publicRouter.post('/c/:handle/checkout/:bookingId', async (req, res) => {
         renderCheckout(
           coach,
           ctx.session,
-          bookingId,
+          checkoutToken,
           { packages, plans, credit, canPay: await paymentsOpen(db, coach) },
           'Checkout is not available right now. Please try again.',
         ),

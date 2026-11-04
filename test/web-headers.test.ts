@@ -66,7 +66,7 @@ test('pages opened by a private link are not cached and do not pass the link on 
         `/P/${payments}`,
         '/offer/not-a-real-offer',
         '/signin/verify?to=pat%40example.com',
-        `/c/${seed.coach.handle}/checkout/${pending.id}`,
+        `/c/${seed.coach.handle}/checkout/${pending.checkoutToken}`,
         `/Booking/${token}`,
         `/START/${start}`,
         '/Signin/Verify?to=pat%40example.com',

@@ -109,10 +109,10 @@ test('journey 2: parent books and pays a drop-in via the fake relay', async () =
         redirect: 'manual',
       });
       assert.equal(bookRes.status, 303);
-      const bookingId = Number(/\/checkout\/(\d+)/.exec(bookRes.headers.get('location') ?? '')?.[1]);
-      assert.ok(bookingId);
+      const checkoutKey = /\/checkout\/([^/?#]+)/.exec(bookRes.headers.get('location') ?? '')?.[1];
+      assert.ok(checkoutKey);
 
-      const checkoutRes = await fetch(`${base}/c/${seed.coach.handle}/checkout/${bookingId}`, {
+      const checkoutRes = await fetch(`${base}/c/${seed.coach.handle}/checkout/${checkoutKey}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ mode: 'dropin' }),
@@ -130,8 +130,8 @@ test('journey 2: parent books and pays a drop-in via the fake relay', async () =
       assert.equal(hook.status, 200);
 
       const bookingRows = await db.query<{ status: string; payment_source: string }>(
-        'select status, payment_source from booking where id = $1',
-        [bookingId],
+        'select status, payment_source from booking where checkout_token = $1',
+        [checkoutKey],
       );
       assert.equal(bookingRows.rows[0].status, 'booked');
       assert.equal(bookingRows.rows[0].payment_source, 'DropIn');

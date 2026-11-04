@@ -275,7 +275,7 @@ test('until payments work, booking and paying answer a friendly page and nothing
       const rows = await db.query('select id from booking where athlete_name = $1', ['Mia Ortiz']);
       assert.equal(rows.rows.length, 0, 'no booking is started');
 
-      const checkoutPath = `/c/${seed.coach.handle}/checkout/${pending.id}`;
+      const checkoutPath = `/c/${seed.coach.handle}/checkout/${pending.checkoutToken}`;
       const checkout = await fetch(`${base}${checkoutPath}`);
       assert.equal(checkout.status, 200);
       const checkoutHtml = await checkout.text();
@@ -306,7 +306,7 @@ test('a free session stays bookable while payments are not set up', async () => 
         contact_phone: '5550008888',
       });
       assert.equal(booked.status, 303);
-      assert.match(booked.headers.get('location') ?? '', /\/checkout\/\d+$/);
+      assert.match(booked.headers.get('location') ?? '', /\/checkout\/[A-Za-z0-9_-]{22}$/);
     });
   });
 });
@@ -342,7 +342,7 @@ test('a family with session credits can still book with them while payments are 
       const booked = await form(base, bookPath, { athlete_name: 'Sam Reyes', contact_phone: '5550007777' });
       assert.equal(booked.status, 303);
       const checkoutPath = booked.headers.get('location') ?? '';
-      assert.match(checkoutPath, new RegExp(`^/c/${seed.coach.handle}/checkout/\\d+$`));
+      assert.match(checkoutPath, new RegExp(`^/c/${seed.coach.handle}/checkout/[A-Za-z0-9_-]{22}$`));
 
       const checkout = await (await fetch(`${base}${checkoutPath}`)).text();
       assert.match(checkout, /Use 1 of 3 session credits/);
