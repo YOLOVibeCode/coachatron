@@ -435,13 +435,16 @@ out of the coach's Stripe balance and goes back to the card that paid.
   says what the refund changes. No new screen.
 - **Whole payments only.** A refund is the whole payment, and only while
   nothing it bought beyond its own booking has been used: a drop-in any
-  time, including one the parent cancelled (or, when the coach cancelled
-  its session, while the credit it became is unused), and a package or
-  one-time pack while none of the
-  credits it added has been used. Otherwise the screen says how many
-  sessions were used and refunds nothing; a partial refund goes through
-  Coachatron support. The relay's route takes an amount, so a partial
-  refund needs only a product decision, not a relay change.
+  time, including a no-show or a late cancel, except that one the parent
+  cancelled in time, whose session the coach cancelled, or that the coach
+  gave back (§9.5) is refundable only while the credit it became is unused;
+  and a package or one-time pack while none of the credits it added has
+  been used. Its own booking counts as its own session while it stands or
+  was cancelled late, the same as a no-show (§9.5), and not once the coach
+  gave that session back. Otherwise the screen says how many sessions were
+  used and refunds nothing; a partial refund goes through Coachatron
+  support. The relay's route takes an amount, so a partial refund needs
+  only a product decision, not a relay change.
 - **Once.** Each payment has one refund row (`refund`), so a second tap
   sends nothing. The relay is called with an idempotency key per payment
   and try: the same key again when its answer never came, a new one only
@@ -449,11 +452,14 @@ out of the coach's Stripe balance and goes back to the card that paid.
 - **Held while on its way.** From the moment the coach confirms, the credit
   the payment bought cannot be used, so nothing more is booked with it
   while Stripe confirms. A credit the payment becomes in the meantime (the
-  coach cancels its session) is held the same way, and the parent's cancel
-  text does not offer it. A refund that does not go through gives it back.
+  coach cancels its session, the parent cancels in time, or the coach gives
+  a no-show or late cancel back) is held the same way, and neither the
+  parent's cancel text nor their manage page offers it. A refund that does
+  not go through gives it back.
 - **What a refund does,** once, whether the relay confirms at once or by the
   `marketplace.purchase.refunded` event: the booking it bought is marked
-  refunded, and when its session is still to come its spot is free again;
+  refunded, and when its session is still to come its spot is free again
+  and goes to the waitlist in order (§7.3);
   the session credits it bought are withdrawn for good (any already used are
   counted and shown, never below zero, and a booking that used one and is
   cancelled later gives nothing back); a

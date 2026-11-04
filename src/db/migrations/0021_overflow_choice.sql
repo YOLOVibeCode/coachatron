@@ -15,9 +15,10 @@ alter table overflow_ask add column if not exists unreachable_told_at timestampt
 
 -- Asks answered before this change, with no offer still out, are over. One
 -- still asking its roster keeps going as a backup-coach ask, which is what
--- the roster was offered then.
+-- the roster was offered then. An ask answered since has its kind, so
+-- running this file again on such a database leaves it open.
 update overflow_ask set closed_at = coalesce(resolved_at, now()), outcome = coalesce(outcome, 'ended')
-where closed_at is null and resolved_at is not null
+where closed_at is null and resolved_at is not null and kind is null
   and not exists (select 1 from offer o where o.session_id = overflow_ask.session_id and o.state = 'sent');
 update overflow_ask set kind = 'backup' where closed_at is null and resolved_at is not null and kind is null;
 

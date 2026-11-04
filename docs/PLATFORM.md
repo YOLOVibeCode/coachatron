@@ -255,8 +255,9 @@ SPEC.md §8.1.
   credit's `refund_id` in the same transaction, and a credit with one cannot
   be booked with; a booking that drew on it since the check stops the claim.
   A credit made from the booking while its refund is `requested` or
-  `pending` (a coach's cancel of a paid drop-in) gets that `refund_id` in
-  the transaction that makes it. A refund that fails before its effects
+  `pending` (a coach's cancel of a paid drop-in, a parent's cancel in time,
+  or the coach giving a no-show or late cancel back) gets that `refund_id`
+  in the transaction that makes it. A refund that fails before its effects
   were applied clears it (migration 0020).
 - **Effects, once.** When the relay answers `succeeded`, or
   `marketplace.purchase.refunded` arrives (whichever is first), the booking
@@ -266,7 +267,12 @@ SPEC.md §8.1.
   nothing back (what was already used is counted and shown), a
   kept payment is resolved, and the parent is told once: a text with their
   consent, an email to an address they typed. Totals on Money leave the
-  booking out and show what was refunded this week. A booking pass's
+  booking out and show what was refunded this week. A spot the refund
+  frees is offered to the waitlist at once, and a spot offer whose booking
+  was refunded leaves the line as lapsed. What was used counts a booking
+  as using its own session while it stands or was cancelled late (unless
+  the coach gave it back, `booking.waived_at`), and a session given back
+  as used once the credit it went to is spent. A booking pass's
   payment is on each child's booking (`booking.charge_id`), so its refund
   covers every booking carrying it: all are ended, every credit they hold is
   withdrawn, the amount is the sum of their shares, and the parent's notice

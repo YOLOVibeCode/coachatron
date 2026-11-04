@@ -58,7 +58,15 @@ import { canText, sendText, type SendOutcome } from '../domain/outbound.js';
 import { paymentsOpen } from '../domain/payments.js';
 import { deliverableEmail, namesList, sendBookingConfirmation } from '../domain/bookingMessages.js';
 import { offerOpenSpots } from '../domain/waitlist.js';
-import { CREDIT_WITHDRAWN_SQL, cancelByParent, cancelCutoff, cancelTerms, getBookingPolicy, MAX_CHILDREN_PER_BOOKING } from '../domain/policy.js';
+import {
+  CREDIT_HELD_SQL,
+  CREDIT_WITHDRAWN_SQL,
+  cancelByParent,
+  cancelCutoff,
+  cancelTerms,
+  getBookingPolicy,
+  MAX_CHILDREN_PER_BOOKING,
+} from '../domain/policy.js';
 import { hasPaymentHeldForCoach } from '../domain/paymentAttention.js';
 import {
   BOOKING_HOLD_MINUTES,
@@ -1471,6 +1479,7 @@ interface BookingWithSession {
   late_cancel: boolean;
   waived_at: string | null;
   credit_withdrawn: boolean;
+  credit_held: boolean;
   starts_at_utc: string;
   tz: string;
   location_text: string | null;
@@ -1484,7 +1493,7 @@ interface BookingWithSession {
 async function loadBookingByToken(db: DbClient, token: string): Promise<BookingWithSession | null> {
   const result = await db.query<BookingWithSession>(
     `select b.id, b.session_id, b.athlete_name, b.contact_phone, b.contact_email, b.phone_verified_at, b.status, b.credit_id,
-            b.payment_source, b.gross_cents, b.late_cancel, b.waived_at, ${CREDIT_WITHDRAWN_SQL},
+            b.payment_source, b.gross_cents, b.late_cancel, b.waived_at, ${CREDIT_WITHDRAWN_SQL}, ${CREDIT_HELD_SQL},
             s.starts_at_utc, s.tz, s.location_text, st.name as session_type_name, c.id as coach_id, c.handle as coach_handle,
             c.name as coach_name, c.cancel_window_hours
      from booking b
@@ -1526,12 +1535,14 @@ function cancelTermsNote(booking: BookingWithSession) {
   }
 }
 
-/** After a cancel: whether the credit came back. */
+/** After a cancel: whether the credit came back. A credit held while a
+ * refund of its payment is on its way is not offered; the refund's own
+ * notice follows. */
 function cancelledNote(booking: BookingWithSession) {
   if (booking.late_cancel && !booking.waived_at) {
     return html`<p class="muted">Cancelled inside ${booking.coach_name}'s ${hoursWord(booking.cancel_window_hours)} window, so the credit was used.</p>`;
   }
-  if (booking.credit_id !== null && !booking.credit_withdrawn) {
+  if (booking.credit_id !== null && !booking.credit_withdrawn && !booking.credit_held) {
     return html`<p class="muted">Your session credit with ${booking.coach_name} is back.</p>`;
   }
   return raw('');

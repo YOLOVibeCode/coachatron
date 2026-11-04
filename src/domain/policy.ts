@@ -1,5 +1,5 @@
 import { inTransaction, type DbClient } from '../db/client.js';
-import { createCredit, restoreCredit } from './pricing.js';
+import { createCredit, holdCreditForRefund, restoreCredit } from './pricing.js';
 
 /** The booking policy (SPEC.md §9.5). Every rule has a default, so a coach
  * who changes nothing still has a working policy. The coach changes the
@@ -66,6 +66,11 @@ interface PaidWith {
 export const CREDIT_WITHDRAWN_SQL =
   'exists (select 1 from credit cw where cw.id = b.credit_id and cw.withdrawn_at is not null) as credit_withdrawn';
 
+/** Reads `booking b`: whether the booking's credit is held while a refund of
+ * the payment that bought it is on its way, so it cannot be used yet. */
+export const CREDIT_HELD_SQL =
+  'exists (select 1 from credit ch where ch.id = b.credit_id and ch.refund_id is not null and ch.withdrawn_at is null) as credit_held';
+
 /** The booking drew on a credit that can still take a session back. */
 function hasCreditBack(b: PaidWith): boolean {
   return b.credit_id !== null && !b.credit_withdrawn;
@@ -110,9 +115,18 @@ export type ParentCancel =
 export async function cancelByParent(db: DbClient, manageToken: string, now: Date = new Date()): Promise<ParentCancel> {
   return inTransaction(db, async (tx): Promise<ParentCancel> => {
     const found = await tx.query<
-      PaidWith & { id: number; session_id: number; status: string; contact_phone: string; starts_at_utc: string; coach_id: number; window: number }
+      PaidWith & {
+        id: number;
+        session_id: number;
+        status: string;
+        contact_phone: string;
+        charge_id: string | null;
+        starts_at_utc: string;
+        coach_id: number;
+        window: number;
+      }
     >(
-      `select b.id, b.session_id, b.status, b.contact_phone, b.credit_id, b.payment_source, b.gross_cents,
+      `select b.id, b.session_id, b.status, b.contact_phone, b.charge_id, b.credit_id, b.payment_source, b.gross_cents,
               ${CREDIT_WITHDRAWN_SQL}, s.starts_at_utc, st.coach_id, c.cancel_window_hours as window
        from booking b
        join session s on s.id = b.session_id
@@ -139,6 +153,8 @@ export async function cancelByParent(db: DbClient, manageToken: string, now: Dat
     } else if (terms === 'becomes-credit') {
       const creditId = await createCredit(tx, b.coach_id, b.contact_phone, null, `cancelled-booking:${b.id}`, 1, null);
       await tx.query('update booking set credit_id = $2 where id = $1', [b.id, creditId]);
+      // A refund of this payment on its way holds the credit it became.
+      await holdCreditForRefund(tx, creditId, b.charge_id);
     }
     return { kind: 'cancelled', terms, sessionId: b.session_id };
   });
@@ -158,9 +174,9 @@ export function canWaive(b: PaidWith & { status: string; late_cancel: boolean; w
 export async function waiveBooking(db: DbClient, coachId: number, sessionId: number, bookingId: number): Promise<boolean> {
   return inTransaction(db, async (tx) => {
     const found = await tx.query<
-      PaidWith & { id: number; status: string; late_cancel: boolean; waived_at: string | null; contact_phone: string }
+      PaidWith & { id: number; status: string; late_cancel: boolean; waived_at: string | null; contact_phone: string; charge_id: string | null }
     >(
-      `select b.id, b.status, b.late_cancel, b.waived_at, b.credit_id, b.payment_source, b.gross_cents, b.contact_phone,
+      `select b.id, b.status, b.late_cancel, b.waived_at, b.credit_id, b.payment_source, b.gross_cents, b.contact_phone, b.charge_id,
               ${CREDIT_WITHDRAWN_SQL}
        from booking b
        join session s on s.id = b.session_id
@@ -177,6 +193,8 @@ export async function waiveBooking(db: DbClient, coachId: number, sessionId: num
     } else {
       const creditId = await createCredit(tx, coachId, b.contact_phone, null, `waived-booking:${b.id}`, 1, null);
       await tx.query('update booking set credit_id = $2 where id = $1', [b.id, creditId]);
+      // A refund of this payment on its way holds the credit it became.
+      await holdCreditForRefund(tx, creditId, b.charge_id);
     }
     await tx.query('update booking set waived_at = now() where id = $1', [b.id]);
     return true;

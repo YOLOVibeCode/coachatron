@@ -3,6 +3,7 @@ import { refundSellerPayment, SellerError } from '../relay/seller.js';
 import { formatCoachDollars } from '../lib/time.js';
 import { findCoachBySellerKey, getConnectRecipientKey, type CoachRow } from './auth.js';
 import { namesList, sendRefundNotice } from './bookingMessages.js';
+import { offerOpenSpots } from './waitlist.js';
 
 /**
  * Refunds (SPEC.md §9.4). A coach refunds a whole payment from Session
@@ -54,10 +55,12 @@ interface PurchaseBooking {
   starts_at_utc: string;
   tz: string;
   session_name: string;
+  late_cancel: boolean;
+  waived_at: string | null;
 }
 
 const PURCHASE_COLUMNS = `b.id, st.coach_id, b.session_id, b.status, b.payment_source, b.credit_id, b.charge_id, b.gross_cents,
-  b.athlete_name, b.contact_phone, s.starts_at_utc, s.tz, st.name as session_name`;
+  b.athlete_name, b.contact_phone, s.starts_at_utc, s.tz, st.name as session_name, b.late_cancel, b.waived_at`;
 const PURCHASE_FROM = `booking b join session s on s.id = b.session_id join session_type st on st.id = s.session_type_id`;
 
 /** A booking by id, its row locked until the transaction ends. */
@@ -94,6 +97,22 @@ interface BoughtBooking {
   credit_id: number | null;
   gross_cents: number | null;
   athlete_name: string;
+  late_cancel: boolean;
+  waived_at: string | null;
+}
+
+/** The booking still uses the session it was bought with: it stands, or the
+ * parent cancelled it inside the window (treated as a no-show, §9.5), and
+ * the coach did not give that session back. A booking that does not has
+ * its session on a credit instead: a cancel in time, the coach's cancel, or
+ * the coach giving it back. */
+function usesOwnSession(x: BoughtBooking): boolean {
+  return (LIVE.has(x.status) || (x.status === 'cancelled' && x.late_cancel)) && x.waived_at === null;
+}
+
+/** The credits the payment's bookings hold. */
+function creditIdsOf(bought: BoughtBooking[]): number[] {
+  return [...new Set(bought.flatMap((x) => (x.credit_id === null ? [] : [x.credit_id])))];
 }
 
 /** Every booking this booking's payment bought: the booking alone, or each
@@ -101,7 +120,7 @@ interface BoughtBooking {
 async function bookingsBought(db: DbClient, b: PurchaseBooking, lock = false): Promise<BoughtBooking[]> {
   if (b.charge_id === null) return [b];
   const result = await db.query<BoughtBooking>(
-    `select id, status, credit_id, gross_cents, athlete_name from booking
+    `select id, status, credit_id, gross_cents, athlete_name, late_cancel, waived_at from booking
      where charge_id = $1 and session_id = $2 order by id${lock ? ' for update' : ''}`,
     [b.charge_id, b.session_id],
   );
@@ -142,14 +161,17 @@ interface PurchaseCredits {
 }
 
 /** The sessions a payment bought and how many are still unused. Each
- * booking it bought uses one while it stands; the rest sit on the credit
- * the payment added (a coach's cancel puts the booking's own session back on
- * it, or makes a paid drop-in one credit). A drop-in the parent cancelled
- * inside the window has neither, and nothing it bought was used. */
+ * booking it bought uses one while it uses its own session (it stands, or
+ * was cancelled late, and was not given back); the rest sit on the credit
+ * the payment added (a cancel in time, the coach's cancel, or the coach
+ * giving a session back puts the booking's own session back on it, or
+ * makes a paid drop-in one credit). A drop-in the parent cancelled inside
+ * the window, and not given back, has neither, and nothing it bought was
+ * used elsewhere. */
 async function purchaseCredits(db: DbClient, b: PurchaseBooking): Promise<PurchaseCredits> {
   const bought = await bookingsBought(db, b);
   const live = bought.filter((x) => LIVE.has(x.status));
-  const creditIds = [...new Set(bought.flatMap((x) => (x.credit_id === null ? [] : [x.credit_id])))];
+  const creditIds = creditIdsOf(bought);
   const credits =
     creditIds.length === 0
       ? []
@@ -160,15 +182,15 @@ async function purchaseCredits(db: DbClient, b: PurchaseBooking): Promise<Purcha
           )
         ).rows;
   const kind: PurchaseKind = b.payment_source === 'Subscription' ? 'pack' : b.payment_source === 'PackageCredit' ? 'package' : 'drop-in';
-  const own = live.length;
+  const own = bought.filter(usesOwnSession).length;
   const unused = credits.reduce((n, c) => n + Math.max(0, c.remaining), 0);
   if (kind === 'drop-in') {
-    // A child's session was used elsewhere only when a cancel made it a
-    // credit and that credit is spent.
+    // A child's session was used elsewhere only when it became a credit (a
+    // cancel, or the coach giving it back) and that credit is spent.
     let used = 0;
     for (const c of credits) {
-      const cancelled = bought.filter((x) => x.credit_id === c.id && !LIVE.has(x.status)).length;
-      used += Math.max(0, cancelled - Math.max(0, c.remaining));
+      const becameCredit = bought.filter((x) => x.credit_id === c.id && !usesOwnSession(x)).length;
+      used += Math.max(0, becameCredit - Math.max(0, c.remaining));
     }
     return { kind, creditIds, sessions: bought.length, unused, usedElsewhere: used, bought, live };
   }
@@ -460,8 +482,7 @@ async function claimRefund(db: DbClient, plan: RefundPlan): Promise<{ attempt: n
         // turns one into a credit either finished first (and that credit is
         // held here) or runs after and finds this refund on its way.
         const b = await lockedBooking(tx, plan.bookingId);
-        const bought = b ? await bookingsBought(tx, b, true) : [];
-        const held = [...new Set(bought.flatMap((x) => (x.credit_id === null ? [] : [x.credit_id])))];
+        const held = b ? creditIdsOf(await bookingsBought(tx, b, true)) : [];
         if (held.length > 0) await tx.query('update credit set refund_id = $2 where id = any($1::int[])', [held, claimed.id]);
         const credits = b ? await purchaseCredits(tx, b) : null;
         if (credits && credits.usedElsewhere > 0) {
@@ -656,14 +677,14 @@ export async function applyRefunded(db: DbClient, report: RefundReport): Promise
     let ended: BoughtBooking[] = [];
     let names: string[] = [];
     let released = false;
+    let sessionId: number | null = null;
     if (current.booking_id !== null) {
       const b = await lockedBooking(tx, current.booking_id);
       if (b) {
         // Lock every booking the payment bought and their credits too, so a
         // booking drawing on one waits, and what is counted here is what is
         // withdrawn. Never below zero.
-        const bought = await bookingsBought(tx, b, true);
-        const held = [...new Set(bought.flatMap((x) => (x.credit_id === null ? [] : [x.credit_id])))];
+        const held = creditIdsOf(await bookingsBought(tx, b, true));
         if (held.length > 0) await tx.query('select id from credit where id = any($1::int[]) for update', [held]);
         const credits = await purchaseCredits(tx, b);
         if (credits.creditIds.length > 0) {
@@ -680,6 +701,7 @@ export async function applyRefunded(db: DbClient, report: RefundReport): Promise
         names = credits.bought.map((x) => x.athlete_name);
         // A session that already happened has no spot to free.
         released = ended.length > 0 && !hasStarted(b.starts_at_utc);
+        sessionId = b.session_id;
         await tx.query(
           "update booking set status = 'refunded' where id = any($1::int[]) and status in ('booked', 'attended', 'noshow', 'cancelled')",
           [credits.bought.map((x) => x.id)],
@@ -693,10 +715,19 @@ export async function applyRefunded(db: DbClient, report: RefundReport): Promise
        where id = $1`,
       [current.id, report.refundRef, creditsWithdrawn, creditsUsed, released],
     );
-    return { row: current, creditsWithdrawn, ended: ended.length > 0, bookingsEnded: ended.length, names, released };
+    return { row: current, creditsWithdrawn, ended: ended.length > 0, bookingsEnded: ended.length, names, released, sessionId };
   });
   if (!applied) return 'already';
   await tellParent(db, applied.row, applied);
+  // The freed spot goes to the waitlist, in order, as after a parent's
+  // cancel. The tick offers it on if this does not.
+  if (applied.released && applied.sessionId !== null) {
+    try {
+      await offerOpenSpots(db, applied.sessionId);
+    } catch (err) {
+      console.error('refund: offering the freed spot failed:', err instanceof Error ? err.message : err);
+    }
+  }
   return 'refunded';
 }
 

@@ -309,7 +309,7 @@ export async function moveWaitlists(db: DbClient, now: Date): Promise<number> {
     `update waitlist w set state = 'lapsed'
      from booking b
      where b.id = w.offer_booking_id and w.state = 'offered'
-       and (b.status = 'cancelled' or (b.status = 'pending' and (b.hold_expires_at is null or b.hold_expires_at <= now())))`,
+       and (b.status in ('cancelled', 'refunded') or (b.status = 'pending' and (b.hold_expires_at is null or b.hold_expires_at <= now())))`,
   );
   const sessions = await db.query<{ id: number }>(
     `select s.id
