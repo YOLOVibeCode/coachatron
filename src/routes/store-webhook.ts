@@ -28,9 +28,10 @@ export const storeWebhookRouter = Router();
  * again after this long. */
 const STALE_CLAIM_MINUTES = 5;
 
-/** Records the event id before handling it. False when it was already
- * handled, or another delivery is handling it right now. */
-async function claimEvent(db: DbClient, eventId: string, type: string): Promise<boolean> {
+/** Records the event id before handling it: 'claimed' to handle it now,
+ * 'done' when it was handled already, 'busy' while another delivery is
+ * handling it. */
+async function claimEvent(db: DbClient, eventId: string, type: string): Promise<'claimed' | 'done' | 'busy'> {
   const result = await db.query<{ event_id: string }>(
     `insert into store_event (event_id, type) values ($1, $2)
      on conflict (event_id) do update set claimed_at = now()
@@ -39,7 +40,9 @@ async function claimEvent(db: DbClient, eventId: string, type: string): Promise<
      returning event_id`,
     [eventId, type, STALE_CLAIM_MINUTES],
   );
-  return result.rows.length === 1;
+  if (result.rows.length === 1) return 'claimed';
+  const existing = await db.query<{ processed_at: string | null }>('select processed_at from store_event where event_id = $1', [eventId]);
+  return existing.rows[0]?.processed_at ? 'done' : 'busy';
 }
 
 async function finishEvent(db: DbClient, eventId: string): Promise<void> {
@@ -276,7 +279,11 @@ async function onPaid(event: StoreEvent, context: { headers: unknown }): Promise
   const paymentRef = event.refs?.paymentId || event.refs?.orderId || null;
   const eventId =
     event.id || headerValue(context.headers, 'x-relay-event-id') || (paymentRef ? `payment:${paymentRef}` : `unidentified:${randomUUID()}`);
-  if (!(await claimEvent(db, eventId, String(event.type ?? '')))) return;
+  const claim = await claimEvent(db, eventId, String(event.type ?? ''));
+  if (claim === 'done') return;
+  // Not a 2xx, so the relay delivers it again later: by then it is either
+  // handled, or its unfinished claim can be taken over.
+  if (claim === 'busy') throw new Error(`store event ${eventId} is being handled by another delivery`);
   try {
     await handlePaid(db, event, eventId);
     await finishEvent(db, eventId);

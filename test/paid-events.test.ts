@@ -65,20 +65,51 @@ test('the same paid event is handled once, also after the server restarts', asyn
   });
 });
 
-test('an event another delivery is still handling is skipped; one left unfinished long ago is handled', async () => {
+test('an event another delivery is still handling is sent back for a retry; one left unfinished long ago is handled', async (t) => {
+  captureErrors(t);
   await withRelay(async () => {
     const db = await freshDb();
     const seed = await seedCoachWithSession(db, { capacity: 3 });
     await withServer(async (base) => {
       const { userId } = await startPay(base, seed.coach.handle, '5551112222', seed.sessionId);
       await db.query("insert into store_event (event_id, type) values ('rel_evt_ch_busy', 'marketplace.purchase.paid')");
-      assert.equal((await postStorePaid(base, { userId, amountCents: 3500, paymentId: 'ch_busy' })).status, 200);
+      const busy = await postStorePaid(base, { userId, amountCents: 3500, paymentId: 'ch_busy' });
+      assert.ok(busy.status >= 500, `the relay is asked to deliver it again (${busy.status})`);
       assert.equal((await latestBooking(db)).status, 'pending', 'left to the delivery that holds it');
+      const claim = await db.query<{ n: string }>("select count(*)::text as n from store_event where event_id = 'rel_evt_ch_busy'");
+      assert.equal(claim.rows[0].n, '1', "the other delivery's claim is kept");
 
       await db.query("update store_event set claimed_at = now() - interval '10 minutes' where event_id = 'rel_evt_ch_busy'");
       assert.equal((await postStorePaid(base, { userId, amountCents: 3500, paymentId: 'ch_busy' })).status, 200);
       assert.equal((await latestBooking(db)).status, 'booked');
     });
+  });
+});
+
+test('a delivery that fails part way lets the retry handle the event', async (t) => {
+  captureErrors(t);
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 3 });
+    const query = db.query.bind(db);
+    let failNext = true;
+    db.query = (async (sql: string, params?: unknown[]) => {
+      if (failNext && sql.includes("set status = 'booked'")) {
+        failNext = false;
+        throw new Error('database unavailable');
+      }
+      return query(sql, params);
+    }) as DbClient['query'];
+    await withServer(async (base) => {
+      const { userId } = await startPay(base, seed.coach.handle, '5551112222', seed.sessionId);
+      const first = await postStorePaid(base, { userId, amountCents: 3500, paymentId: 'ch_retry' });
+      assert.equal(first.status, 500);
+      assert.equal((await latestBooking(db)).status, 'pending');
+      const second = await postStorePaid(base, { userId, amountCents: 3500, paymentId: 'ch_retry' });
+      assert.equal(second.status, 200);
+      assert.equal((await latestBooking(db)).status, 'booked');
+    });
+    assert.deepEqual(await attention(db), []);
   });
 });
 
