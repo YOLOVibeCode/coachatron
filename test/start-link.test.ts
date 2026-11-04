@@ -116,6 +116,19 @@ test('an email taken by another sign-up a moment earlier asks for a different on
   );
 });
 
+test('an email put unproved on another account a moment earlier says so the same way, and the link still works', async () => {
+  await startWith(
+    (db) => createCoach(db, { phone: '+15550009999', email: 'new@example.com', name: 'Someone Else', tz: 'America/Chicago' }),
+    { name: 'New Coach', email: 'new@example.com' },
+    async (res, db, base, token) => {
+      assert.equal(res.status, 422);
+      assert.match(await res.text(), /That email is already on another account\. Leave it out, or use a different one\./);
+      assert.equal((await db.query('select id from coach where phone = $1', ['+15553334444'])).rows.length, 0);
+      assert.equal((await fetch(`${base}/start/${token}`)).status, 200);
+    },
+  );
+});
+
 test('when the same phone finished signing up a moment earlier, the form signs that coach in', async () => {
   await startWith(
     (db) => createCoach(db, { phone: '+15553334444', email: '', name: 'Pat Keeper', tz: 'America/Chicago' }),

@@ -148,7 +148,6 @@ function smsConsentChecked(body: unknown): boolean {
   return value === '1' || value === 'on' || value === true;
 }
 
-const EMAIL_TAKEN = 'That email already has an account. Use another email, or leave it blank.';
 const TRY_AGAIN = 'That did not go through. Tap Continue to try again.';
 /** The unique index on a coach's email (migration 0011). */
 const EMAIL_INDEX = 'coach_email_unique';
@@ -258,7 +257,9 @@ landingRouter.post('/start/:token', async (req, res) => {
       if (constraint === null) throw err;
       if (constraint === EMAIL_INDEX) {
         await reopenStartLink(db, token);
-        res.status(422).send(renderStartForm(token, { name, email, tz }, EMAIL_TAKEN));
+        // Said the same way as when the email was already taken above.
+        const taken = extraEmail ? await findCoachHoldingEmail(db, extraEmail) : null;
+        res.status(422).send(renderStartForm(token, { name, email, tz }, emailTakenNotice(taken ?? { email_verified: false })));
         return;
       }
       // The phone was proven by the text with this link, so the coach who
