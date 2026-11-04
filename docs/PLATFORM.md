@@ -528,7 +528,8 @@ prices like an international destination. Those are capped in the send path
 | Per coach, model | 30 calls/day, 400/month | cents |
 | Product model key | $20/month | raise on purpose, not by usage |
 | Product, per day | 400 segments × active coaches, floor 500 | a shared-sender bug dies the same day |
-| Texts set off by people not signed in, whole app | 30 an hour, 100 a day, none in the day's last 100 | a flood from many addresses cannot use up the day |
+| Texts set off by people not signed in on web forms, whole app | 30 an hour, 100 a day, none in the day's last 100 | a flood from many addresses cannot use up the day |
+| Start links answering a text from an unknown number, whole app | the same limits, counted apart from the web forms' | web traffic cannot hold back a coach who texts in |
 
 *Implemented 2026-09-30* in `src/domain/outbound.ts`, the only send path.
 Destination price is enforced by country code: only `+1` (US and Canada) is
@@ -543,14 +544,21 @@ wrong tries, works once, and checks for a number or email count against its
 hourly limit only while it has a live code. The code a parent asks for at
 checkout to use session credits follows the same rules, but is a code of its
 own: it never signs anyone in, and asking for it leaves a sign-in code
-working. Texts set off by someone not signed in (sign-in codes, start links,
-opt-in confirmations, and booking, moved booking and waitlist texts to a
-number never texted before) also count against an app-wide ceiling whatever
-address they come from (`SMS_VISITOR_HOURLY_CAP`, `SMS_VISITOR_DAILY_CAP`,
-`SMS_DAILY_RESERVE`); past it they wait like a relay 429 (`busy`), and the
-form says to try later or to use email. Each takes its place before it goes
-(a `reserved` row in `message_log`, written under a transaction lock), so
-requests that arrive together cannot all pass the same count.
+working. Texts set off by someone not signed in on a web form (sign-in
+codes, opt-in confirmations, and booking, moved booking and waitlist texts
+to a number never texted before) also count against an app-wide ceiling
+whatever address they come from (`SMS_VISITOR_HOURLY_CAP`,
+`SMS_VISITOR_DAILY_CAP`, `SMS_DAILY_RESERVE`); past it they wait like a
+relay 429 (`busy`), and the form says to try later or to use email. The
+start link that answers a text from a number we do not know is counted in
+a budget of its own, with the same limits (`message_log.inbound_reply`,
+migration 0032). A reply goes only to the number that texted, and each
+number gets one reply a day, so the web forms' traffic cannot hold back a
+coach who texts in, and those replies cannot use up the forms' texts. It
+keeps the same reserve and the product's daily ceiling. Each takes its
+place before it goes (a `reserved` row in `message_log`, written under a
+transaction lock), so requests that arrive together cannot all pass the
+same count.
 When the relay's own caps answer 429, the send path returns `busy` and the
 page asks to try again later. *(Added 2026-11-04: a letter outside GSM-7
 whose plain form is inside it, as in "García", is written plain, so a name

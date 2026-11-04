@@ -44,13 +44,24 @@ import {
   notePublished,
   openPaymentsLink,
   paymentsOpen,
+  paymentsStep,
   recordSellerStatus,
+  type PaymentsStep,
 } from '../domain/payments.js';
 import { createWeeklySlots, deactivateSlot, listWeeklySlots, type WeeklySlot } from '../domain/scheduling.js';
-import { coachNav, html, oneTimeCodeNote, page, raw, smsConsentCheckbox } from '../lib/html.js';
+import { coachNav, html, oneTimeCodeNote, page, raw, smsConsentCheckbox, type SafeHtml } from '../lib/html.js';
 import { cancelReach, cancelScheduledSession, dropInCreditNote, previewSessionCancel, type CancelReach } from '../domain/cancelSession.js';
-import { DEFAULT_TZ, formatCoachDollars, formatLocal, formatTimeRange, isValidTimeZone } from '../lib/time.js';
-import { getPackagesForCoach, getPlansForCoach, createPackage, createPlan, takesSpotSql } from '../domain/pricing.js';
+import { DEFAULT_TZ, formatClockLocal, formatCoachDollars, formatLocal, formatTimeRange, isValidTimeZone } from '../lib/time.js';
+import {
+  getPackagesForCoach,
+  getPlansForCoach,
+  createPackage,
+  createPlan,
+  liveHoldSql,
+  soldSql,
+  SOLD_BOOKING_STATUSES,
+  takesSpotSql,
+} from '../domain/pricing.js';
 import { clockTime, dollarsToCents, LIMITS, rowId, wholeNumber } from '../lib/input.js';
 import {
   canWaive,
@@ -104,6 +115,7 @@ import { readStartText, START_COOKIE } from '../lib/startCookie.js';
 import {
   coachHasSchedule,
   discardDraft,
+  formatClock,
   getOpenDraft,
   handleSetupMessage,
   publishSetupPlan,
@@ -819,7 +831,7 @@ function renderWeeklyTimes(
       ${slots.map(
         (slot) => html`<div class="card">
           <div class="row">
-            <span>${WEEKDAY_LABELS[slot.weekday]} ${slot.time_local}${slot.location_text ? ` · ${slot.location_text}` : ''}</span>
+            <span>${WEEKDAY_LABELS[slot.weekday]} ${formatClock(slot.time_local)}${slot.location_text ? ` · ${slot.location_text}` : ''}</span>
             <form method="post" action="/app/session-types/${type.id}/slots/${slot.id}/remove">
               <button type="submit" class="ghost">Remove</button>
             </form>
@@ -892,7 +904,7 @@ coachRouter.post('/app/session-types/:id/generate-week', requireAuth, async (req
   });
   if (elsewhere.length > 0) {
     const which = elsewhere
-      .map((c) => `${WEEKDAY_LABELS[c.weekday]} ${c.time_local}${c.location_text ? ` (at ${c.location_text})` : ''}`)
+      .map((c) => `${WEEKDAY_LABELS[c.weekday]} ${formatClock(c.time_local)}${c.location_text ? ` (at ${c.location_text})` : ''}`)
       .join(', ');
     const are = elsewhere.length === 1 ? 'is already a weekly time and keeps its place' : 'are already weekly times and keep their places';
     refuse(`${which} ${are}, so nothing was added.`);
@@ -988,10 +1000,26 @@ const COPY_LINK_SCRIPT =
   "function old(){try{if(document.execCommand('copy'))done()}catch(e){}}" +
   "try{navigator.clipboard.writeText(i.value).then(done,old)}catch(e){old()}";
 
+/** The words for each payments step, the same on Schedule and Money. */
+const CONNECT_PAYMENTS = 'Connect payments';
+const FINISH_CONNECTING_PAYMENTS = 'Finish connecting payments';
+const TEST_ONLY_PAYMENTS = 'This payment account takes test payments only, so parents cannot book paid sessions yet.';
+
+/** Schedule's line and link for a coach who cannot take payments yet. */
+function paymentsStepCard(step: PaymentsStep) {
+  if (step === 'test-only') {
+    return html`<p class="muted">${TEST_ONLY_PAYMENTS}</p>
+      <a class="action" href="/app/money">See payments</a>`;
+  }
+  return html`<p class="muted">Parents can't book until payments are set up.</p>
+    <a class="action" href="/app/money">${step === 'finish' ? FINISH_CONNECTING_PAYMENTS : CONNECT_PAYMENTS}</a>`;
+}
+
 /** The coach's page link, always in view on Schedule and Money: one box to
  * select or copy, and a way to text it. On Schedule the main action is
- * sharing it, or, until payments work, setting them up. Money has its own. */
-function renderPageLinkCard(coach: CoachRow, opts: { main: 'share' | 'payments' | 'none'; justPublished?: boolean }) {
+ * sharing it, or, until payments work, the next payments step. Money has
+ * its own. */
+function renderPageLinkCard(coach: CoachRow, opts: { main: 'share' | PaymentsStep | 'none'; justPublished?: boolean }) {
   const link = coachPageUrl(coach.handle);
   const share = `sms:?&body=${encodeURIComponent(`Book with me: ${link}`)}`;
   return html`<div class="card page-link">
@@ -1004,10 +1032,7 @@ function renderPageLinkCard(coach: CoachRow, opts: { main: 'share' | 'payments' 
       <button type="button" class="ghost" onclick="${COPY_LINK_SCRIPT}">Copy link</button>
       <a class="action${opts.main === 'share' ? '' : ' ghost'}" href="${share}">Share your link</a>
     </div>
-    ${opts.main === 'payments'
-      ? html`<p class="muted">Parents can't book until payments are set up.</p>
-          <a class="action" href="/app/money">Connect payments</a>`
-      : raw('')}
+    ${opts.main === 'share' || opts.main === 'none' ? raw('') : paymentsStepCard(opts.main)}
   </div>`;
 }
 
@@ -1029,7 +1054,7 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
     return;
   }
   const live = renderPageLinkCard(coach, {
-    main: (await paymentsOpen(db, coach)) ? 'share' : 'payments',
+    main: (await paymentsOpen(db, coach)) ? 'share' : await paymentsStep(db, coach.id),
     justPublished: req.query.published === '1',
   });
   const askCard = renderAskCard(await pendingAskForCoach(db, coachId));
@@ -1055,10 +1080,15 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
     price_cents: number;
     duration_min: number;
     booked: string;
+    holding: string;
   }>(
+    // Counted as Session detail counts them: sold bookings (booked,
+    // attended, no-show) as booked, and parents still paying, while their
+    // hold stands, apart from them.
     `select s.id, s.starts_at_utc, s.tz, st.name, coalesce(s.capacity_override, st.capacity) as capacity, st.price_cents,
             st.duration_min,
-            coalesce((select count(*) from booking b where b.session_id = s.id and b.status = 'booked'), 0)::text as booked
+            (select count(*) from booking b where b.session_id = s.id and ${soldSql('b')})::text as booked,
+            (select count(*) from booking b where b.session_id = s.id and ${liveHoldSql('b')})::text as holding
      from session s
      join session_type st on st.id = s.session_type_id
      where st.coach_id = $1 and s.status = 'scheduled' and s.starts_at_utc > now()
@@ -1100,7 +1130,7 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
                 (s) =>
                   html`<a class="card" href="/app/sessions/${s.id}">
                     <strong>${formatLocal(s.starts_at_utc, s.tz)}</strong>
-                    <div class="meta"><span>${formatTimeRange(s.starts_at_utc, s.duration_min, s.tz)} · ${s.name} · ${s.booked} of ${s.capacity} spots booked · ${formatCoachDollars(s.price_cents)}</span></div>
+                    <div class="meta"><span>${formatTimeRange(s.starts_at_utc, s.duration_min, s.tz)} · ${s.name} · ${s.booked} of ${s.capacity} spots booked${Number(s.holding) > 0 ? ` · ${s.holding} holding` : ''} · ${formatCoachDollars(s.price_cents)}</span></div>
                   </a>`,
               )}
         </div>
@@ -1487,15 +1517,19 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
     return;
   }
   
-  // Get bookings for this session
+  // The session's bookings. A pending one is a parent at checkout: it is
+  // listed while its hold on the spot stands, and left out once the hold
+  // has run out, or when it has no hold time (made before holds existed).
   const bookings = await db.query<SessionBooking>(
     `select b.id, b.athlete_name, b.status, b.manage_token, b.late_cancel, b.waived_at, b.payment_source, b.gross_cents, b.charge_id,
-            b.credit_id, ${CREDIT_WITHDRAWN_SQL}
+            b.credit_id, b.hold_expires_at, ${CREDIT_WITHDRAWN_SQL}
      from booking b
-     where b.session_id = $1
+     where b.session_id = $1 and (b.status <> 'pending' or ${liveHoldSql('b')})
      order by b.id`,
     [sessionId],
   );
+  const booked = bookings.rows.filter((b) => SOLD_STATUSES.has(b.status)).length;
+  const holding = bookings.rows.filter((b) => b.status === 'pending').length;
   const moves = await sessionMoves(db, sessionId);
   const refunds = await refundsByPayment(
     db,
@@ -1531,19 +1565,14 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
           : raw('')}
         ${reach ? renderCancelReach(reach) : raw('')}
         
-        <h2>Booked (${bookings.rows.filter((b) => b.status === 'booked').length})</h2>
+        <h2>Booked (${booked})${holding > 0 ? ` · Holding (${holding})` : ''}</h2>
         ${bookings.rows.length === 0 && moves.out.length === 0
           ? html`<p class="muted">No bookings yet.</p>`
           : html`<ul>
               ${bookings.rows.map((b) => {
-                const statusClass = b.status === 'attended' ? 'good' : b.status === 'noshow' ? 'alert' : '';
                 return html`<li class="card">
                   <strong>${b.athlete_name}</strong> — 
-                  ${b.status === 'booked' ? html`<span>Ready to mark</span>` : 
-                    b.status === 'cancelled' && b.late_cancel ? html`<span class="muted">Cancelled late</span>` :
-                    b.status === 'cancelled' ? html`<span class="muted">Cancelled</span>` :
-                    b.status === 'refunded' ? html`<span class="muted">Refunded</span>` :
-                    html`<span class="${statusClass}">${b.status}</span>`}
+                  ${bookingStatusLabel(b, session.tz)}
                   ${movedHereNote(moves.into.get(b.id))}
                   ${b.waived_at
                     ? html`<p class="muted">Credit given back.</p>`
@@ -1616,10 +1645,39 @@ function movedHereNote(from: MoveRow | undefined) {
   return from ? html`<p class="muted">Moved here by the parent from ${formatLocal(from.starts_at_utc, from.tz)}.</p>` : raw('');
 }
 
+/** Bookings that were sold and still hold their spot: "Booked (N)" on
+ * screen 3, and "N of M spots booked" on the schedule. */
+const SOLD_STATUSES = new Set(SOLD_BOOKING_STATUSES);
+
+/** What screen 3 says of a booking, in words, never its raw status. A
+ * pending booking is listed only while its hold stands. */
+function bookingStatusLabel(b: Pick<SessionBooking, 'status' | 'late_cancel' | 'hold_expires_at'>, tz: string): SafeHtml {
+  switch (b.status) {
+    case 'booked':
+      return html`<span>Ready to mark</span>`;
+    case 'attended':
+      return html`<span class="good">Attended</span>`;
+    case 'noshow':
+      return html`<span class="alert">No-show</span>`;
+    case 'cancelled':
+      return html`<span class="muted">${b.late_cancel ? 'Cancelled late' : 'Cancelled'}</span>`;
+    case 'refunded':
+      return html`<span class="muted">Refunded</span>`;
+    case 'pending':
+      return b.hold_expires_at
+        ? html`<span class="muted">Holding — not paid yet (until ${formatClockLocal(b.hold_expires_at, tz)})</span>`
+        : raw('');
+    default:
+      return raw('');
+  }
+}
+
 interface SessionBooking {
   id: number;
   athlete_name: string;
   status: string;
+  /** While a pending booking holds its spot. */
+  hold_expires_at: string | Date | null;
   manage_token: string;
   late_cancel: boolean;
   waived_at: string | null;
@@ -2199,9 +2257,7 @@ function renderPaymentsCard(state: PaymentsState, notice: string | null, error: 
   const body =
     state.kind === 'connected'
       ? html`<p><strong>Payments connected.</strong></p>
-          ${state.testOnly
-            ? html`<p class="error">This payment account takes test payments only, so parents cannot book paid sessions yet.</p>`
-            : raw('')}
+          ${state.testOnly ? html`<p class="error">${TEST_ONLY_PAYMENTS}</p>` : raw('')}
           <p class="muted">Athletes pay you directly. Coachatron keeps ${feePercent} of each payment.</p>
           <p class="muted">
             ${state.payoutsEnabled
@@ -2216,7 +2272,7 @@ function renderPaymentsCard(state: PaymentsState, notice: string | null, error: 
         : state.kind === 'finish'
           ? html`<p class="muted">Finish setting up your payment account so athletes can pay you.</p>
               <form method="post" action="/app/money/payments">
-                <button type="submit">Finish connecting payments</button>
+                <button type="submit">${FINISH_CONNECTING_PAYMENTS}</button>
               </form>`
           : html`<p class="muted">Connect a payment account so athletes can pay you when they book.</p>
               <ul class="muted">
@@ -2226,7 +2282,7 @@ function renderPaymentsCard(state: PaymentsState, notice: string | null, error: 
               </ul>
               <form method="post" action="/app/money/payments">
                 <label><input type="checkbox" name="agree" value="1" /> I accept the Coachatron marketplace terms (${SELLER_AGREEMENT_VERSION}).</label>
-                <button type="submit">Connect payments</button>
+                <button type="submit">${CONNECT_PAYMENTS}</button>
               </form>`;
   return html`<h2>Payments</h2>
     <div class="card">

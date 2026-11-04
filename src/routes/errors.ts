@@ -51,11 +51,13 @@ function errorType(err: unknown): string {
 }
 
 /** Express's error handler: the last middleware, with four arguments.
- * A client error is one warning line (status, method, path without its
+ * A client error is one line on stdout (status, method, path without its
  * query or a link's key, and the error type: never the body, the headers or
- * a stack) and the branded page with its status. Anything else is a fault
- * here: its stack is logged once and the visitor gets a branded 500 that
- * says nothing about it. */
+ * a stack) and the branded page with its status. It goes to stdout because
+ * Railway files everything on stderr at level error, and a visitor's bad
+ * request is not one. Anything else is a fault here: its stack is logged
+ * once at error level and the visitor gets a branded 500 that says nothing
+ * about it. */
 export function errorHandler(err: unknown, req: Request, res: Response, next: NextFunction): void {
   if (res.headersSent) {
     // Too late for a page: Express's own handler closes the connection.
@@ -65,7 +67,7 @@ export function errorHandler(err: unknown, req: Request, res: Response, next: Ne
   const path = pathForLog((req.originalUrl ?? req.url).split('?')[0]).slice(0, 200);
   const status = clientErrorStatus(err);
   if (status !== null) {
-    console.warn(`${status} ${req.method} ${path} ${errorType(err)}`);
+    console.info(`${status} ${req.method} ${path} ${errorType(err)}`);
     res.status(status).send(clientErrorPage(status));
     return;
   }

@@ -67,8 +67,9 @@ export default defineRailway((ctx) => {
       NODE_ENV: preserve(),
       PORT: preserve(),
       RAILPACK_NODE_VERSION: nodeVersion(),
-      // production only: deploy.drainingSeconds, set as a variable because
-      // `railway config apply` fails there (see README).
+      // production only: a leftover from before `railway config apply` could
+      // set deploy.drainingSeconds there. Remove it from Railway and from
+      // here together (see README).
       RAILWAY_DEPLOYMENT_DRAINING_SECONDS: preserve(),
       RELAY_API_KEY: preserve(),
       RELAY_BASE_URL: preserve(),

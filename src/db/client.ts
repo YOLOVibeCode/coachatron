@@ -69,7 +69,9 @@ export async function inTransaction<T>(db: DbClient, fn: (tx: DbClient) => Promi
   return db.transaction ? db.transaction(fn) : fn(db);
 }
 
-function wrapPool(pool: Pool): DbClient {
+/** A DbClient over a pg Pool. Exported for the real-Postgres race tests
+ * (test/pg/), which run against a database of their own. */
+export function wrapPool(pool: Pool): DbClient {
   // pg's query returns QueryResult which has rows property we need
   return {
     query: pool.query.bind(pool) as Query,

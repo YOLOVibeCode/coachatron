@@ -17,6 +17,7 @@ import {
 import { clipSms, formatConfirmWhen, isValidInstant } from '../lib/time.js';
 import { cancelScheduledSession, dropInCreditNote, previewSessionCancel } from './cancelSession.js';
 import { fitsOneSegment, sendText } from './outbound.js';
+import { soldSql } from './pricing.js';
 import {
   consumePending,
   createPending,
@@ -46,7 +47,12 @@ export interface SessionBrief {
   durationMin: number;
   locationText: string | null;
   capacity: number;
+  /** Bookings still marked booked: the people a roster reply names and a
+   * broadcast texts. */
   booked: number;
+  /** Spots sold (booked, attended and no-show), the count Schedule and
+   * Session detail show. */
+  sold: number;
   sessionTypeId: number;
 }
 
@@ -103,12 +109,14 @@ export async function listUpcomingSessions(db: DbClient, coachId: number, now: D
     location_text: string | null;
     capacity: number;
     booked: string;
+    sold: string;
     session_type_id: number;
   }>(
     `select s.id, st.name, s.starts_at_utc, s.tz, st.duration_min, s.location_text,
             coalesce(s.capacity_override, st.capacity) as capacity,
             st.id as session_type_id,
-            coalesce((select count(*) from booking b where b.session_id = s.id and b.status = 'booked'), 0)::text as booked
+            coalesce((select count(*) from booking b where b.session_id = s.id and b.status = 'booked'), 0)::text as booked,
+            (select count(*) from booking b where b.session_id = s.id and ${soldSql('b')})::text as sold
      from session s
      join session_type st on st.id = s.session_type_id
      where st.coach_id = $1
@@ -127,6 +135,7 @@ export async function listUpcomingSessions(db: DbClient, coachId: number, now: D
     locationText: r.location_text,
     capacity: r.capacity,
     booked: Number(r.booked),
+    sold: Number(r.sold),
     sessionTypeId: r.session_type_id,
   }));
 }
@@ -301,7 +310,7 @@ function sessionCatalog(sessions: SessionBrief[]): string {
   return sessions
     .map((s) => {
       const local = formatConfirmWhen(s.startsAtUtc, s.tz);
-      return `- id=${s.id} name="${s.name}" start=${s.startsAtUtc} local="${local}" spots=${s.booked}/${s.capacity}`;
+      return `- id=${s.id} name="${s.name}" start=${s.startsAtUtc} local="${local}" spots=${s.sold}/${s.capacity}`;
     })
     .join('\n');
 }
@@ -451,7 +460,7 @@ async function renderRead(
   if (daySessions.length === 0) return clipSms('No sessions in that window.');
   const bits = daySessions.map((s) => {
     const when = formatConfirmWhen(s.startsAtUtc, s.tz);
-    return `${when} ${s.name} (${s.booked}/${s.capacity})`;
+    return `${when} ${s.name} (${s.sold}/${s.capacity})`;
   });
   return clipSms(bits.join('; '));
 }
@@ -714,6 +723,7 @@ async function executeBroadcast(db: DbClient, coach: CoachRow, classified: Class
     locationText: null,
     capacity: 0,
     booked: 0,
+    sold: 0,
     sessionTypeId: 0,
   };
   const body = athleteBroadcastBody(brief, classified);

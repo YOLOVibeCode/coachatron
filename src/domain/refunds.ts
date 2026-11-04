@@ -63,9 +63,16 @@ const PURCHASE_COLUMNS = `b.id, st.coach_id, b.session_id, b.status, b.payment_s
   b.athlete_name, b.contact_phone, s.starts_at_utc, s.tz, st.name as session_name, b.late_cancel, b.waived_at`;
 const PURCHASE_FROM = `booking b join session s on s.id = b.session_id join session_type st on st.id = s.session_type_id`;
 
-/** A booking by id, its row locked until the transaction ends. */
+/** A booking by id, its row locked until the transaction ends. The row is
+ * locked by its id alone, then read with its session. One statement that
+ * joined the session and locked only the booking would, after waiting on a
+ * parent's move of that booking, check the join again against the session
+ * it read before the move, find no row, and leave the moved booking out of
+ * the refund. */
 async function lockedBooking(db: DbClient, bookingId: number): Promise<PurchaseBooking | null> {
-  const result = await db.query<PurchaseBooking>(`select ${PURCHASE_COLUMNS} from ${PURCHASE_FROM} where b.id = $1 for update of b`, [bookingId]);
+  const locked = await db.query<{ id: number }>('select id from booking where id = $1 for update', [bookingId]);
+  if (locked.rows.length === 0) return null;
+  const result = await db.query<PurchaseBooking>(`select ${PURCHASE_COLUMNS} from ${PURCHASE_FROM} where b.id = $1`, [bookingId]);
   return result.rows[0] ?? null;
 }
 

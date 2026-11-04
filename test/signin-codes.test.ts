@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { freshDb } from './helpers/db.js';
 import { withServer } from './helpers/server.js';
 import { withRelay } from './helpers/relay.js';
-import { seedCoachWithSession } from './helpers/fixtures.js';
+import { seedBookedSession, seedCoachWithSession } from './helpers/fixtures.js';
 import { postSignedSms } from './helpers/sms-webhook.js';
 import { checkOtp, consumeOtp, createCoach, createCoachSession, createOtp } from '../src/domain/auth.js';
 import { isOptedOut } from '../src/domain/cascade.js';
@@ -552,6 +552,8 @@ test('waitlist joins from one address are limited', async () => {
   await withRelay(async () => {
     const db = await freshDb();
     const seed = await seedCoachWithSession(db, { capacity: 1 });
+    // Full, so there is a line to join.
+    await seedBookedSession(db, seed.sessionId, 'Booked One', '+15550003900');
     await withServer(async (base) => {
       const join = (phone: string, address: string) =>
         post(base, `/c/${seed.coach.handle}/sessions/${seed.sessionId}/waitlist`, { athlete_name: 'Sam', contact_phone: phone }, from(address));
