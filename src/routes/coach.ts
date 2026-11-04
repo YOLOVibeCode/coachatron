@@ -1587,15 +1587,19 @@ interface MoveRow {
   tz: string;
 }
 
-/** Bookings a parent moved out of this session from their manage page, with
- * the time each went to, and where each booking moved into it came from
- * (SPEC.md §7.2). Screen 3 lists them the way it lists a parent's cancel. */
+/** Bookings a parent moved out of this session from their manage page and
+ * that are not back in it, each once with the time of the session it is in
+ * now, and where each booking moved into it last came from (SPEC.md §7.2).
+ * Screen 3 lists them the way it lists a parent's cancel. */
 async function sessionMoves(db: DbClient, sessionId: number): Promise<{ out: MoveRow[]; into: Map<number, MoveRow> }> {
   const out = await db.query<MoveRow>(
-    `select m.booking_id, b.athlete_name, t.starts_at_utc, t.tz
-     from booking_move m join booking b on b.id = m.booking_id join session t on t.id = m.to_session_id
-     where m.from_session_id = $1
-     order by m.id`,
+    `select booking_id, athlete_name, starts_at_utc, tz from (
+       select distinct on (m.booking_id) m.id, m.booking_id, b.athlete_name, t.starts_at_utc, t.tz
+       from booking_move m join booking b on b.id = m.booking_id join session t on t.id = b.session_id
+       where m.from_session_id = $1 and b.session_id <> $1
+       order by m.booking_id, m.id desc
+     ) latest
+     order by id`,
     [sessionId],
   );
   const into = await db.query<MoveRow>(

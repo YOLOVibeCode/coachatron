@@ -14,6 +14,7 @@ import { sendBookingConfirmation } from '../src/domain/bookingMessages.js';
 import { moveByParent } from '../src/domain/moveBooking.js';
 import { applyRefunded } from '../src/domain/refunds.js';
 import { sendDueReminders } from '../src/jobs/tick.js';
+import { formatLocal } from '../src/lib/time.js';
 import type { DbClient } from '../src/db/client.js';
 
 /** A parent moves a booking from its manage page (SPEC.md §7.2) to another
@@ -561,5 +562,40 @@ test('a move while the tick sends reminders: no reminder for the time it left, a
     const reminders = relay.sms.filter((m) => m.to === PHONE);
     assert.equal(reminders.length, 1);
     assert.match(reminders[0].body, /^Coachatron: Mia's Goalkeeper Group is /);
+  });
+});
+
+async function startsAt(db: DbClient, sessionId: number): Promise<string> {
+  const r = await db.query<{ starts_at_utc: string | Date }>('select starts_at_utc from session where id = $1', [sessionId]);
+  return formatLocal(new Date(r.rows[0].starts_at_utc).toISOString(), 'America/Chicago');
+}
+
+function movedAwayLines(page: string): string[] {
+  return [...page.matchAll(/<strong>([^<]+)<\/strong> — <span class="muted">Moved to ([^<]+)<\/span>/g)].map((m) => `${m[1]}: ${m[2]}`);
+}
+
+test('Session detail says where a moved booking is now, once, and nothing when it moved back', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const { seed, from, to } = await twoSessions(db);
+    const third = await sessionAt(db, seed.sessionTypeId, 120);
+    const b = await dropIn(db, from);
+    await withServer(async (base) => {
+      const cookie = await coachCookie(db, seed.coach.id);
+      assert.equal((await move(base, b.token, to)).status, 303);
+      assert.equal((await move(base, b.token, from)).status, 303);
+
+      const home = await getPage(base, `/app/sessions/${from}`, cookie);
+      assert.match(home, /Booked \(1\)/);
+      assert.match(home, /Moved here by the parent from /);
+      assert.deepEqual(movedAwayLines(home), [], 'Mia is booked here, so she is not listed as moved away');
+      assert.deepEqual(movedAwayLines(await getPage(base, `/app/sessions/${to}`, cookie)), [`Mia: ${await startsAt(db, from)}`]);
+
+      assert.equal((await move(base, b.token, to)).status, 303);
+      assert.equal((await move(base, b.token, third)).status, 303);
+      const now = `Mia: ${await startsAt(db, third)}`;
+      assert.deepEqual(movedAwayLines(await getPage(base, `/app/sessions/${from}`, cookie)), [now], 'one line, where she is now');
+      assert.deepEqual(movedAwayLines(await getPage(base, `/app/sessions/${to}`, cookie)), [now]);
+    });
   });
 });
