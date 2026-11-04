@@ -182,14 +182,14 @@ publicRouter.post('/sms', async (req, res) => {
     return;
   }
   const db = getDb();
+  if (!(await takeRequest(db, SMS_OPT_IN_LIMITS, clientKey(req)))) {
+    res.status(429).send(renderSmsPage({ phone: rawPhone }, { kind: 'error', text: 'Too many tries. Wait a few minutes, then try again.' }));
+    return;
+  }
   // Typing a number here does not prove it is yours, so it cannot undo
   // that number's STOP. Only a START from the phone does.
   if (await isOptedOut(db, phone)) {
     res.status(422).send(renderSmsPage({ phone: rawPhone }, { kind: 'error', text: optedOutNotice('to opt back in') }));
-    return;
-  }
-  if (!(await takeRequest(db, SMS_OPT_IN_LIMITS, clientKey(req)))) {
-    res.status(429).send(renderSmsPage({ phone: rawPhone }, { kind: 'error', text: 'Too many tries. Wait a few minutes, then try again.' }));
     return;
   }
   const meta = consentMeta(req, '/sms');

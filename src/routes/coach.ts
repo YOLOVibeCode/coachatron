@@ -231,19 +231,17 @@ coachRouter.post('/signin/otp', async (req, res) => {
     again(422, 'Enter an email address or a mobile number.');
     return;
   }
-  const db = getDb();
-  if (contact.kind === 'phone') {
-    if (!canText(contact.phone)) {
-      again(422, NOT_TEXTABLE);
-      return;
-    }
-    if (await isOptedOut(db, contact.phone)) {
-      again(422, optedOutAtSignIn());
-      return;
-    }
+  if (contact.kind === 'phone' && !canText(contact.phone)) {
+    again(422, NOT_TEXTABLE);
+    return;
   }
+  const db = getDb();
   if (!(await takeRequest(db, SIGNIN_CODE_LIMITS, clientKey(req)))) {
     again(429, TOO_MANY_TRIES);
+    return;
+  }
+  if (contact.kind === 'phone' && (await isOptedOut(db, contact.phone))) {
+    again(422, optedOutAtSignIn());
     return;
   }
   // The code is one text the person asked for; the box only covers the
@@ -1061,12 +1059,12 @@ coachRouter.post('/app/phone', requireAuth, async (req, res) => {
     res.redirect(303, '/app/schedule?phone=consent');
     return;
   }
-  if (await isOptedOut(db, phone)) {
-    res.redirect(303, '/app/schedule?phone=stopped');
-    return;
-  }
   if (!(await takeRequest(db, SIGNIN_CODE_LIMITS, clientKey(req)))) {
     res.redirect(303, '/app/schedule?phone=slow');
+    return;
+  }
+  if (await isOptedOut(db, phone)) {
+    res.redirect(303, '/app/schedule?phone=stopped');
     return;
   }
   // The ticked box is recorded once the code proves the number.
