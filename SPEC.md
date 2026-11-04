@@ -208,10 +208,13 @@ who wants to know what they earned looks at their own Square dashboard, or at ou
 read-only **Money** screen, which shows: booked this week, collected this week,
 outstanding package credits (a liability), and next week's projected.
 *(Updated 2026-11-03: when the coach cancels a session, a parent who paid a
-drop-in for it gets one session credit with the coach, as package and pack
-bookings get their credit back, with no expiry; the parent's cancel text and
-the coach's cancel summary say so. A payment kept as credit this way still
-counts in collected, since it reached the coach's account.)*
+drop-in for it gets one session credit with the coach, with no expiry, as
+package and pack bookings get their credit back. A returned credit goes back
+to the credit it came from and keeps that credit's expiry: a pack's never
+expires, and a package's expires with the package if the coach set an expiry.
+The parent's cancel text and the coach's cancel summary say so. A payment
+kept as credit this way still counts in collected, since it reached the
+coach's account.)*
 
 ---
 
