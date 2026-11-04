@@ -145,10 +145,15 @@ export function composeText(body: string, template: string): string {
 
 type Channel = 'sms' | 'email';
 
+/** A text is logged 'sent'; Twilio's delivery reports (matched on the sid)
+ * then move it to queued, delivered, undelivered and so on. Every one of
+ * those left for the carrier, so every one still counts against a ceiling. */
+const SENT_STATUSES = "('sent', 'accepted', 'queued', 'sending', 'delivered', 'undelivered', 'read')";
+
 /** Counts sent rows on one channel; SMS ceilings never count emails. */
 async function countSent(db: DbClient, where: string, params: unknown[], channel: Channel = 'sms'): Promise<number> {
   const result = await db.query<{ n: string }>(
-    `select count(*)::text as n from message_log where status = 'sent' and channel = '${channel}' and ${where}`,
+    `select count(*)::text as n from message_log where status in ${SENT_STATUSES} and channel = '${channel}' and ${where}`,
     params,
   );
   return Number(result.rows[0]?.n ?? '0');

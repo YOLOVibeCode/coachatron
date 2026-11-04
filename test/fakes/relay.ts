@@ -11,6 +11,8 @@ export interface FakeSms {
   body: string;
   /** The X-App-Env header the app sent, if any. */
   appEnv?: string | null;
+  /** The Twilio message sid the fake answered with. */
+  sid?: string;
 }
 
 export interface FakeEmail {
@@ -158,8 +160,21 @@ export async function startFakeRelay(): Promise<FakeRelay> {
       res.status(400).json({ error: true, code: 21610, message: 'unsubscribed' });
       return;
     }
-    sms.push({ to, body: String(req.body.body), appEnv: req.header('x-app-env') ?? null });
-    res.json({ id: `sms_${sms.length}` });
+    const body = String(req.body.body);
+    const sid = `SMfake${String(sms.length + 1).padStart(26, '0')}`;
+    sms.push({ to, body, appEnv: req.header('x-app-env') ?? null, sid });
+    // The relay's real answer (sms-routes.js): the Twilio sid sits under message.
+    res.status(201).json({
+      success: true,
+      message: {
+        twilio_sid: sid,
+        to,
+        from: '+18005550100',
+        body,
+        status: 'queued',
+        created_at: new Date().toISOString(),
+      },
+    });
   });
 
   // The relay's native shape: to, subject, text or html, optional from / fromName.
