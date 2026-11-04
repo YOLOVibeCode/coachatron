@@ -4,11 +4,13 @@
 **Companion to:** [`../SPEC.md`](../SPEC.md)
 
 Coachatron is a product on the **Noctusoft relay**, not a standalone stack. Email,
-SMS, inbound routing, object storage, Square billing, and marketplace payments
-with application fees already exist there, are tested, and are multi-tenant by
-product key. Coachatron's job is to add a manifest row and write product logic.
+SMS, inbound routing, object storage, store billing, and marketplace payments
+with application fees (Stripe Connect, behind the relay's neutral store
+contract) already exist there, are tested, and are multi-tenant by product key.
+Coachatron's job is to add a manifest row and write product logic.
 
-Source of truth: `~/Dev/Noctusoft/noctusoft-relay` (`AGENTS.md`, `connect/README.md`).
+Source of truth: `~/Dev/Noctusoft/noctusoft-relay` (`AGENTS.md`,
+`docs/api/store/README.md` "Marketplace (Connect Hub)", `stripe/adapter.js`).
 
 ---
 
@@ -20,14 +22,14 @@ Source of truth: `~/Dev/Noctusoft/noctusoft-relay` (`AGENTS.md`, `connect/README
 | **SMS out** | `POST /sms/send` (Twilio drop-in at `/2010-04-01/Accounts/:sid/Messages.json`) | Reminders, overflow offers, coach alerts |
 | **Inbound SMS** | `inbound.js` `ROUTES`, keyed by phone number → product webhook | Offer replies, and the NL control channel (§4) |
 | **Inbound email** | `ROUTES.email`, keyed by domain, with auto-reply + forward | `reply.coachatron.com` support address |
-| **Connect Hub** | `/connect/:productKey/*` | Coach connects their Square; we take an app fee |
+| **Connect Hub** | `/connect/:productKey/*`, buy links at `/buy/connect/:productKey/:seller` | Coach onboards a Stripe connected account; parents pay it; we take an app fee |
 | **Storage** | `/v1/storage/<bucket>/<key>` (R2) | Not needed in Slice 1 |
 | **Billing (one-store)** | `billing.js`, `POST /order` | Not needed — Coachatron sells on the *coach's* merchant, not ours |
 
-**Do not build a second mailer, SMS client, or Square client.** The relay's
-authorization model makes the product key the tenancy boundary, and
-`test/cross-tenant.test.js` proves a product key is 403 on every other product's
-billing, Connect, and storage rows.
+**Do not build a second mailer, SMS client, or payment client (Stripe or
+Square).** The relay's authorization model makes the product key the tenancy
+boundary, and `test/cross-tenant.test.js` proves a product key is 403 on every
+other product's billing, Connect, and storage rows.
 
 ### 1.1 Adding Coachatron as a product
 
@@ -49,9 +51,10 @@ Per `AGENTS.md`, this is data, not code:
   "status": "planned",
   "connect": {
     "productKey": "coachatron",
+    "envKeys": ["coachatron-dev", "coachatron-uat"],
+    "returnOrigins": ["*.coachatron.com"],
     "appFeeBps": 500,
-    "squareEnv": "sandbox",
-    "postConnectRedirect": "https://coachatron.com/settings/payments"
+    "postConnectRedirect": "https://coachatron.com/app/money"
   },
   "email": true,
   "sms": true,
@@ -69,48 +72,88 @@ A later default applies to coaches who connect after the change. Per-transaction
 override is supported and bounded by `app_fee_bps_max`, so pilot coaches can
 be zero-rated without a deploy.
 
+The fee the relay applies, and whether an environment takes live or test
+payments, live on that environment's Connect row (`connect_apps`) on `ns`:
+`coachatron`, `coachatron-dev`, and `coachatron-uat` are Stripe rows at 500 bps
+on store contract v1. `appFeeBps` in the manifest records the same number. The
+live manifest entry still carries a leftover `squareEnv` field; nothing reads
+it for payments.
+
 ---
 
-## 2. Payments — Connect Hub is built, not activated
+## 2. Payments — Stripe Connect through Connect Hub
 
-**This materially reduces Coachatron's build.** Connect Hub Slice 1 is done:
-8 files, ~1,050 LOC, 68 passing tests, mounted at `/connect/:productKey/*`.
+**This materially reduces Coachatron's build.** Connect Hub is the relay's
+marketplace, mounted at `/connect/:productKey/*`. It runs on **Stripe Connect
+(Accounts v2)** behind the relay's neutral store contract ("v1"): Coachatron
+sees opaque refs and Noctusoft event v1, never a Stripe key, id, or type
+(`packages/store-client`). *(Updated 2026-11-03: this section first described
+Square OAuth, which the relay no longer uses.)*
 
-Already covered, and exactly what SPEC.md §9 asked for:
+What Coachatron calls today:
 
-- Square OAuth connect (authorize + callback, product-scoped signed state)
-- Versioned recipient agreement, **runtime-enforced** — 428 on missing/stale
-- One-time payments with `application_fee_money` + per-transaction fee override
-- **Full subscription lifecycle** — catalog plan + variation, customer and
-  card-on-file, create / cancel / pause / resume / swap-plan, hosted card-update
-  link
-- Multi-tenant by `productKey`
+| Step | Relay | Coachatron |
+|---|---|---|
+| Accept the terms | `POST /connect/:product/recipients/:seller/agreement` with `agreement_version: "v1"` | Money screen box "I accept the Coachatron marketplace terms (v1)" (`SELLER_AGREEMENT_VERSION`) |
+| Onboard | `POST …/onboard` → signed relay link → Stripe's hosted form (identity, bank) → back to `/app/money?seller=connected\|pending\|failed` | "Connect payments"; once connected, "Update payout details" opens the same form |
+| Status | `GET /connect/:product/recipients/:seller` | Charges and payouts enabled, accepted agreement version |
+| Pay | Signed buy link `GET /buy/connect/:product/:seller?…&sig=` → Stripe's hosted checkout, with the platform fee | Checkout (screen 10): drop-in, package, or plan, each one charge |
+| Hear back | Event v1 `marketplace.purchase.paid` at `/webhooks/store` | Books the athlete; grants package or plan credits |
+
+How the relay sets up each coach (`stripe/adapter.js`, `beginOnboarding`):
+
+- **The coach is the merchant.** Charges are made on the coach's own
+  connected account, with Coachatron's fee taken as the application fee.
+- **No Stripe dashboard** (`dashboard: "none"`). The coach makes no Stripe
+  login; Stripe's form confirms them with a phone code.
+- **Stripe collects fees and carries losses**
+  (`responsibilities: { fees_collector: "stripe", losses_collector: "stripe" }`).
+  Stripe takes its processing fee from the coach's account, and a negative
+  balance is Stripe's to recover, not Noctusoft's.
+- **US sellers**, card payments (`identity.country: "us"`).
+- **Terms first.** The relay will not start onboarding (428
+  `AGREEMENT_REQUIRED` / `AGREEMENT_STALE`) until the coach has accepted the
+  Connect app's current agreement version.
+- **Fee from the Connect row:** 500 bps (§1.1). The app never sends it.
+
+Built in the relay, not used by Coachatron yet:
+
+- **Refunds:** `POST …/recipients/:seller/refunds` with `{ paymentRef,
+  amountCents?, idempotencyKey }`; the platform fee is returned with it. A
+  later change will call this and handle `purchase.refunded` (SPEC.md §9.4).
+  Until then a refund is a support request, as the Money screen says.
+- **Seller subscriptions** (`…/plans`, `…/subscriptions` and cancel / pause /
+  resume / swap-plan / update-card). The monthly plan is charged once today;
+  renewal would use these.
+- **Disputes:** Stripe handles them. Event v1 carries a `disputeId` ref, which
+  Coachatron does not read yet.
 
 So SPEC.md §15.1 ("is Connect Hub ready enough to build against?") is **answered:
-yes, build against it.** Do not implement Square directly.
+yes, build against it.** Do not call Stripe, or any processor, directly.
 
 ### 2.1 What still blocks a real charge
 
-Per `connect/README.md`, Slice 1 has **never run against a real Square
-Application**. Eight out-of-code steps gate that, and three are slow:
+No live charge has run for Coachatron yet. What gates it, slowest first:
 
-1. **Attorney review** of Terms, Recipient Agreement, and dispute language —
-   start this now, it is the long pole
-2. **Recipient Agreement v1** drafted and versioned
-3. **Chargeback handoff one-pager** — the coach owns dispute response
-4. One shared **Square OAuth Application** ("Noctusoft Marketplace"), sandbox
-   first, adding `https://coachatron.com/...` + the relay callback as redirect URIs
-5. Env vars on `ns`: `NOCTUSOFT_SQUARE_CLIENT_SECRET`, `NOCTUSOFT_STATE_SECRET`
-6. `connect_apps` row seeded (SQL in `connect/test/sandbox.sh` header)
-7. Sandbox run: `bash connect/test/sandbox.sh`
-8. Production canary — one $1 real charge, refunded immediately
+1. **Attorney review** of the drafts in [`legal/`](legal/): the coach's
+   marketplace terms (v1), the parent terms, and the payments additions to the
+   privacy policy — start this now, it is the long pole
+2. **Marketplace terms v1 published** where the Money screen's box can point
+   to them. The box names v1; the text has to exist before a coach accepts it
+3. **Dispute and refund handoff** — how a coach with no Stripe dashboard asks
+   for a refund or answers a dispute, until the app does both
+4. Production's Connect row switched from Stripe test mode to live (an
+   operator step on `ns`)
+5. Production canary — one $1 real charge on a real coach account, refunded
+   through the relay's seller refund route
 
 **Sequencing consequence:** items 1–3 are legal/ops work with no code dependency.
 They should start in parallel with Slice 1 development, or they become the
 critical path to first revenue.
 
 Connect Hub explicitly does *not* cover **coach onboarding UI** — that is
-product-side, i.e. Coachatron's screen #6 in SPEC.md §8.1.
+product-side, i.e. Coachatron's screen 7 (Money, and connecting payments) in
+SPEC.md §8.1.
 
 ---
 
