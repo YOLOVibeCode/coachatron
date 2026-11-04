@@ -47,9 +47,9 @@ import {
   recordSellerStatus,
 } from '../domain/payments.js';
 import { createWeeklySlots, deactivateSlot, listWeeklySlots, type WeeklySlot } from '../domain/scheduling.js';
-import { coachNav, html, oneTimeCodeNote, page, raw, smsConsentCheckbox } from '../lib/html.js';
+import { coachNav, html, oneTimeCodeNote, page, raw, smsConsentCheckbox, type SafeHtml } from '../lib/html.js';
 import { cancelReach, cancelScheduledSession, dropInCreditNote, previewSessionCancel, type CancelReach } from '../domain/cancelSession.js';
-import { DEFAULT_TZ, formatCoachDollars, formatLocal, formatTimeRange, isValidTimeZone } from '../lib/time.js';
+import { DEFAULT_TZ, formatClockLocal, formatCoachDollars, formatLocal, formatTimeRange, isValidTimeZone } from '../lib/time.js';
 import { getPackagesForCoach, getPlansForCoach, createPackage, createPlan, takesSpotSql } from '../domain/pricing.js';
 import { clockTime, dollarsToCents, LIMITS, rowId, wholeNumber } from '../lib/input.js';
 import {
@@ -1487,15 +1487,19 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
     return;
   }
   
-  // Get bookings for this session
+  // The session's bookings. A pending one is a parent at checkout: it is
+  // listed while its hold on the spot stands, and left out once the hold
+  // has run out, or when it has no hold time (made before holds existed).
   const bookings = await db.query<SessionBooking>(
     `select b.id, b.athlete_name, b.status, b.manage_token, b.late_cancel, b.waived_at, b.payment_source, b.gross_cents, b.charge_id,
-            b.credit_id, ${CREDIT_WITHDRAWN_SQL}
+            b.credit_id, b.hold_expires_at, ${CREDIT_WITHDRAWN_SQL}
      from booking b
-     where b.session_id = $1
+     where b.session_id = $1 and (b.status <> 'pending' or b.hold_expires_at > now())
      order by b.id`,
     [sessionId],
   );
+  const booked = bookings.rows.filter((b) => SOLD_STATUSES.has(b.status)).length;
+  const holding = bookings.rows.filter((b) => b.status === 'pending').length;
   const moves = await sessionMoves(db, sessionId);
   const refunds = await refundsByPayment(
     db,
@@ -1531,19 +1535,14 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
           : raw('')}
         ${reach ? renderCancelReach(reach) : raw('')}
         
-        <h2>Booked (${bookings.rows.filter((b) => b.status === 'booked').length})</h2>
+        <h2>Booked (${booked})${holding > 0 ? ` · Holding (${holding})` : ''}</h2>
         ${bookings.rows.length === 0 && moves.out.length === 0
           ? html`<p class="muted">No bookings yet.</p>`
           : html`<ul>
               ${bookings.rows.map((b) => {
-                const statusClass = b.status === 'attended' ? 'good' : b.status === 'noshow' ? 'alert' : '';
                 return html`<li class="card">
                   <strong>${b.athlete_name}</strong> — 
-                  ${b.status === 'booked' ? html`<span>Ready to mark</span>` : 
-                    b.status === 'cancelled' && b.late_cancel ? html`<span class="muted">Cancelled late</span>` :
-                    b.status === 'cancelled' ? html`<span class="muted">Cancelled</span>` :
-                    b.status === 'refunded' ? html`<span class="muted">Refunded</span>` :
-                    html`<span class="${statusClass}">${b.status}</span>`}
+                  ${bookingStatusLabel(b, session.tz)}
                   ${movedHereNote(moves.into.get(b.id))}
                   ${b.waived_at
                     ? html`<p class="muted">Credit given back.</p>`
@@ -1616,10 +1615,39 @@ function movedHereNote(from: MoveRow | undefined) {
   return from ? html`<p class="muted">Moved here by the parent from ${formatLocal(from.starts_at_utc, from.tz)}.</p>` : raw('');
 }
 
+/** Bookings that were sold and still hold their spot: "Booked (N)" on
+ * screen 3. */
+const SOLD_STATUSES = new Set(['booked', 'attended', 'noshow']);
+
+/** What screen 3 says of a booking, in words, never its raw status. A
+ * pending booking is listed only while its hold stands. */
+function bookingStatusLabel(b: Pick<SessionBooking, 'status' | 'late_cancel' | 'hold_expires_at'>, tz: string): SafeHtml {
+  switch (b.status) {
+    case 'booked':
+      return html`<span>Ready to mark</span>`;
+    case 'attended':
+      return html`<span class="good">Attended</span>`;
+    case 'noshow':
+      return html`<span class="alert">No-show</span>`;
+    case 'cancelled':
+      return html`<span class="muted">${b.late_cancel ? 'Cancelled late' : 'Cancelled'}</span>`;
+    case 'refunded':
+      return html`<span class="muted">Refunded</span>`;
+    case 'pending':
+      return b.hold_expires_at
+        ? html`<span class="muted">Holding — not paid yet (until ${formatClockLocal(b.hold_expires_at, tz)})</span>`
+        : raw('');
+    default:
+      return raw('');
+  }
+}
+
 interface SessionBooking {
   id: number;
   athlete_name: string;
   status: string;
+  /** While a pending booking holds its spot. */
+  hold_expires_at: string | Date | null;
   manage_token: string;
   late_cancel: boolean;
   waived_at: string | null;
