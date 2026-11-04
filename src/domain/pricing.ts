@@ -215,7 +215,7 @@ export async function countTakenSpots(db: DbClient, sessionId: number, exceptBoo
  * the full session it was opened for) who have not been offered one yet,
  * other than `exceptPhone`'s own children. They have first claim on a spot
  * that opens, so a new or lapsed hold takes only what is left after them. */
-async function countKeptForWaitlist(db: DbClient, sessionId: number, exceptPhone: string): Promise<number> {
+export async function countKeptForWaitlist(db: DbClient, sessionId: number, exceptPhone: string): Promise<number> {
   const kept = await db.query<{ count: string }>(
     `select count(*)::text as count from waitlist w
      where w.state = 'waiting' and w.contact_phone <> $2

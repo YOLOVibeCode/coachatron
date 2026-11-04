@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readdirSync, readFileSync } from 'node:fs';
 import { PGlite } from '@electric-sql/pglite';
 import { runMigrations } from '../src/db/migrate.js';
 import { freshDb } from './helpers/db.js';
@@ -36,4 +37,21 @@ test('running the overflow-choice migration again closes only asks from before i
   const closed = await read(before.rows[0].id);
   assert.notEqual(closed.closed_at, null, 'the ask from before the change is over');
   assert.equal(closed.outcome, 'ended');
+});
+
+test('every migration from 0013 on has a number of its own, and SPEC.md §11.1 ends its range at the last one', () => {
+  // 0006 was used twice early on; both files have run everywhere under
+  // those names (the runner keys on the whole file name), so they stay.
+  const numbers = readdirSync(new URL('../src/db/migrations/', import.meta.url))
+    .filter((f) => f.endsWith('.sql'))
+    .sort()
+    .map((f) => f.slice(0, 4))
+    .filter((n) => n >= '0013');
+  assert.deepEqual(
+    numbers.filter((n, i) => numbers.indexOf(n) !== i),
+    [],
+    'a number two migrations share',
+  );
+  const spec = readFileSync(new URL('../SPEC.md', import.meta.url), 'utf8');
+  assert.ok(spec.includes(`(migrations 0013–${numbers[numbers.length - 1]})`), 'SPEC.md §11.1 names the last migration');
 });

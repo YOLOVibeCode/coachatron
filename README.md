@@ -136,7 +136,7 @@ The twelve screens of Coachatron (Slice 1):
 | 8 | Public page | `/c/:handle` | Athlete |
 | 9 | Booking form | `/c/:handle/sessions/:sessionId/book`, `/c/:handle/sessions/:sessionId/waitlist` | Athlete |
 | 10 | Checkout | `/c/:handle/checkout/:token` | Athlete |
-| 11 | Manage booking | `/booking/:token`, `/booking/:token/cancel` | Athlete |
+| 11 | Manage booking (and moving a booking) | `/booking/:token`, `/booking/:token/move`, `/booking/:token/cancel` | Athlete |
 | 12 | Offer response (and a roster member's opt-in link) | `/offer/:token` | Assistant coach |
 
 All routes are server-rendered HTML. No SPA.
@@ -248,6 +248,13 @@ before.
 - **Confirmations.** A booked parent gets a confirmation with the manage
   link, by text when they ticked the texts box and by email when they gave an
   address; the page they return to after paying shows the link too.
+- **Moving a booking.** Until the coach's cancellation window closes, the
+  manage page offers the other upcoming sessions of the same session type
+  that have room, after the people waiting there, and the parent moves the
+  booking to one. Its payment or credit stays as it is: nothing is charged,
+  refunded or drawn. The children one payment paid for move together. The
+  parent gets the confirmation with the new time, the freed spot goes to the
+  waitlist, and Session detail shows the move on both sessions.
 - **A coach's cancel** returns a credit for every paid booking: a package or
   pack credit comes back, keeping the expiry it had, and a paid drop-in
   becomes one session credit with the coach, with no expiry. Each parent who
@@ -306,13 +313,13 @@ refuses numbers outside `+1` (US and Canada, the destinations priced
 near $0.0083 a segment); and stops at 300 texts per coach per local day,
 2,000 per coach per month, 400 per active coach per day for the product
 (never below 500), and 5 sign-in codes per number or email per day. Requests
-that send a code, opt in at `/sms`, join a waitlist, start a booking, or use
-the landing page's box are also limited per client address
+that send a code, opt in at `/sms`, join a waitlist, start or move a booking,
+or use the landing page's box are also limited per client address
 (`src/domain/requestLimits.ts`). Texts set off by people who are not signed
-in (sign-in codes, start links, opt-in confirmations, and booking and
-waitlist texts to a number never texted before) also share an app-wide
-ceiling, whatever address they come from: 30 an hour and 100 a UTC day, and
-none once fewer than 100 of the product's day are left, so reminders and
+in (sign-in codes, start links, opt-in confirmations, and booking, moved
+booking and waitlist texts to a number never texted before) also share an
+app-wide ceiling, whatever address they come from: 30 an hour and 100 a UTC
+day, and none once fewer than 100 of the product's day are left, so reminders and
 replies to people already texted still go (`SMS_VISITOR_HOURLY_CAP`,
 `SMS_VISITOR_DAILY_CAP`, `SMS_DAILY_RESERVE`). Each such text takes its
 place under the ceiling before it goes (its row is written `reserved`, under
