@@ -1,10 +1,10 @@
 import { Router, type Request, type Response } from 'express';
 import { getDb, type DbClient } from '../db/client.js';
-import { segmentCount, sendText } from '../domain/outbound.js';
+import { segmentCount, sendText, type SendOutcome } from '../domain/outbound.js';
 import { findCoachByPhone, normalizePhone } from '../domain/auth.js';
 import { acceptOffer, answerAsk, declineOffer, hasOpenAsk, tellMemberClaimed } from '../domain/cascade.js';
 import { handleCoachMessage, keywordToken } from '../domain/assistant.js';
-import { getLivePending, logAssistant, takeDailyReplySlot } from '../domain/assistantPending.js';
+import { getLivePending, logAssistant, releaseDailyReplySlot, takeDailyReplySlot } from '../domain/assistantPending.js';
 import { createStartLink, phoneHasBooking } from '../domain/startLink.js';
 import {
   APP_BASE_URL,
@@ -290,18 +290,27 @@ smsInboundRouter.post('/', async (req, res) => {
   const ok = await takeDailyReplySlot(db, from, now);
   if (ok) {
     const token = await createStartLink(db, from, body, now);
-    await sendText(
-      db,
-      {
-        to: from,
-        body: `Got it. Tap to see your week and go live: ${APP_BASE_URL}/start/${token}`,
-        coachId: null,
-        template: 'auto-reply',
-        // A start link answers a number we do not know yet.
-        visitor: 'always',
-      },
-      now,
-    );
+    let outcome: SendOutcome;
+    try {
+      outcome = await sendText(
+        db,
+        {
+          to: from,
+          body: `Got it. Tap to see your week and go live: ${APP_BASE_URL}/start/${token}`,
+          coachId: null,
+          template: 'auto-reply',
+          // A start link answers a number we do not know yet.
+          visitor: 'always',
+        },
+        now,
+      );
+    } catch (err) {
+      await releaseDailyReplySlot(db, from, now);
+      throw err;
+    }
+    // Held by a ceiling, or the relay was busy: no link went out, so the
+    // day's one reply is not used up and their next text can get it.
+    if (outcome === 'busy' || outcome === 'capped') await releaseDailyReplySlot(db, from, now);
   }
   twimlEmpty(res);
 });

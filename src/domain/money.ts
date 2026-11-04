@@ -113,10 +113,15 @@ export function keptAsCreditSql(b: string): string {
  * athletes booked into one session slot is 3 booked, not 1. Cents is the
  * session's price recorded on each booking when it was booked (what was
  * booked), never the session type's price now, and distinct from
- * `collected`, which is what was actually charged. */
+ * `collected`, which is what was actually charged. A booking with no
+ * recorded price (the previous release can still book one while a deploy is
+ * under way) is valued the way migration 0027 values older ones: a
+ * drop-in's own charge, or else the type's price. */
 async function aggregateBookings(db: DbClient, coachId: number, from: Date, to: Date): Promise<SessionAggregate> {
   const result = await db.query<{ count: string; total_cents: string }>(
-    `select count(*)::text as count, coalesce(sum(b.price_cents), 0)::text as total_cents
+    `select count(*)::text as count,
+            coalesce(sum(coalesce(b.price_cents, case when b.payment_source = 'DropIn' then b.gross_cents end, st.price_cents)), 0)::text
+              as total_cents
      from booking b
      join session s on s.id = b.session_id
      join session_type st on st.id = s.session_type_id

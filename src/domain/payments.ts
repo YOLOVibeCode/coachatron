@@ -325,14 +325,16 @@ async function eachCoach(db: DbClient, coachIds: number[], fn: (coach: CoachRow)
  * charges yet, at most every 15 minutes each, in case an event was missed.
  * A coach never checked is asked until the relay answers, which also learns
  * whether they started. Where only a live account can take payments
- * (production), so is a coach whose account's mode is not known yet. An ask
- * that went unanswered counts, so coaches the relay cannot answer for take
- * their turn and do not hold up the rest. */
+ * (production), so is a coach whose account's mode is not known yet, or is
+ * a test one: the event that says it went live can be missed too, and
+ * nothing else asks again until the coach opens Money. An ask that went
+ * unanswered counts, so coaches the relay cannot answer for take their turn
+ * and do not hold up the rest. */
 export async function pollPaymentAccounts(db: DbClient, now: Date): Promise<number> {
-  const modeUnknown = testPaymentsAllowed() ? '' : 'or (charges_enabled and test_mode is null)';
+  const notLiveYet = testPaymentsAllowed() ? '' : 'or (charges_enabled and test_mode is not false)';
   const due = await db.query<{ coach_id: number }>(
     `select coach_id from coach_payments
-     where ((charges_enabled is distinct from true and (charges_enabled is null or started_at > $1)) ${modeUnknown})
+     where ((charges_enabled is distinct from true and (charges_enabled is null or started_at > $1)) ${notLiveYet})
        and (greatest(checked_at, attempted_at) is null or greatest(checked_at, attempted_at) <= $2)
      order by greatest(checked_at, attempted_at) nulls first, coach_id
      limit ${PAYMENTS_POLL_BATCH}`,

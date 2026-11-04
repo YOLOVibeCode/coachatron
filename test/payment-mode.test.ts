@@ -8,7 +8,7 @@ import { bookOnline, postCheckout } from './helpers/booking.js';
 import { buyerFromLocation, postPaymentEvent, postSellerEvent, postStorePaid } from './helpers/store-event.js';
 import { zoneAt } from './helpers/clock.js';
 import { createCoachSession, getConnectRecipientKey } from '../src/domain/auth.js';
-import { sendDueReadyTexts } from '../src/domain/payments.js';
+import { paymentsOpen, pollPaymentAccounts, sendDueReadyTexts } from '../src/domain/payments.js';
 import type { DbClient } from '../src/db/client.js';
 
 /** Test-mode money in production. The relay marks every event and every
@@ -171,5 +171,36 @@ test('in production the payments-ready text waits until the account is a live on
       await sendDueReadyTexts(db, new Date());
       assert.equal(ready().length, 1, 'once the account is live');
     });
+  });
+});
+
+test('in production a test account that goes live with no seller event is asked again every 15 minutes and opens booking', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 3, priceCents: 3500 });
+    relay.enableCharges('coachatron', getConnectRecipientKey(seed.coach));
+    await withEnv(PRODUCTION, async () => {
+      const start = new Date();
+      assert.equal(await paymentsOpen(db, seed.coach, start), false, 'a test account');
+      const row = await db.query<{ test_mode: boolean | null }>('select test_mode from coach_payments where coach_id = $1', [seed.coach.id]);
+      assert.equal(row.rows[0].test_mode, true);
+
+      // The account goes live, and its seller.updated event never arrives.
+      relay.sellerMode = 'live';
+      const asked = relay.statusChecks;
+      await pollPaymentAccounts(db, new Date(start.getTime() + 5 * 60 * 1000));
+      assert.equal(relay.statusChecks, asked, 'not again within 15 minutes');
+      assert.equal(await paymentsOpen(db, seed.coach, new Date(start.getTime() + 5 * 60 * 1000)), false);
+
+      const later = new Date(start.getTime() + 16 * 60 * 1000);
+      assert.equal(await pollPaymentAccounts(db, later), 1);
+      assert.equal(relay.statusChecks, asked + 1);
+      assert.equal(await paymentsOpen(db, seed.coach, later), true, 'booking opens');
+      assert.equal(await pollPaymentAccounts(db, new Date(later.getTime() + 60 * 60 * 1000)), 0, 'a live account is not polled');
+    });
+    // Where test payments count, a test account is not polled for its mode.
+    relay.sellerMode = 'test';
+    await db.query('update coach_payments set test_mode = true where coach_id = $1', [seed.coach.id]);
+    assert.equal(await pollPaymentAccounts(db, new Date(Date.now() + 2 * 60 * 60 * 1000)), 0);
   });
 });

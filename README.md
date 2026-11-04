@@ -160,6 +160,10 @@ To exercise real Connect Hub, SMS, and email against Noctusoft `ns` (not used in
 | `SMS_VISITOR_DAILY_CAP` | The same per UTC day (default 100) |
 | `SMS_DAILY_RESERVE` | Texts kept back from the product's day for everything else (default 100): visitor texts stop once fewer than this are left |
 
+Every variable in this table is listed in `.railway/railway.ts` as
+`preserve()`, because `railway config apply` deletes a web variable the file
+leaves out. Add a new one there before setting it in Railway.
+
 Do not commit secrets. `npm test` uses the in-process fake in `test/fakes/relay.ts`.
 
 ## Known gaps
@@ -310,10 +314,14 @@ waitlist texts to a number never texted before) also share an app-wide
 ceiling, whatever address they come from: 30 an hour and 100 a UTC day, and
 none once fewer than 100 of the product's day are left, so reminders and
 replies to people already texted still go (`SMS_VISITOR_HOURLY_CAP`,
-`SMS_VISITOR_DAILY_CAP`, `SMS_DAILY_RESERVE`). A form that hits it says to
-try again later, or to use email where it can; a waitlist offer goes by
-email or waits for a later try. A signed-in coach's texts and paid bookings
-are not counted. Every attempt, sent or stopped, is written to
+`SMS_VISITOR_DAILY_CAP`, `SMS_DAILY_RESERVE`). Each such text takes its
+place under the ceiling before it goes (its row is written `reserved`, under
+a lock, then marked sent or failed), so requests that arrive together cannot
+all pass the same count. A form that hits it says to try again later, or to
+use email where it can; a waitlist offer goes by email or waits for a later
+try; a start link it holds does not use up the number's one reply of the
+day, so their next text can get it. A signed-in coach's texts and paid
+bookings are not counted. Every attempt, sent or stopped, is written to
 `message_log`.
 
 ## Voice-setup eval (live model, opt-in)

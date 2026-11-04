@@ -144,6 +144,15 @@ function hasStarted(startsAtUtc: string): boolean {
 
 export type PurchaseKind = 'drop-in' | 'package' | 'pack';
 
+/** What a booking's payment source says it was bought with. 'Subscription'
+ * is how a pack was recorded before migration 0027; the previous release
+ * can still write it while a deploy is under way (it keeps serving until the
+ * new one is healthy, after 0027 has run), so it reads as a pack too. */
+export function purchaseKind(paymentSource: string | null): PurchaseKind {
+  if (paymentSource === 'Pack' || paymentSource === 'Subscription') return 'pack';
+  return paymentSource === 'PackageCredit' ? 'package' : 'drop-in';
+}
+
 interface PurchaseCredits {
   kind: PurchaseKind;
   /** The credits the payment's bookings hold: a package's or pack's one
@@ -181,7 +190,7 @@ async function purchaseCredits(db: DbClient, b: PurchaseBooking): Promise<Purcha
             [creditIds],
           )
         ).rows;
-  const kind: PurchaseKind = b.payment_source === 'Pack' ? 'pack' : b.payment_source === 'PackageCredit' ? 'package' : 'drop-in';
+  const kind = purchaseKind(b.payment_source);
   const own = bought.filter(usesOwnSession).length;
   const unused = credits.reduce((n, c) => n + Math.max(0, c.remaining), 0);
   if (kind === 'drop-in') {
@@ -1007,7 +1016,7 @@ export async function listRecentPayments(db: DbClient, coachId: number, limit = 
 
 /** What a payment bought, for a label. */
 export function purchaseLabel(paymentSource: string | null): string {
-  return paymentSource === 'Pack' ? 'One-time pack' : paymentSource === 'PackageCredit' ? 'Package' : 'Drop-in';
+  return { pack: 'One-time pack', package: 'Package', 'drop-in': 'Drop-in' }[purchaseKind(paymentSource)];
 }
 
 /** A short state for a refund next to its booking or payment. */

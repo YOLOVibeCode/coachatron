@@ -116,11 +116,11 @@ Coach
   └── SessionType        "60-min Goalkeeper Group", capacity 8, $35
         └── Session      a dated instance: Tue Oct 7, 6:00pm, Field 3
               └── Booking   one athlete in one session
-                              └── paid by: DropIn | PackageCredit | Subscription
+                              └── paid by: DropIn | PackageCredit | Pack (one-time)
 
 Coach
   ├── Package            "10 sessions for $300" → issues 10 PackageCredits
-  ├── Plan               "$120/mo, 4 sessions/mo" → issues credits monthly
+  ├── Plan               "4 sessions for $120, one-time" → charged once, issues its credits (§9.2)
   └── RosterMember       an assistant coach, reachable by SMS
         └── Offer        "Session #841 needs a coach" → accepted | declined | expired
 ```
@@ -546,8 +546,12 @@ marketing. Messages are short enough to read in a notification preview.
 *(Updated 2026-11-03, as built: a booking confirmation carries the manage
 link and goes by text when the parent ticked the texts box and by email when
 they gave an address. A coach's cancel is texted, and returns a credit for
-every paid booking, a paid drop-in included; the session screen lists the
-parents it could not reach. When a payment arrives for a session the coach
+every paid booking, a paid drop-in included. A parent the text does not
+reach (no consent, opted out, or the text failed or hit a limit) who gave an
+email is emailed instead, once, with what was cancelled and any credit they
+now hold; the cancel page says how many will be emailed, the coach's summary
+counts them ("Texted 1 and emailed 1 of 3 parents"), and the session screen
+lists the parents it could not reach. When a payment arrives for a session the coach
 cancelled while the parent paid, it becomes credit and the parent is told the
 same way as a confirmation. No subscription payment can fail while plans are
 one-time packs. The coach also gets payment texts: the go-live text with the
@@ -668,7 +672,8 @@ reads), and records a plan purchase as payment source `Pack` with no
 `subscription` row (rows from before read `one-time`). Migration 0028 adds
 `otp_code.purpose` (`signin` or `credits`: a code works only for its own),
 0029 `message_log.visitor` (a text set off by someone not signed in, for the
-app-wide visitor ceiling), and 0030 `coach_payments.test_mode` (whether the
+app-wide visitor ceiling; such a text is logged `reserved` before it goes,
+and counts from then on), and 0030 `coach_payments.test_mode` (whether the
 coach's payment account is a test one; production takes only live ones).
 
 Two column names predate the move to Stripe and were kept: `square_merchant_id`

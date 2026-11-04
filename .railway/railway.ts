@@ -54,6 +54,9 @@ export default defineRailway((ctx) => {
     // Values live in Railway, never in this file. preserve() keeps each one.
     // Every variable on web must be listed here: apply deletes any it omits.
     env: {
+      // The optional ones in README's variable table are listed too, like
+      // the single-environment ones below, so a value set in Railway is kept.
+      ALLOW_TEST_PAYMENTS: preserve(),
       APP_BASE_URL: preserve(),
       APP_ENV: preserve(),
       // production only: the relay routes texts to this number to coachatron.com.
@@ -75,7 +78,11 @@ export default defineRailway((ctx) => {
       RELAY_APP_ENV: preserve(),
       RELAY_WEBHOOK_SECRET: preserve(),
       SESSION_SECRET: preserve(),
+      SMS_DAILY_RESERVE: preserve(),
+      SMS_VISITOR_DAILY_CAP: preserve(),
+      SMS_VISITOR_HOURLY_CAP: preserve(),
       STORE_BASE_URL: preserve(),
+      STORE_WEBHOOK_URL: preserve(),
     },
   });
 

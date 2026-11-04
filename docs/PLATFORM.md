@@ -515,7 +515,9 @@ opt-in confirmations, and booking and waitlist texts to a number never
 texted before) also count against an app-wide ceiling whatever address they
 come from (`SMS_VISITOR_HOURLY_CAP`, `SMS_VISITOR_DAILY_CAP`,
 `SMS_DAILY_RESERVE`); past it they wait like a relay 429 (`busy`), and the
-form says to try later or to use email.
+form says to try later or to use email. Each takes its place before it goes
+(a `reserved` row in `message_log`, written under a transaction lock), so
+requests that arrive together cannot all pass the same count.
 When the relay's own caps answer 429, the send path returns `busy` and the
 page asks to try again later. *(Added 2026-11-04: a letter outside GSM-7
 whose plain form is inside it, as in "García", is written plain, so a name

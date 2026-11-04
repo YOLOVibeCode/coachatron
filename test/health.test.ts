@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createApp } from '../src/server.js';
 import { closeDb, setDb, type DbClient } from '../src/db/client.js';
@@ -149,5 +150,22 @@ test('Railway checks /health in every environment', async () => {
   for (const environment of ['development', 'uat', 'production']) {
     const web = iac.default(createRailwayContext({ environment })).resources.find((r) => r.name === 'web');
     assert.equal(web?.deploy?.healthcheckPath, '/health', environment);
+  }
+});
+
+test('every variable in the README table is kept when Railway config is applied, in every environment', async () => {
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+  const names = [...readme.matchAll(/^\| `([A-Z][A-Z0-9_]+)` \|/gm)].map((m) => m[1]);
+  for (const name of ['ALLOW_TEST_PAYMENTS', 'SMS_VISITOR_HOURLY_CAP', 'SMS_VISITOR_DAILY_CAP', 'SMS_DAILY_RESERVE']) {
+    assert.ok(names.includes(name), `${name} is in the README table`);
+  }
+  const iac = (await import(pathToFileURL(fileURLToPath(new URL('../.railway/railway.ts', import.meta.url))).href)) as {
+    default: (ctx: unknown) => { resources: Array<{ name: string; variables?: Record<string, { type: string }> }> };
+  };
+  const { createRailwayContext } = await import('railway/iac');
+  for (const environment of ['development', 'uat', 'production']) {
+    const web = iac.default(createRailwayContext({ environment })).resources.find((r) => r.name === 'web');
+    const missing = names.filter((name) => web?.variables?.[name]?.type !== 'preserve');
+    assert.deepEqual(missing, [], `${environment}: apply would delete these if they were set`);
   }
 });

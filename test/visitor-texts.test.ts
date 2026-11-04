@@ -199,3 +199,89 @@ test('the visitor ceilings have documented defaults and env names', () => {
     assert.match(readme, new RegExp(`\\| \`${name}\` \\|`), `${name} is in the README's environment table`);
   }
 });
+
+test('sign-in codes asked for from many addresses at the same moment send no more than the hourly ceiling', async () => {
+  await withEnv({ SMS_VISITOR_HOURLY_CAP: '3' }, async () => {
+    await withRelay(async (relay) => {
+      const db = await freshDb();
+      await withServer(async (base) => {
+        const answers = await Promise.all(
+          Array.from({ length: 20 }, (_, i) =>
+            form(base, '/signin/otp', { contact: `21455507${String(i).padStart(2, '0')}` }, from(`198.51.100.${i + 1}`)),
+          ),
+        );
+        assert.deepEqual(
+          answers.map((r) => r.status).sort(),
+          [...Array(3).fill(303), ...Array(17).fill(429)],
+          'three codes, and the rest are told to try later',
+        );
+      });
+      assert.equal(relay.sms.filter((m) => /sign-in code/.test(m.body)).length, 3);
+      const rows = await db.query<{ status: string; n: number }>(
+        'select status, count(*)::int as n from message_log where visitor group by status order by status',
+      );
+      assert.deepEqual(
+        rows.rows.map((r) => [r.status, r.n]),
+        [
+          ['capped-visitor-hourly', 17],
+          ['sent', 3],
+        ],
+        'each sent code ends as sent, with nothing left reserved',
+      );
+    });
+  });
+});
+
+test('direct sends at the same moment take their places under the ceiling one at a time', async () => {
+  await withEnv({ SMS_VISITOR_HOURLY_CAP: '2' }, async () => {
+    await withRelay(async (relay) => {
+      const db = await freshDb();
+      const outcomes = await Promise.all(
+        Array.from({ length: 8 }, (_, i) =>
+          sendText(db, { to: `+1214555078${i}`, body: 'Coachatron: your code is 123456', coachId: null, template: 'otp', visitor: 'always' }),
+        ),
+      );
+      assert.deepEqual(outcomes.sort(), ['busy', 'busy', 'busy', 'busy', 'busy', 'busy', 'sent', 'sent']);
+      assert.equal(relay.sms.length, 2);
+    });
+  });
+});
+
+test('a new coach whose start link the ceiling held gets it when they text again after it clears', async () => {
+  await withEnv({ SMS_VISITOR_HOURLY_CAP: '1' }, async () => {
+    await withRelay(async (relay) => {
+      const db = await freshDb();
+      const links = () => relay.sms.filter((m) => m.to === '+12145550602' && /\/start\//.test(m.body)).length;
+      await withServer(async (base) => {
+        // Someone else's sign-in code takes the hour's one visitor text.
+        assert.equal((await form(base, '/signin/otp', { contact: '2145550601' }, from('203.0.113.9'))).status, 303);
+        await postSignedSms(base, { From: '+12145550602', Body: 'Tuesdays at 6pm, an hour, $35' });
+        assert.equal(links(), 0, 'held by the ceiling');
+        // The hour clears (here: the ceiling goes up), and they text again.
+        process.env.SMS_VISITOR_HOURLY_CAP = '50';
+        await postSignedSms(base, { From: '+12145550602', Body: 'Tuesdays at 6pm, an hour, $35' });
+        assert.equal(links(), 1, 'the second text gets the link');
+        // One link a day still: a third text gets nothing more.
+        await postSignedSms(base, { From: '+12145550602', Body: 'Tuesdays at 6pm, an hour, $35' });
+        assert.equal(links(), 1);
+      });
+      assert.deepEqual(await statuses(db, '+12145550602'), ['capped-visitor-hourly', 'sent']);
+    });
+  });
+});
+
+test('a start link the relay could not take is sent when the new coach texts again', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const links = () => relay.sms.filter((m) => m.to === '+12145550603' && /\/start\//.test(m.body)).length;
+    await withServer(async (base) => {
+      relay.failSmsTo.add('+12145550603');
+      await postSignedSms(base, { From: '+12145550603', Body: 'Thursdays at 5pm, 90 minutes, $40' });
+      assert.equal(links(), 0);
+      relay.failSmsTo.delete('+12145550603');
+      await postSignedSms(base, { From: '+12145550603', Body: 'Thursdays at 5pm, 90 minutes, $40' });
+      assert.equal(links(), 1);
+    });
+    assert.deepEqual(await statuses(db, '+12145550603'), ['failed', 'sent']);
+  });
+});

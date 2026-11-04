@@ -5,7 +5,8 @@ import { withServer } from './helpers/server.js';
 import { withRelay } from './helpers/relay.js';
 import { postSignedSms } from './helpers/sms-webhook.js';
 import { seedBookedSession, seedCoachWithSession, seedRosterMember, seedWaitlistEntry } from './helpers/fixtures.js';
-import { acceptOffer, answerAsk, checkOverflow, startCascade } from '../src/domain/cascade.js';
+import { acceptOffer, answerAsk, checkOverflow, claimedText, startCascade } from '../src/domain/cascade.js';
+import { composeText, segmentCount } from '../src/domain/outbound.js';
 import { cancelScheduledSession } from '../src/domain/cancelSession.js';
 import { createCoachSession } from '../src/domain/auth.js';
 import { revokeConsent } from '../src/domain/sms-consent.js';
@@ -553,6 +554,67 @@ test('a member who takes a backup job by replying Y is texted that it is theirs,
     assert.deepEqual(logged.rows.map((r) => r.template), ['offer', 'offer-claimed']);
     assert.equal(logged.rows[1].coach_id, seed.coach.id, 'counted against the coach like the offer');
   });
+});
+
+test('the Y confirmation still says the job is theirs, with the time, size and pay, when the name and place are long', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await fullSession(db, { capacity: 2, location: 'Westside Community Park, North Field 3' });
+    await db.query("update session_type set name = 'Advanced Footwork and Finishing U14', backup_pay_cents = 8000 where id = $1", [seed.sessionTypeId]);
+    const member = await seedRosterMember(db, seed.coach.id, 'Bailey Backup', 0);
+    await checkOverflow(db, seed.sessionId);
+    await answerAsk(db, seed.coach.id, 'backup');
+    await withServer(async (base) => {
+      await smsTo(base, member.phone, 'Y');
+    });
+    const body = relay.sms.filter((m) => m.to === member.phone).at(-1)?.body ?? '';
+    assert.equal(segmentCount(body), 1, body);
+    assert.match(
+      body,
+      /^Coachatron: it's yours\. Backup coach for Advanced Footwork and Finishing U14 \w{3} \w{3} \d{1,2} \d{1,2}(:\d\d)?[ap]m, Westside[^,]*\.\.\., 2 athletes, pays \$80\. Reply STOP to opt out\.$/,
+      'the place is shortened, never the job, the time, the size or the pay',
+    );
+  });
+});
+
+test('the confirmation drops a place that would be cut too short, then shortens the name, for either job', () => {
+  const info = (name: string, locationText: string | null): Parameters<typeof claimedText>[0] => ({
+    sessionId: 1,
+    coachId: 1,
+    coachPhone: null,
+    coachEmail: null,
+    status: 'scheduled',
+    startsAtUtc: '2026-11-10T00:30:00.000Z',
+    tz: 'America/Chicago',
+    name,
+    locationText,
+    capacity: 12,
+    typeCapacity: 12,
+    overflowThreshold: 3,
+    label: name,
+    backupPayCents: 8050,
+  });
+  const longName = 'Saturday Morning Advanced Footwork and Finishing Clinic for the U14 and U15 Groups';
+  const longPlace = 'Westside Community Park, North Field 3, past the tennis courts';
+  for (const kind of ['backup', 'second_group'] as const) {
+    const size = kind === 'second_group' ? 'up to 12 athletes' : '11 athletes';
+    for (const [name, place] of [
+      ['Advanced Skills Group U12', 'Westside Community Park Field 3'],
+      [longName, longPlace],
+      [longName, null],
+    ] as const) {
+      const text = composeText(claimedText(info(name, place), kind, 11), 'offer-claimed');
+      assert.equal(segmentCount(text), 1, text);
+      assert.match(text, /^Coachatron: it's yours\. /, text);
+      assert.ok(text.includes(` Mon Nov 9 6:30pm`), text);
+      assert.ok(text.endsWith(`, ${size}, pays $80.50. Reply STOP to opt out.`), text);
+    }
+    const shortName = composeText(claimedText(info('Advanced Skills Group U12', 'Westside Community Park Field 3'), kind, 11), 'offer-claimed');
+    assert.ok(shortName.includes('Advanced Skills Group U12'), `the name stays whole while the place can give: ${shortName}`);
+    const both = composeText(claimedText(info(longName, longPlace), kind, 11), 'offer-claimed');
+    assert.ok(!both.includes('Westside'), `a place with too little room is left out: ${both}`);
+    assert.match(both, /Saturday Morning Advanced[^.]*\.\.\./, both);
+  }
 });
 
 test('a member who takes a second group by replying Y is texted its time, place and size; the page accept is not texted', async () => {
