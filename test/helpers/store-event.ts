@@ -21,6 +21,8 @@ export async function postStorePaid(
     eventId?: string;
     /** When the payment was made; defaults to now. */
     occurredAt?: Date;
+    /** Test or live money; test by default, as the relay's rows are today. */
+    mode?: 'test' | 'live';
   },
 ): Promise<Response> {
   const callbackUrl = `${base}/webhooks/store`;
@@ -30,7 +32,7 @@ export async function postStorePaid(
     version: 1,
     store: 'coachatron',
     product: 'coachatron',
-    mode: 'test',
+    mode: args.mode ?? 'test',
     occurredAt: (args.occurredAt ?? new Date()).toISOString(),
     buyer: { userId: args.userId, email: 'parent@example.com' },
     item: { code: 'NOCTU-COACHATRON-CHARGE', key: 'charge', kind: 'sku', name: 'Charge', quantity: 1 },
@@ -77,6 +79,8 @@ export async function postSellerEvent(
     product?: string;
     id?: string;
     secret?: string;
+    /** The seller account's mode; test by default. */
+    mode?: 'test' | 'live';
   },
 ): Promise<Response> {
   const callbackUrl = `${base}/webhooks/store`;
@@ -88,7 +92,7 @@ export async function postSellerEvent(
     version: 1,
     store: `${args.product ?? 'coachatron'}@${args.sellerKey}`,
     product: args.product ?? 'coachatron',
-    mode: 'test',
+    mode: args.mode ?? 'test',
     occurredAt: new Date().toISOString(),
     buyer: null,
     item: null,
@@ -133,6 +137,8 @@ export async function postPaymentEvent(
     disputeId?: string | null;
     eventId?: string;
     sellerKey?: string;
+    /** Test or live money; test by default. */
+    mode?: 'test' | 'live';
   },
 ): Promise<Response> {
   const callbackUrl = `${base}/webhooks/store`;
@@ -145,7 +151,7 @@ export async function postPaymentEvent(
     version: 1,
     store: `coachatron@${args.sellerKey ?? 'seller'}`,
     product: 'coachatron',
-    mode: 'test',
+    mode: args.mode ?? 'test',
     occurredAt: new Date().toISOString(),
     buyer: { userId: null, email: null },
     item: null,

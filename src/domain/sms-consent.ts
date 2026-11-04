@@ -22,10 +22,13 @@ export async function hasActiveConsent(db: DbClient, phone: string, purpose: str
   return result.rows.length > 0;
 }
 
-/** Records the texts box. An opt-out (a STOP) is lifted only when the
- * person has just proved the number is theirs (numberVerified: a code
- * texted to it, or a reply from it). A box ticked on a form anyone can
- * fill in keeps the opt-out; that number opts back in by texting START. */
+/** Records the texts box. Only someone who has just proved the number is
+ * theirs (numberVerified: a code texted to it, or a reply from it) replaces
+ * that number's consent record (where, from which browser, and when) and
+ * lifts an opt-out (a STOP) or a revoked consent. A box ticked on a form
+ * anyone can fill in (booking, waitlist, /sms) records consent only for a
+ * number with no record yet: it never rewrites the evidence of an earlier
+ * consent, and a number that opted out opts back in by texting START. */
 export async function recordConsent(
   db: DbClient,
   phone: string,
@@ -33,19 +36,24 @@ export async function recordConsent(
   meta: { ip?: string | null; userAgent?: string | null; purpose?: string; numberVerified?: boolean },
 ): Promise<void> {
   const purpose = meta.purpose ?? SMS_PURPOSE;
+  const verified = meta.numberVerified === true;
   await db.query(
     `insert into sms_consent (phone, purpose, consent_text_version, source, ip, user_agent, consented_at, revoked_at)
      values ($1, $2, $3, $4, $5, $6, now(), null)
-     on conflict (phone, purpose) do update set
+     on conflict (phone, purpose) do ${
+       verified
+         ? `update set
        consent_text_version = excluded.consent_text_version,
        source = excluded.source,
        ip = excluded.ip,
        user_agent = excluded.user_agent,
        consented_at = now(),
-       revoked_at = null`,
+       revoked_at = null`
+         : 'nothing'
+     }`,
     [phone, purpose, SMS_CONSENT_TEXT_VERSION, source, meta.ip ?? null, meta.userAgent ?? null],
   );
-  if (meta.numberVerified === true) await db.query('delete from opt_out where phone = $1', [phone]);
+  if (verified) await db.query('delete from opt_out where phone = $1', [phone]);
 }
 
 export async function revokeConsent(db: DbClient, phone: string, purpose: string = SMS_PURPOSE): Promise<void> {

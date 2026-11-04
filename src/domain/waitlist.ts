@@ -185,6 +185,8 @@ async function tellWaitingParent(db: DbClient, ctx: SpotContext, spot: HeldSpot)
         ),
         coachId: ctx.coachId,
         template: 'waitlist-spot',
+        // Joining the waitlist is a form anyone can fill in.
+        visitor: 'new-number',
       });
       if (outcome === 'sent') return 'sent';
       // 'refused' means this number takes no texts now; 'busy' and

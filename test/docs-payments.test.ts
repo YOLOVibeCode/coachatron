@@ -185,6 +185,16 @@ test("docs say a coach's cancel gives every paid booking a credit, drop-ins incl
   assert.match(section(read('SPEC.md'), '### 7.4 Coach gets paid'), /drop-in for it gets one session credit/);
 });
 
+test("SPEC's domain model and messaging note match how bookings are paid and a coach's cancel reaches parents", () => {
+  const model = section(read('SPEC.md'), '## 6. Domain model');
+  assert.match(model, /paid by: DropIn \| PackageCredit \| Pack \(one-time\)/);
+  assert.doesNotMatch(model, /Subscription|issues credits monthly/);
+  const messaging = section(read('SPEC.md'), '## 10. Messaging');
+  assert.match(messaging, /who gave an\s+email is emailed instead/, 'the email to parents the text did not reach');
+  assert.match(messaging, /"Texted 1 and emailed 1 of 3 parents"/);
+  assert.match(read('src/routes/coach.ts'), /Texted \$\{reach\.athletesNotified\}\$\{reach\.athletesEmailed > 0 \? ` and emailed/, 'the summary still says it');
+});
+
 test("docs say a package credit a coach's cancel returns keeps its package's expiry", () => {
   // The cancel puts the credit back on the row it came from, expiry and all;
   // only the credit a paid drop-in becomes is new, and it has none.

@@ -8,7 +8,6 @@ import {
   bookPendingBooking,
   cancelledSessionCreditSource,
   creditCancelledBooking,
-  ensureSubscriptionRecord,
   getBooking,
   getPackageForPayment,
   getPlanForPayment,
@@ -19,8 +18,9 @@ import {
 } from '../domain/pricing.js';
 import { checkOverflow } from '../domain/cascade.js';
 import { findCoachBySellerKey } from '../domain/auth.js';
-import { recordChargesEnabled, refreshPaymentsStatus } from '../domain/payments.js';
-import { connectProduct } from '../relay/seller.js';
+import { recordChargesEnabled, recordSellerMode, refreshPaymentsStatus } from '../domain/payments.js';
+import { connectProduct, relayMode } from '../relay/seller.js';
+import { appEnv, testPaymentsAllowed } from '../config.js';
 import { sendBookingConfirmation, sendPaymentCredited } from '../domain/bookingMessages.js';
 import { recordPaymentAttention, type AttentionReason } from '../domain/paymentAttention.js';
 import { applyRefundFailed, applyRefunded, recordDispute, type DisputeState, type RefundReport } from '../domain/refunds.js';
@@ -90,7 +90,10 @@ async function coachIdForSeller(db: DbClient, sellerKey: string | null | undefin
 /** What the buyer ref says was bought, priced and credited as it stands. */
 interface PaidItem {
   mode: PayMode;
-  paymentSource: 'DropIn' | 'PackageCredit' | 'Subscription';
+  /** A plan is a one-time pack (SPEC.md §9.2), recorded as 'Pack': like a
+   * package, on the booking and the credit it leaves, and nothing that
+   * renews. */
+  paymentSource: 'DropIn' | 'PackageCredit' | 'Pack';
   priceCents: number;
   /** Sessions the purchase is worth, the first of which is this booking. */
   sessions: number;
@@ -156,7 +159,7 @@ async function priceItem(
   if (!plan) return null;
   return {
     mode,
-    paymentSource: 'Subscription',
+    paymentSource: 'Pack',
     priceCents: plan.price_cents,
     sessions: plan.credits_per_month,
     packageId: null,
@@ -167,9 +170,8 @@ async function priceItem(
 }
 
 /** The credit left after this pass's own sessions (package or pack). */
-async function grantRemainder(db: DbClient, booking: BookingRow, coachId: number, item: PaidItem, paymentRef: string, children: number): Promise<void> {
+async function grantRemainder(db: DbClient, booking: BookingRow, coachId: number, item: PaidItem, children: number): Promise<void> {
   if (item.mode === 'dropin') return;
-  if (item.planId !== null) await ensureSubscriptionRecord(db, item.planId, booking.contact_phone, paymentRef);
   const grant: CreditGrant = {
     coachId,
     contactPhone: booking.contact_phone,
@@ -228,7 +230,7 @@ async function handlePaid(db: DbClient, event: StoreEvent, eventId: string): Pro
   const settled = async (current: BookingRow | null): Promise<void> => {
     if (current && current.charge_id === paymentRef) {
       if (current.status === 'booked' && item && current.credit_id === null) {
-        await grantRemainder(db, current, session.coach_id, item, paymentRef, children);
+        await grantRemainder(db, current, session.coach_id, item, children);
       }
       return;
     }
@@ -269,7 +271,6 @@ async function handlePaid(db: DbClient, event: StoreEvent, eventId: string): Pro
       await settled(await getBooking(db, booking.id));
       return;
     }
-    if (item.planId !== null) await ensureSubscriptionRecord(db, item.planId, booking.contact_phone, paymentRef);
     const told = await sendPaymentCredited(db, booking.id, item.sessions);
     const reached = told.text === 'sent' || told.email === 'sent';
     await attention('session_cancelled', who, { outcome: `credit:${item.sessions}:${reached ? 'told' : 'not-told'}` });
@@ -310,7 +311,7 @@ async function handlePaid(db: DbClient, event: StoreEvent, eventId: string): Pro
     await attention('session_full', who);
     return;
   }
-  await grantRemainder(db, booking, session.coach_id, item, paymentRef, children);
+  await grantRemainder(db, booking, session.coach_id, item, children);
   for (const child of pass) await sendBookingConfirmation(db, child.id);
   void checkOverflow(db, booking.session_id);
 }
@@ -326,6 +327,7 @@ async function onSellerEvent(event: StoreEvent): Promise<void> {
   const db = getDb();
   const coach = await findCoachBySellerKey(db, key);
   if (!coach) return;
+  await recordSellerMode(db, coach.id, relayMode(event.mode));
   if (event.type === 'seller.disconnected') {
     await recordChargesEnabled(db, coach, false);
     return;
@@ -333,6 +335,18 @@ async function onSellerEvent(event: StoreEvent): Promise<void> {
   const charges = event.seller?.chargesEnabled;
   if (typeof charges === 'boolean') await recordChargesEnabled(db, coach, charges);
   else await refreshPaymentsStatus(db, coach);
+}
+
+/** A test-mode payment, refund or dispute moved no real money. In
+ * production it is not applied: nothing is booked, no credit is given, and
+ * nothing shows on Money, unless test payments are allowed there
+ * (ALLOW_TEST_PAYMENTS). It is logged and answered 2xx without being
+ * claimed, so a replay after that setting changes is handled. Elsewhere it
+ * is handled like any event. */
+function testMoneyRefused(event: StoreEvent, eventId: string): boolean {
+  if (testPaymentsAllowed() || relayMode(event.mode) === 'live') return false;
+  console.warn(`store: ${relayMode(event.mode) ?? 'unknown'}-mode ${String(event.type ?? 'event')} ${eventId} not applied in ${appEnv()}`);
+  return true;
 }
 
 /** Runs a store event's handler once: the event is claimed in the
@@ -347,6 +361,7 @@ function handledOnce(
   return async (event, context) => {
     const db = getDb();
     const eventId = event.id || headerValue(context.headers, 'x-relay-event-id') || fallbackId(event) || `unidentified:${randomUUID()}`;
+    if (testMoneyRefused(event, eventId)) return;
     const claim = await claimEvent(db, eventId, String(event.type ?? ''));
     if (claim === 'done') return;
     // Not a 2xx, so the relay delivers it again later: by then it is either

@@ -231,6 +231,38 @@ SPEC.md §8.1.
 - **Confirmations.** A booked parent gets one confirmation with the manage
   link: a text when they ticked the texts box, an email when they gave an
   address. The page they return to after paying shows the link as well.
+- **Moving a booking** *(2026-11-04, SPEC.md §7.2;
+  `src/domain/moveBooking.ts`)*. Until the coach's cancellation window
+  closes, `/booking/:token` lists the other upcoming sessions of the same
+  session type with room, and `POST /booking/:token/move` moves the booking.
+  Both sessions are locked in id order (`lockSession`), then every booking
+  the payment bought, in id order from either child's link (the order a
+  refund of that payment locks them), and only then is the booking's state
+  checked. Room is counted as a booking counts it (`countTakenSpots`,
+  `countKeptForWaitlist`). Only `booking.session_id` changes: the manage
+  link, payment, credit and recorded price (`price_cents`, which Money
+  counts in the new session's week) stay, and no payment call goes to the
+  relay. The parent's confirmation (template `booking-moved`, under the
+  booking confirmation's ceilings, the visitor ceiling included) and any
+  waitlist offer for the freed spot are the only messages. Moves are limited per address
+  (`BOOKING_MOVE_LIMITS`: 10 an hour, 30 a day) and per booking from any
+  address (5 a day), and the confirmation is capped at 10 a day per number
+  and per email address (`MOVED_CONFIRMATIONS_DAILY_MAX_PER_CONTACT`), so
+  moving back and forth cannot use up the coach's daily text ceiling. The
+  bookings carrying one payment in the session (`booking.charge_id`), the
+  set a refund of it covers, move together; a booking whose refund is
+  `requested` or `pending`, or whose payment's other bookings are not all
+  booked, does not move. Each move is a `booking_move` row (migration 0031).
+  Session detail of the session a booking left lists the child once, with
+  the time it is in now, unless it moved back; the session it joined says
+  where it came from. The booking's `reminder_sent` row is cleared so the
+  new time gets its 24-hour reminder, and the tick claims a reminder only
+  while the booking is still in the session it read (under a share lock on
+  the booking), so a move that lands between the tick's read and its claim
+  sends no reminder for the old time and leaves the new time's reminder due.
+  The freed spot is offered to the waitlist. Once children who each used
+  their own credit are in different sessions, the checkout link's page
+  shows each child's own time beside their manage link.
 - **A coach's cancel** returns a credit for every paid booking, including a
   paid drop-in, which becomes one session credit with the coach with no
   expiry. Each step can run again, so a cancel that stopped part way
@@ -496,6 +528,7 @@ prices like an international destination. Those are capped in the send path
 | Per coach, model | 30 calls/day, 400/month | cents |
 | Product model key | $20/month | raise on purpose, not by usage |
 | Product, per day | 400 segments × active coaches, floor 500 | a shared-sender bug dies the same day |
+| Texts set off by people not signed in, whole app | 30 an hour, 100 a day, none in the day's last 100 | a flood from many addresses cannot use up the day |
 
 *Implemented 2026-09-30* in `src/domain/outbound.ts`, the only send path.
 Destination price is enforced by country code: only `+1` (US and Canada) is
@@ -503,11 +536,21 @@ texted, since the relay does not report a per-destination price. "Active
 coach" means a coach with a scheduled session ahead. Sign-in codes are also
 capped at 5 per number or email per day, and requests that send a code, opt
 in at `/sms`, join a waitlist, start a booking (each holds a spot for 15
-minutes; 20 an hour and 60 a day), or use the landing page's box are limited
+minutes; 20 an hour and 60 a day), move a booking (10 an hour and 30 a day,
+and 5 a day for one booking), or use the landing page's box are limited
 per client address (`src/domain/requestLimits.ts`). A code stops working after 5
 wrong tries, works once, and checks for a number or email count against its
 hourly limit only while it has a live code. The code a parent asks for at
-checkout to use session credits follows the same rules.
+checkout to use session credits follows the same rules, but is a code of its
+own: it never signs anyone in, and asking for it leaves a sign-in code
+working. Texts set off by someone not signed in (sign-in codes, start links,
+opt-in confirmations, and booking, moved booking and waitlist texts to a
+number never texted before) also count against an app-wide ceiling whatever
+address they come from (`SMS_VISITOR_HOURLY_CAP`, `SMS_VISITOR_DAILY_CAP`,
+`SMS_DAILY_RESERVE`); past it they wait like a relay 429 (`busy`), and the
+form says to try later or to use email. Each takes its place before it goes
+(a `reserved` row in `message_log`, written under a transaction lock), so
+requests that arrive together cannot all pass the same count.
 When the relay's own caps answer 429, the send path returns `busy` and the
 page asks to try again later. *(Added 2026-11-04: a letter outside GSM-7
 whose plain form is inside it, as in "García", is written plain, so a name

@@ -31,6 +31,14 @@ export interface SellerStatus {
   payoutsEnabled: boolean;
   /** The agreement version the coach accepted, or null. */
   agreementVersion: string | null;
+  /** Whether the seller's payment account takes test or live money; null
+   * when the relay did not say. */
+  mode: 'test' | 'live' | null;
+}
+
+/** 'test' or 'live' as the relay writes a mode, or null for anything else. */
+export function relayMode(value: unknown): 'test' | 'live' | null {
+  return value === 'test' || value === 'live' ? value : null;
 }
 
 /** null when the coach has never started (the relay has no seller for them). */
@@ -45,6 +53,7 @@ export async function getSellerStatus(sellerKey: string): Promise<SellerStatus |
     chargesEnabled: body.chargesEnabled === true,
     payoutsEnabled: body.payoutsEnabled === true,
     agreementVersion: typeof body.agreementVersion === 'string' ? body.agreementVersion : null,
+    mode: relayMode(body.mode),
   };
 }
 

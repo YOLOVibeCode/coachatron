@@ -345,11 +345,13 @@ test('when the relay\'s own limits refuse a code, the page says to try later and
     relay.limited.sms = true;
     relay.limited.email = true;
     await withServer(async (base) => {
-      for (const contact of ['5550202020', 'busy@example.com']) {
-        const res = await post(base, '/signin/otp', { contact });
-        assert.equal(res.status, 429, contact);
-        assert.match(await res.text(), /We can&#39;t send codes right now\. Try again in a few minutes\.|We can't send codes right now\. Try again in a few minutes\./);
-      }
+      // A text code that cannot go now points to email, which may still work.
+      const text = await post(base, '/signin/otp', { contact: '5550202020' });
+      assert.equal(text.status, 429);
+      assert.match(await text.text(), /We can(&#39;|')t text codes right now\. Try again later, or use your email instead\./);
+      const email = await post(base, '/signin/otp', { contact: 'busy@example.com' });
+      assert.equal(email.status, 429);
+      assert.match(await email.text(), /We can(&#39;|')t send codes right now\. Try again in a few minutes\./);
       const { cookie } = await emailCoachWithSchedule(db);
       const add = await post(base, '/app/phone', { phone: '5550303030', sms_consent: '1' }, { cookie });
       assert.equal(add.headers.get('location'), '/app/schedule?phone=busy');

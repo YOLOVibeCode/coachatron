@@ -30,6 +30,7 @@ export const REMINDER_MAX_FAILURES = 5;
 export async function sendDueReminders(db: DbClient, now: Date): Promise<number> {
   const due = await db.query<{
     booking_id: number;
+    session_id: number;
     athlete_name: string;
     contact_phone: string;
     starts_at_utc: string;
@@ -39,7 +40,7 @@ export async function sendDueReminders(db: DbClient, now: Date): Promise<number>
     coach_id: number;
     coach_tz: string;
   }>(
-    `select b.id as booking_id, b.athlete_name, b.contact_phone, s.starts_at_utc, s.tz, s.location_text,
+    `select b.id as booking_id, b.session_id, b.athlete_name, b.contact_phone, s.starts_at_utc, s.tz, s.location_text,
             st.name, c.id as coach_id, c.tz as coach_tz
      from booking b
      join session s on s.id = b.session_id
@@ -65,9 +66,18 @@ export async function sendDueReminders(db: DbClient, now: Date): Promise<number>
   let sent = 0;
   for (const row of due.rows) {
     if (inQuietHours(now, row.coach_tz)) continue;
+    // Claimed only while the booking is still booked in the session read
+    // above, so the text names the right time. A parent who moved it since
+    // (moveBooking.ts) leaves nothing to claim here, and the new time's
+    // reminder stays due. The share lock waits for a move still in
+    // progress and then sees where the booking went.
     const claimed = await db.query<{ booking_id: number }>(
-      'insert into reminder_sent (booking_id) values ($1) on conflict (booking_id) do nothing returning booking_id',
-      [row.booking_id],
+      `insert into reminder_sent (booking_id)
+       select b.id from booking b where b.id = $1 and b.session_id = $2 and b.status = 'booked'
+       for share of b
+       on conflict (booking_id) do nothing
+       returning booking_id`,
+      [row.booking_id, row.session_id],
     );
     if (claimed.rows.length === 0) continue;
     const when = formatConfirmWhen(new Date(row.starts_at_utc).toISOString(), row.tz);

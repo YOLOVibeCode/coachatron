@@ -9,6 +9,7 @@ import { bookOnline, countSold, postCheckout } from './helpers/booking.js';
 import { getConnectRecipientKey } from '../src/domain/auth.js';
 import { refundIdempotencyKey } from '../src/domain/refunds.js';
 import { cancelScheduledSession } from '../src/domain/cancelSession.js';
+import { summarizeMoney } from '../src/domain/money.js';
 import { PHONE, bookingStatus, coachCookie, creditLeft, getPage, payFor, postForm, quiet, refundRow } from './helpers/refunds.js';
 
 /** A coach refunds a whole payment from Session detail or Money, after a
@@ -141,6 +142,37 @@ test('a pack whose sessions were used is not refunded here, and the coach is tol
     });
     assert.equal(relay.refundCalls, 0);
     assert.equal(await refundRow(db, 'ns_pay_pack'), null);
+  });
+});
+
+test('a pack booked by the previous release during a deploy reads as a pack, on Session detail and in Money', async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 3, priceCents: 3500 });
+    const planId = await seedPlan(db, seed.coach.id, 4, 12000);
+    await withServer(async (base) => {
+      const bookingId = await payFor(base, db, {
+        handle: seed.coach.handle,
+        sessionId: seed.sessionId,
+        paymentId: 'ns_pay_old_pack',
+        amountCents: 12000,
+        fields: { mode: 'plan', plan_id: String(planId) },
+      });
+      // Written the way the release before migration 0027 writes it: payment
+      // source 'Subscription' and no recorded price.
+      await db.query("update booking set payment_source = 'Subscription', price_cents = null where id = $1", [bookingId]);
+      await db.query('update credit set remaining = remaining - 1 where id = (select credit_id from booking where id = $1)', [bookingId]);
+      const cookie = await coachCookie(db, seed.coach.id);
+
+      const detail = await getPage(base, `/app/sessions/${seed.sessionId}`, cookie);
+      assert.match(detail, /Paid \$120 · One-time pack\. 1 of the 4 sessions this payment bought was used, so it cannot be refunded in full here\./);
+      assert.ok(!detail.includes(`?refund=${bookingId}#refund`), 'no Refund link, as for any used pack');
+
+      const money = await summarizeMoney(db, seed.coach.id, new Date(Date.now() + 60 * 60 * 1000));
+      assert.equal(money.bookedThisWeekCount, 1);
+      assert.equal(money.bookedThisWeekCents, 3500, "valued at the session's price, as migration 0027 values older bookings");
+    });
+    assert.equal(relay.refundCalls, 0);
   });
 });
 

@@ -38,6 +38,8 @@ export interface FakeSeller {
   chargesEnabled: boolean;
   /** Defaults to chargesEnabled. */
   payoutsEnabled?: boolean;
+  /** The account's mode as the relay reports it; defaults to the relay's sellerMode. */
+  mode?: 'test' | 'live';
 }
 
 export interface FakeOnboard {
@@ -81,6 +83,8 @@ export interface FakeRelay {
   statusChecks: number;
   /** When true, a seller's status answers 503, as a relay that is down would. */
   statusDown: boolean;
+  /** The mode a seller's status reports when the seller has none of its own: 'test' by default. */
+  sellerMode: 'test' | 'live';
   /** Refunds the relay made, one per idempotency key. */
   refunds: FakeRefund[];
   /** How many refund calls arrived, repeats included. */
@@ -128,6 +132,7 @@ export async function startFakeRelay(): Promise<FakeRelay> {
     strictOnboard: false,
     statusChecks: 0,
     statusDown: false,
+    sellerMode: 'test' as 'test' | 'live',
     refundCalls: 0,
     refundStatus: 'succeeded' as 'succeeded' | 'pending' | 'failed',
     refundError: null as { status: number; code: string } | null,
@@ -154,6 +159,7 @@ export async function startFakeRelay(): Promise<FakeRelay> {
       chargesEnabled: s.chargesEnabled,
       payoutsEnabled: s.payoutsEnabled ?? s.chargesEnabled,
       agreementVersion: s.agreementVersion,
+      mode: s.mode ?? relay.sellerMode,
     });
   });
 

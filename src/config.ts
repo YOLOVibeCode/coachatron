@@ -44,10 +44,38 @@ export const SMS_COACH_DAILY_CAP = 300;
 export const SMS_COACH_MONTHLY_CAP = 2000;
 export const SMS_PRODUCT_DAILY_PER_COACH = 400;
 export const SMS_PRODUCT_DAILY_FLOOR = 500;
+/** Texts set off by someone who is not signed in (sign-in codes, start
+ * links, opt-in confirmations, booking and waitlist texts to a number never
+ * texted before), across the whole app: at most `hourly` in an hour and
+ * `daily` in a UTC day, and none once fewer than `reserve` texts are left
+ * in the product's day, so reminders and replies to people already texted
+ * still go. SMS_VISITOR_HOURLY_CAP, SMS_VISITOR_DAILY_CAP and
+ * SMS_DAILY_RESERVE change them. Read at call time so tests can set them. */
+export function visitorTextLimits(): { hourly: number; daily: number; reserve: number } {
+  return {
+    hourly: envCount('SMS_VISITOR_HOURLY_CAP', 30),
+    daily: envCount('SMS_VISITOR_DAILY_CAP', 100),
+    reserve: envCount('SMS_DAILY_RESERVE', 100),
+  };
+}
+
+/** A whole number of 0 or more from the environment, or the default. */
+function envCount(name: string, fallback: number): number {
+  const raw = (process.env[name] ?? '').trim();
+  const n = Number(raw);
+  return raw !== '' && Number.isInteger(n) && n >= 0 ? n : fallback;
+}
+
 /** Sign-in codes per phone or email address in 24 hours. */
 export const OTP_DAILY_MAX_PER_CONTACT = 5;
 /** Wrong tries before a sign-in code stops working. */
 export const OTP_MAX_ATTEMPTS = 5;
+/** "Moved" confirmations (template booking-moved) to one phone or email
+ * address in 24 hours. A move of the largest pass a booking takes
+ * (MAX_CHILDREN_PER_BOOKING) still reaches every child's confirmation, and
+ * moving back and forth stops here instead of using up the coach's daily
+ * text ceiling, which every family of the coach shares. */
+export const MOVED_CONFIRMATIONS_DAILY_MAX_PER_CONTACT = 10;
 /** How long a pending booking holds its spot while the parent pays. */
 export const BOOKING_HOLD_MINUTES = 15;
 /** Empty: the relay's shared authenticated sender. Set to
@@ -55,6 +83,21 @@ export const BOOKING_HOLD_MINUTES = 15;
  * Read at call time so tests can set it. */
 export function coachatronEmailFrom(): string {
   return (process.env.COACHATRON_EMAIL_FROM ?? '').trim();
+}
+
+/** Which deployment this is: development, uat or production. Read at call
+ * time so tests can set it. */
+export function appEnv(): string {
+  return process.env.APP_ENV ?? process.env.RAILWAY_ENVIRONMENT_NAME ?? 'dev';
+}
+
+/** Whether test-mode payments count here. Outside production they always
+ * do. In production a test-mode paid event books nothing and a coach whose
+ * payment account is a test one cannot take bookings, unless
+ * ALLOW_TEST_PAYMENTS is set to 1 or true (off by default). */
+export function testPaymentsAllowed(): boolean {
+  if (appEnv() !== 'production') return true;
+  return ['1', 'true'].includes((process.env.ALLOW_TEST_PAYMENTS ?? '').trim().toLowerCase());
 }
 
 export const SMS_BRAND = 'Coachatron';

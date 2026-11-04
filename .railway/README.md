@@ -18,6 +18,9 @@ railway config apply
 - **Variables.** Every value stays in Railway; the file marks each one
   `preserve()`. Never put a secret here. **Add every new web variable to the
   file as `preserve()`**: apply deletes any variable the file leaves out.
+  That includes optional ones nobody has set yet (every variable in the
+  root README's variable table is listed; `test/health.test.ts` checks it),
+  so setting one later in Railway survives the next apply.
 - **Stopping.** `drainingSeconds: 15` gives a replaced deployment 15 seconds
   between SIGTERM and SIGKILL. The server needs up to 12 to stop cleanly
   (`gracefulShutdown` in `src/server.ts`); a test keeps the two in step.

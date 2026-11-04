@@ -52,6 +52,24 @@ export const BOOKING_HOLD_LIMITS: LimitRule[] = [
   { bucket: 'hold-ip-day', windowMs: DAY, max: 60 },
 ];
 
+/** Moves from one address (SPEC.md §7.2). Each move sends the parent a
+ * confirmation that counts against the coach's daily text ceiling, which
+ * every family of the coach shares, and frees a spot the waitlist is
+ * offered. A parent who changes their mind once or twice stays far below. */
+export const BOOKING_MOVE_LIMITS: LimitRule[] = [
+  { bucket: 'move-ip-hour', windowMs: HOUR, max: 10 },
+  { bucket: 'move-ip-day', windowMs: DAY, max: 30 },
+];
+
+/** Moves of one booking, from any address (keyed by the booking, see
+ * bookingMoveKey). */
+export const BOOKING_MOVE_PER_BOOKING_LIMITS: LimitRule[] = [{ bucket: 'move-booking-day', windowMs: DAY, max: 5 }];
+
+/** The counter key for one booking's moves: its id, never its manage link. */
+export function bookingMoveKey(bookingId: number): string {
+  return `booking:${bookingId}`;
+}
+
 /** The landing page's week box, from one address. */
 export const START_BOX_LIMITS: LimitRule[] = [{ bucket: 'start-ip-10m', windowMs: 10 * MINUTE, max: 30 }];
 

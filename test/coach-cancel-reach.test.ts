@@ -284,3 +284,69 @@ test("the assistant's cancel reply counts a paid drop-in's credit", async () => 
     }
   });
 });
+
+/** A paid drop-in whose parent gave an email and did not tick the texts box. */
+async function bookEmailOnly(db: DbClient, sessionId: number, athlete: string, phone: string, email: string): Promise<number> {
+  const r = await db.query<{ id: number }>(
+    `insert into booking (session_id, athlete_name, contact_phone, contact_email, payment_source, gross_cents, charge_id, status, manage_token)
+     values ($1, $2, $3, $4, 'DropIn', 3500, $5, 'booked', $6) returning id`,
+    [sessionId, athlete, phone, email, `ch_${athlete.replace(/\W/g, '')}`, crypto.randomBytes(16).toString('base64url')],
+  );
+  return r.rows[0].id;
+}
+
+test("the coach's cancel emails a parent with no texts who gave an email, and the summary counts them as reached", async () => {
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 6 });
+    await seedBookedSession(db, seed.sessionId, 'Texted Tess', '+15550000061');
+    await bookEmailOnly(db, seed.sessionId, 'Emailed Emma', '+15550000062', 'emma.parent@example.com');
+    await bookWithoutTexts(db, seed.sessionId, 'Quiet Quinn', '+15550000063');
+    const cookie = `cx_session=${await createCoachSession(db, seed.coach.id)}`;
+
+    await withServer(async (base) => {
+      const confirm = await (await fetch(`${base}/app/sessions/${seed.sessionId}/cancel`, { headers: { cookie } })).text();
+      assert.match(confirm, /2 parents have not opted in to texts; 1 will get an email instead\./);
+      await fetch(`${base}/app/sessions/${seed.sessionId}/cancel`, {
+        method: 'POST',
+        headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+        body: '',
+        redirect: 'manual',
+      });
+      const detail = await (await fetch(`${base}/app/sessions/${seed.sessionId}`, { headers: { cookie } })).text();
+      assert.match(detail, /Texted 1 and emailed 1 of 3 parents\./);
+      assert.match(detail, /Quiet Quinn · <a href="tel:\+15550000063">\+15550000063<\/a> · has not opted in to texts/);
+      assert.doesNotMatch(detail, /Emailed Emma ·/);
+    });
+
+    assert.equal(relay.sms.filter((m) => m.to === '+15550000062').length, 0, 'no text without consent');
+    const emails = relay.emails.filter((e) => e.to === 'emma.parent@example.com');
+    assert.equal(emails.length, 1);
+    assert.match(emails[0].subject, /^Cancelled: Goalkeeper Group, /);
+    assert.match(emails[0].text, /Jamie Coach cancelled Emailed Emma's Goalkeeper Group on .+\. Your payment is now 1 session credit with Jamie Coach, for another session\./);
+    assert.match(emails[0].text, /\/booking\/[A-Za-z0-9_-]+/);
+
+    const result = await cancelScheduledSession(db, seed.coach.id, seed.sessionId);
+    assert.equal(result.kind, 'already_cancelled');
+    assert.equal(relay.emails.filter((e) => e.to === 'emma.parent@example.com').length, 1, 'not emailed twice');
+  });
+});
+
+test("the assistant's cancel counts emailed parents in its question and its answer", async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 6 });
+    await db.query('update session set starts_at_utc = $1 where id = $2', [tomorrowAt(seed.coach.tz, 18).toISOString(), seed.sessionId]);
+    await seedBookedSession(db, seed.sessionId, 'Sam Reyes', '+15550000071');
+    await bookEmailOnly(db, seed.sessionId, 'Mia Ortiz', '+15550000072', 'mia.parent@example.com');
+    setComplete(fakeComplete(new Error('the model must not run')));
+    try {
+      const ask = await handleCoachMessage(db, seed.coach, "cancel tomorrow's 6pm", 'sms');
+      assert.match(ask.text, /\? 2 athletes, 1 can be texted, 1 emailed\. Reply Y\.$/);
+      const done = await handleCoachMessage(db, seed.coach, 'Y', 'sms');
+      assert.match(done.text, /^Cancelled\. 1 of 2 athletes texted, 1 emailed, 1 credits returned, 1 of them for a paid drop-in\.$/);
+    } finally {
+      resetComplete();
+    }
+  });
+});
