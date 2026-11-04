@@ -78,16 +78,19 @@ export interface AttentionItem {
   athlete_name: string | null;
   contact_phone: string | null;
   outcome: string | null;
+  /** The relay's ref for the payment, which a refund names. */
+  payment_ref: string | null;
   created_at: string;
   session_name: string | null;
   starts_at_utc: string | null;
   tz: string | null;
 }
 
-/** The coach's open items, newest first. */
+/** The coach's open items, newest first. An item leaves the list once its
+ * payment is refunded. */
 export async function listPaymentAttention(db: DbClient, coachId: number): Promise<AttentionItem[]> {
   const result = await db.query<AttentionItem>(
-    `select pa.id, pa.reason, pa.amount_cents, pa.expected_cents, pa.athlete_name, pa.contact_phone, pa.outcome, pa.created_at,
+    `select pa.id, pa.reason, pa.amount_cents, pa.expected_cents, pa.athlete_name, pa.contact_phone, pa.outcome, pa.payment_ref, pa.created_at,
             st.name as session_name, s.starts_at_utc, s.tz
      from payment_attention pa
      left join booking b on b.id = pa.booking_id

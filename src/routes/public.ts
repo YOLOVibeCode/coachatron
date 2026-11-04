@@ -712,6 +712,15 @@ function manageLinkBlock(booking: Pick<BookingRow, 'manage_token'>, style: 'acti
 }
 
 function renderAlreadyBooked(coach: CoachRow, session: SessionForBooking, booking: Pick<BookingRow, 'manage_token' | 'status'>) {
+  if (booking.status === 'refunded') {
+    return page(
+      'Refunded',
+      html`<h1>This booking was refunded</h1>
+        <p class="muted">${session.name} — ${formatLocal(session.starts_at_utc, session.tz)}. The payment went back to your card.</p>
+        ${manageLinkBlock(booking)}
+        <a class="action ghost" href="/c/${coach.handle}">Back to ${coach.name}'s sessions</a>`,
+    );
+  }
   if (booking.status === 'cancelled') {
     return page(
       'Cancelled',
@@ -1215,11 +1224,13 @@ publicRouter.get('/booking/:token', async (req, res) => {
             ? html`<span class="good">Confirmed</span>`
             : booking.status === 'cancelled'
               ? html`<span class="muted">Cancelled</span>`
-              : held
-                ? html`<span>Payment received, not booked. ${booking.coach_name} will be in touch.</span>`
-                : booking.status === 'pending'
-                  ? html`<span>Payment not confirmed yet</span>`
-                  : html`<span>${booking.status}</span>`}
+              : booking.status === 'refunded'
+                ? html`<span class="muted">Refunded. The payment went back to your card.</span>`
+                : held
+                  ? html`<span>Payment received, not booked. ${booking.coach_name} will be in touch.</span>`
+                  : booking.status === 'pending'
+                    ? html`<span>Payment not confirmed yet</span>`
+                    : html`<span>${booking.status}</span>`}
         </p>
 
         <h2>Action</h2>
@@ -1227,7 +1238,7 @@ publicRouter.get('/booking/:token', async (req, res) => {
           ? html`<form method="post" action="/booking/${req.params.token}/cancel">
               <button type="submit" class="action">Cancel this booking</button>
             </form>`
-          : booking.status === 'cancelled' || booking.status === 'pending'
+          : booking.status === 'cancelled' || booking.status === 'pending' || booking.status === 'refunded'
             ? raw('')
             : html`<p class="muted">Cancellations are not accepted after the session starts.</p>`}
 

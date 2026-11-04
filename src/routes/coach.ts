@@ -53,6 +53,28 @@ import { DEFAULT_TZ, formatCoachDollars, formatLocal, formatTimeRange, isValidTi
 import { getPackagesForCoach, getPlansForCoach, createPackage, createPlan } from '../domain/pricing.js';
 import { summarizeMoney } from '../domain/money.js';
 import { describeAttention, listPaymentAttention, type AttentionItem } from '../domain/paymentAttention.js';
+import {
+  canTryAgain,
+  checkRefund,
+  describeDispute,
+  describeRefund,
+  describeRefundBlock,
+  listDisputes,
+  listRecentPayments,
+  listRefunds,
+  needsAttention,
+  purchaseLabel,
+  refundLabel,
+  refundsByPayment,
+  requestRefund,
+  type DisputeItem,
+  type PaymentItem,
+  type Refundability,
+  type RefundItem,
+  type RefundRequestOutcome,
+  type RefundRow,
+  type RefundTarget,
+} from '../domain/refunds.js';
 import { handleCoachMessage, loadScheduleAssistant, resolvePendingForCoach } from '../domain/assistant.js';
 import { clearCookie, parseCookies, serializeCookie } from '../lib/cookies.js';
 import { answerAskFromWeb, pendingAskForCoach, type PendingAsk } from '../domain/cascade.js';
@@ -1335,20 +1357,29 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
   }
   
   // Get bookings for this session
-  const bookings = await db.query<{
-    id: number;
-    athlete_name: string;
-    status: string;
-    manage_token: string;
-  }>(
-    `select id, athlete_name, status, manage_token 
+  const bookings = await db.query<SessionBooking>(
+    `select id, athlete_name, status, manage_token, payment_source, gross_cents, charge_id, credit_id
      from booking 
      where session_id = $1 
      order by id`,
     [sessionId],
   );
+  const refunds = await refundsByPayment(
+    db,
+    bookings.rows.flatMap((b) => (b.charge_id ? [b.charge_id] : [])),
+  );
+  const refundable = new Map<number, Refundability>();
+  for (const b of bookings.rows) {
+    if (b.charge_id && (b.gross_cents ?? 0) > 0) refundable.set(b.id, await checkRefund(db, coachId, { bookingId: b.id }));
+  }
   
   const reach = session.status === 'cancelled' ? await cancelReach(db, sessionId) : null;
+  const confirmId = Number(typeof req.query.refund === 'string' ? req.query.refund : '');
+  const confirm =
+    Number.isInteger(confirmId) && confirmId > 0 && bookings.rows.some((b) => b.id === confirmId)
+      ? await checkRefund(db, coachId, { bookingId: confirmId })
+      : null;
+  const notice = refundNotice(req.query.notice);
 
   res.status(200).send(
     page(
@@ -1356,6 +1387,13 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
       html`${coachNav('schedule')}
         <h1>${session.name}</h1>
         <p class="muted">${formatLocal(session.starts_at_utc, session.tz)}</p>
+        ${notice ? html`<div class="card"><p>${notice}</p></div>` : raw('')}
+        ${confirm
+          ? renderRefundConfirm(confirm, {
+              action: `/app/sessions/${sessionId}/bookings/${confirmId}/refund`,
+              keepHref: `/app/sessions/${sessionId}`,
+            })
+          : raw('')}
         ${reach ? renderCancelReach(reach) : raw('')}
         
         <h2>Booked (${bookings.rows.filter((b) => b.status === 'booked').length})</h2>
@@ -1368,6 +1406,7 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
                   <strong>${b.athlete_name}</strong> — 
                   ${b.status === 'booked' ? html`<span>Ready to mark</span>` : 
                     b.status === 'cancelled' ? html`<span class="muted">Cancelled</span>` :
+                    b.status === 'refunded' ? html`<span class="muted">Refunded</span>` :
                     html`<span class="${statusClass}">${b.status}</span>`}
                   ${b.status === 'booked' ? html`
                     <form method="post" action="/app/sessions/${sessionId}/bookings/${b.id}/attendance">
@@ -1376,6 +1415,7 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
                       <button type="submit">Mark attendance</button>
                     </form>
                   ` : raw('')}
+                  ${renderBookingPayment(b, refunds, refundable.get(b.id) ?? null, `/app/sessions/${sessionId}?refund=${b.id}#refund`)}
                 </li>`;
               })}
             </ul>`}
@@ -1389,6 +1429,102 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
     ),
   );
 });
+
+interface SessionBooking {
+  id: number;
+  athlete_name: string;
+  status: string;
+  manage_token: string;
+  payment_source: string | null;
+  gross_cents: number | null;
+  charge_id: string | null;
+  credit_id: number | null;
+}
+
+/** A paid booking's payment on screen 3: what was paid, and its refund,
+ * the Refund link, or why it cannot be refunded here. */
+function renderBookingPayment(
+  b: Pick<SessionBooking, 'payment_source' | 'gross_cents' | 'charge_id'>,
+  refunds: Map<string, RefundRow>,
+  check: Refundability | null,
+  refundHref: string,
+) {
+  if (!b.charge_id || (b.gross_cents ?? 0) <= 0) return raw('');
+  const paid = `Paid ${formatCoachDollars(b.gross_cents ?? 0)} · ${purchaseLabel(b.payment_source)}`;
+  const refund = refunds.get(b.charge_id);
+  if (refund && !canTryAgain(refund)) {
+    return html`<p class="muted">${paid} · ${refundLabel(refund)}</p>`;
+  }
+  if (check && !check.ok) {
+    return html`<p class="muted">${paid}${refund ? ` · ${refundLabel(refund)}` : ''}. ${describeRefundBlock(check.block)}</p>`;
+  }
+  return html`<p class="muted">${paid}${refund ? ` · ${refundLabel(refund)}` : ''}</p>
+    <a class="action ghost" href="${refundHref}">${refund ? 'Try the refund again' : 'Refund'}</a>`;
+}
+
+const PLAN_KIND: Record<string, string> = {
+  'drop-in': 'drop-in',
+  package: 'package',
+  pack: 'one-time pack',
+  'kept-payment': 'payment',
+};
+
+/** The step before a refund is sent (screens 3 and 7): what it refunds and
+ * what else it changes, or why this payment cannot be refunded here. */
+function renderRefundConfirm(check: Refundability, opts: { action: string; keepHref: string; hidden?: Record<string, string> }) {
+  if (!check.ok) {
+    return html`<div class="card" id="refund">
+      <p><strong>Refund</strong></p>
+      <p>${describeRefundBlock(check.block)}</p>
+      <a class="action ghost" href="${opts.keepHref}">Back</a>
+    </div>`;
+  }
+  const plan = check.plan;
+  const amount = plan.amountCents === null ? 'this payment' : formatCoachDollars(plan.amountCents);
+  const who = plan.athleteName ?? 'the parent';
+  const what =
+    plan.sessionName && plan.startsAtUtc && plan.tz
+      ? `${who} · ${PLAN_KIND[plan.kind]} · ${plan.sessionName}, ${formatLocal(plan.startsAtUtc, plan.tz)}`
+      : `${who} · ${PLAN_KIND[plan.kind]}`;
+  const effects: string[] = [];
+  if (plan.releasesBooking) effects.push(`${who}'s booking is cancelled and the spot is free again.`);
+  if (plan.creditsWithdrawn > 0) {
+    effects.push(`The ${plan.creditsWithdrawn} unused session ${plan.creditsWithdrawn === 1 ? 'credit' : 'credits'} it bought ${plan.creditsWithdrawn === 1 ? 'is' : 'are'} withdrawn.`);
+  }
+  if (plan.kind === 'kept-payment') effects.push('This payment booked nothing, so nothing else changes.');
+  effects.push(`The whole ${amount} goes back to the card it came from. Coachatron's ${APP_FEE_BPS / 100}% fee is returned with it; Stripe keeps its card processing fee.`);
+  effects.push('The parent is told by text if they chose texts, and by email if they gave one.');
+  return html`<div class="card" id="refund">
+    <p><strong>Refund ${amount}?</strong></p>
+    <p class="muted">${what}</p>
+    <ul class="muted">
+      ${effects.map((e) => html`<li>${e}</li>`)}
+    </ul>
+    <form method="post" action="${opts.action}">
+      ${Object.entries(opts.hidden ?? {}).map(([k, v]) => html`<input type="hidden" name="${k}" value="${v}" />`)}
+      <div class="btn-row">
+        <button type="submit" class="action danger">Confirm refund</button>
+        <a class="action ghost" href="${opts.keepHref}">Keep payment</a>
+      </div>
+    </form>
+  </div>`;
+}
+
+const REFUND_NOTICES: Record<string, string> = {
+  'refund-refunded': 'Refunded.',
+  'refund-pending': 'Refund sent. Stripe confirms it shortly.',
+  'refund-failed': 'The refund did not go through. See the payment below.',
+  'refund-unavailable': 'Payments did not answer. Try again in a minute: the refund will not be made twice.',
+  'refund-blocked': 'This payment cannot be refunded again here.',
+};
+
+function refundNotice(value: unknown): string | null {
+  return typeof value === 'string' && Object.hasOwn(REFUND_NOTICES, value) ? REFUND_NOTICES[value] : null;
+}
+
+function refundOutcomeNotice(outcome: RefundRequestOutcome): string {
+  return `refund-${outcome.kind}`;
+}
 
 const UNREACHED_REASON: Record<CancelReach['unreached'][number]['reason'], string> = {
   'no-texts': 'has not opted in to texts',
@@ -1414,6 +1550,27 @@ function renderCancelReach(reach: CancelReach) {
       : raw('')}
   </div>`;
 }
+
+coachRouter.post('/app/sessions/:id/bookings/:bookingId/refund', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coach = await findCoachById(db, res.locals.coachId as number);
+  const sessionId = Number(req.params.id);
+  const bookingId = Number(req.params.bookingId);
+  const session = coach ? await loadSessionForCoach(db, coach.id, sessionId) : null;
+  const inSession = session
+    ? await db.query<{ id: number }>('select id from booking where id = $1 and session_id = $2', [bookingId, sessionId])
+    : null;
+  if (!coach || !session || !inSession || inSession.rows.length === 0) {
+    res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
+    return;
+  }
+  const outcome = await requestRefund(db, coach, { bookingId });
+  if (outcome.kind === 'blocked') {
+    res.redirect(303, `/app/sessions/${sessionId}?refund=${bookingId}#refund`);
+    return;
+  }
+  res.redirect(303, `/app/sessions/${sessionId}?notice=${refundOutcomeNotice(outcome)}`);
+});
 
 coachRouter.post('/app/sessions/:id/bookings/:bookingId/attendance', requireAuth, async (req, res) => {
   const db = getDb();
@@ -1764,7 +1921,7 @@ function renderPaymentsCard(state: PaymentsState, notice: string | null, error: 
               <ul class="muted">
                 <li>You are the merchant. Payments settle to your own account; Coachatron never holds them.</li>
                 <li>Coachatron keeps ${feePercent} of each payment, on top of card processing.</li>
-                <li>Ask Coachatron to refund an athlete; Coachatron's fee is returned with the refund. A card dispute is charged to your payment account.</li>
+                <li>You refund a payment here or on its session; Coachatron's fee is returned with the refund. A card dispute is charged to your payment account.</li>
               </ul>
               <form method="post" action="/app/money/payments">
                 <label><input type="checkbox" name="agree" value="1" /> I accept the Coachatron marketplace terms (${SELLER_AGREEMENT_VERSION}).</label>
@@ -1778,29 +1935,115 @@ function renderPaymentsCard(state: PaymentsState, notice: string | null, error: 
     </div>`;
 }
 
-/** Payments that did not simply become a booking, for the coach to sort
- * out with the parent. */
-function renderPaymentAttention(items: AttentionItem[]) {
-  if (items.length === 0) return raw('');
+/** Payments that did not simply become a booking, and refunds that did not
+ * go through, for the coach to sort out with the parent. Each kept payment
+ * can be refunded with one tap (and a confirmation). */
+function renderPaymentAttention(items: AttentionItem[], refunds: Map<string, RefundRow>, needing: RefundItem[]) {
+  if (items.length === 0 && needing.length === 0) return raw('');
   return html`<h2>Payments to resolve</h2>
-    <p class="muted">These payments reached you but did not book as they stood. Contact the parent to sort each one out.</p>
-    ${items.map(
-      (item) => html`<div class="card payment-attention">
+    <p class="muted">These payments reached you but did not book as they stood, or a refund did not go through. Contact the parent to sort each one out, or refund it.</p>
+    ${items.map((item) => {
+      const refund = item.payment_ref ? refunds.get(item.payment_ref) : undefined;
+      const amount = item.amount_cents === null ? 'amount unknown' : formatCoachDollars(item.amount_cents);
+      return html`<div class="card payment-attention">
         <p><strong>${item.athlete_name ?? 'Unknown athlete'}</strong>${item.contact_phone ? html` · <a href="tel:${item.contact_phone}">${item.contact_phone}</a>` : raw('')}
-          · ${item.amount_cents === null ? 'amount unknown' : `$${(item.amount_cents / 100).toFixed(2)}`}</p>
+          · ${amount}</p>
         ${item.session_name && item.starts_at_utc && item.tz
           ? html`<p class="muted">${item.session_name} — ${formatLocal(item.starts_at_utc, item.tz)}</p>`
           : raw('')}
         <p>${describeAttention(item)}</p>
+        ${refund ? html`<p class="muted">${describeRefund(refund)}</p>` : raw('')}
+        ${item.payment_ref && (!refund || canTryAgain(refund))
+          ? html`<a class="action ghost" href="/app/money?refund=a${item.id}#refund">${refund ? 'Try the refund again' : `Refund ${amount}`}</a>`
+          : raw('')}
+      </div>`;
+    })}
+    ${needing.map(
+      (r) => html`<div class="card refund-attention">
+        <p><strong>${r.athlete_name ?? 'Unknown athlete'}</strong>${r.contact_phone ? html` · <a href="tel:${r.contact_phone}">${r.contact_phone}</a>` : raw('')}
+          · ${r.amount_cents === null ? 'amount unknown' : formatCoachDollars(r.amount_cents)}</p>
+        ${r.session_name && r.starts_at_utc && r.tz ? html`<p class="muted">${r.session_name} — ${formatLocal(r.starts_at_utc, r.tz)}</p>` : raw('')}
+        <p>${describeRefund(r)}</p>
+        ${canTryAgain(r) && r.booking_id !== null
+          ? html`<a class="action ghost" href="/app/money?refund=b${r.booking_id}#refund">Try the refund again</a>`
+          : raw('')}
       </div>`,
     )}`;
 }
 
-async function renderMoney(res: Response, coach: CoachRow, opts: { status?: number; notice?: string | null; error?: string | null } = {}) {
+const DISPUTE_STATE: Record<string, string> = { open: 'Open', won: 'Decided for you', lost: 'Decided for the cardholder' };
+
+/** Card disputes on the coach's payments, as Stripe reports them. */
+function renderDisputes(items: DisputeItem[]) {
+  if (items.length === 0) return raw('');
+  return html`<h2>Card disputes</h2>
+    <p class="muted">Stripe handles card disputes between a parent's bank and your payment account. Coachatron holds no funds and does not decide them.</p>
+    ${items.map(
+      (d) => html`<div class="card payment-dispute">
+        <p><strong>${d.athlete_name ?? 'Unknown athlete'}</strong>${d.contact_phone ? html` · <a href="tel:${d.contact_phone}">${d.contact_phone}</a>` : raw('')}
+          · ${d.amount_cents === null ? 'amount unknown' : formatCoachDollars(d.amount_cents)} · ${DISPUTE_STATE[d.state] ?? d.state}</p>
+        ${d.session_name && d.starts_at_utc && d.tz ? html`<p class="muted">${d.session_name} — ${formatLocal(d.starts_at_utc, d.tz)}</p>` : raw('')}
+        <p>${describeDispute(d)}</p>
+      </div>`,
+    )}`;
+}
+
+/** Refunds on their way or done, newest first. */
+function renderRefunds(items: RefundItem[]) {
+  if (items.length === 0) return raw('');
+  return html`<h2>Refunds</h2>
+    ${items.map(
+      (r) => html`<div class="card refund-item">
+        <p><strong>${r.athlete_name ?? 'Unknown athlete'}</strong> · ${r.amount_cents === null ? 'amount unknown' : formatCoachDollars(r.amount_cents)} · ${refundLabel(r)}</p>
+        ${r.session_name && r.starts_at_utc && r.tz ? html`<p class="muted">${r.session_name} — ${formatLocal(r.starts_at_utc, r.tz)}</p>` : raw('')}
+        <p class="muted">${describeRefund(r)}</p>
+      </div>`,
+    )}`;
+}
+
+/** The latest card payments that bought a booking, each with its Refund. */
+function renderRecentPayments(items: PaymentItem[], refunds: Map<string, RefundRow>, checks: Map<number, Refundability>) {
+  if (items.length === 0) return raw('');
+  return html`<h2>Recent payments</h2>
+    ${items.map(
+      (p) => html`<div class="card recent-payment">
+        <p><strong>${p.athlete_name}</strong> · ${formatCoachDollars(p.gross_cents)}</p>
+        <p class="muted">${p.session_name} — ${formatLocal(p.starts_at_utc, p.tz)}</p>
+        ${renderBookingPayment(p, refunds, checks.get(p.booking_id) ?? null, `/app/money?refund=b${p.booking_id}#refund`)}
+      </div>`,
+    )}`;
+}
+
+/** `b12` is booking 12's payment, `a5` the kept payment 5. */
+function parseRefundTarget(value: unknown): RefundTarget | null {
+  const match = typeof value === 'string' ? /^([ab])(\d{1,9})$/.exec(value) : null;
+  if (!match) return null;
+  const id = Number(match[2]);
+  return match[1] === 'b' ? { bookingId: id } : { attentionId: id };
+}
+
+async function renderMoney(
+  res: Response,
+  coach: CoachRow,
+  opts: { status?: number; notice?: string | null; error?: string | null; refund?: RefundTarget | null } = {},
+) {
   const db = getDb();
   const summary = await summarizeMoney(db, coach.id, new Date());
   const payments = await loadPaymentsState(db, coach);
   const attention = await listPaymentAttention(db, coach.id);
+  const refundList = await listRefunds(db, coach.id);
+  const disputes = await listDisputes(db, coach.id);
+  const recent = await listRecentPayments(db, coach.id);
+  const refunds = await refundsByPayment(db, [
+    ...attention.flatMap((a) => (a.payment_ref ? [a.payment_ref] : [])),
+    ...recent.map((p) => p.charge_id),
+  ]);
+  const checks = new Map<number, Refundability>();
+  for (const p of recent) checks.set(p.booking_id, await checkRefund(db, coach.id, { bookingId: p.booking_id }));
+  const attentionRefs = new Set(attention.flatMap((a) => (a.payment_ref ? [a.payment_ref] : [])));
+  const needing = refundList.filter((r) => needsAttention(r) && !attentionRefs.has(r.payment_ref));
+  const confirm = opts.refund ? await checkRefund(db, coach.id, opts.refund) : null;
+  const confirmTarget = opts.refund ? ('bookingId' in opts.refund ? `b${opts.refund.bookingId}` : `a${opts.refund.attentionId}`) : '';
 
   // Format dollars for display
   const formatDollars = (cents: number) => `$${(cents / 100).toFixed(2)}`;
@@ -1810,13 +2053,18 @@ async function renderMoney(res: Response, coach: CoachRow, opts: { status?: numb
       'Money',
       html`${coachNav('money')}
         <h1>Money</h1>
+        ${confirm ? renderRefundConfirm(confirm, { action: '/app/money/refund', keepHref: '/app/money', hidden: { target: confirmTarget } }) : raw('')}
         ${renderPaymentsCard(payments, opts.notice ?? null, opts.error ?? null)}
-        ${renderPaymentAttention(attention)}
+        ${renderPaymentAttention(attention, refunds, needing)}
+        ${renderDisputes(disputes)}
         ${renderPageLinkCard(coach, { main: 'none' })}
         <h2>This week</h2>
         <p class="money-figure">${formatDollars(summary.collectedThisWeekCents)}</p>
         <p class="muted">Collected (gross): ${formatDollars(summary.collectedThisWeekCents)}</p>
         <p class="muted"><strong>${summary.bookedThisWeekCount} sessions booked</strong> — Value: ${formatDollars(summary.bookedThisWeekCents)}</p>
+        ${summary.refundedThisWeekCount > 0
+          ? html`<p class="muted">Refunded: ${formatDollars(summary.refundedThisWeekCents)} (${summary.refundedThisWeekCount} ${summary.refundedThisWeekCount === 1 ? 'payment' : 'payments'}). Refunded bookings are not counted above.</p>`
+          : raw('')}
         <h2>Credits</h2>
         <div class="card">
           <p><strong>${summary.outstandingCreditCount} credits outstanding</strong></p>
@@ -1826,6 +2074,8 @@ async function renderMoney(res: Response, coach: CoachRow, opts: { status?: numb
           <p><strong>${summary.nextWeekCount} sessions projected</strong></p>
           <p class="muted">Value: ${formatDollars(summary.nextWeekCents)}</p>
         </div>
+        ${renderRecentPayments(recent, refunds, checks)}
+        ${renderRefunds(refundList.filter((r) => !needsAttention(r)))}
         <a class="action" href="/app/schedule">Back to schedule</a>
         <form method="post" action="/signout">
           <button type="submit" class="ghost">Sign out</button>
@@ -1841,7 +2091,31 @@ coachRouter.get('/app/money', requireAuth, async (req, res) => {
     return;
   }
   const returned = typeof req.query.seller === 'string' ? req.query.seller : '';
-  await renderMoney(res, coach, { notice: Object.hasOwn(RETURN_NOTICES, returned) ? RETURN_NOTICES[returned] : null });
+  await renderMoney(res, coach, {
+    notice: Object.hasOwn(RETURN_NOTICES, returned) ? RETURN_NOTICES[returned] : refundNotice(req.query.notice),
+    refund: parseRefundTarget(req.query.refund),
+  });
+});
+
+/** The confirmed refund of a booking's payment or of a kept payment. */
+coachRouter.post('/app/money/refund', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coach = await findCoachById(db, res.locals.coachId as number);
+  if (!coach) {
+    res.redirect(303, '/signin');
+    return;
+  }
+  const target = parseRefundTarget(field(req.body, 'target'));
+  if (!target) {
+    res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
+    return;
+  }
+  const outcome = await requestRefund(db, coach, target);
+  if (outcome.kind === 'blocked') {
+    res.redirect(303, `/app/money?refund=${field(req.body, 'target')}#refund`);
+    return;
+  }
+  res.redirect(303, `/app/money?notice=${refundOutcomeNotice(outcome)}`);
 });
 
 coachRouter.post('/app/money/payments', requireAuth, async (req, res) => {
