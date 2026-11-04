@@ -40,7 +40,14 @@ const RETIRED_PAYMENT_CLAIMS = [
 
 /** What the legal drafts said before plans became one-time packs and a
  * coach's cancel credited paid drop-ins. */
-const RETIRED_LEGAL_CLAIMS = [/monthly plans?/i, /Plan credits are meant to expire/, /nothing is returned automatically/, /gets nothing back\s+automatically/];
+const RETIRED_LEGAL_CLAIMS = [
+  /monthly plans?/i,
+  /Plan credits are meant to expire/,
+  /nothing is returned automatically/,
+  /gets nothing back\s+automatically/,
+  /credits returned when a coach\s+cancels, do not expire/,
+  /These credits do not\s+expire/,
+];
 
 function section(text: string, heading: string): string {
   const start = text.indexOf(heading);
@@ -151,6 +158,18 @@ test("docs say a coach's cancel gives every paid booking a credit, drop-ins incl
     assert.match(read(doc), /becomes\s+one\s+session\s+credit/, `${doc} says a paid drop-in becomes a credit`);
   }
   assert.match(section(read('SPEC.md'), '### 7.4 Coach gets paid'), /drop-in for it gets one session credit/);
+});
+
+test("docs say a package credit a coach's cancel returns keeps its package's expiry", () => {
+  // The cancel puts the credit back on the row it came from, expiry and all;
+  // only the credit a paid drop-in becomes is new, and it has none.
+  assert.match(read('src/domain/cancelSession.ts'), /update credit set remaining = remaining \+ 1 where id = \$1/);
+  assert.match(read('src/domain/cancelSession.ts'), /cancelledSessionCreditSource\(sessionId\), 1, null\)/);
+  for (const doc of ['docs/legal/marketplace-terms.md', 'docs/legal/parent-terms.md']) {
+    assert.match(read(doc), /package credit that comes back\s+keeps that package's\s+expiry/, `${doc} says a returned package credit keeps its expiry`);
+  }
+  assert.match(section(read('SPEC.md'), '### 7.4 Coach gets paid'), /keeps that credit's expiry/);
+  assert.match(read('README.md'), /keeping the expiry it had/);
 });
 
 test('docs say an inbound text is acted on only when the relay confirms Twilio sent it', () => {

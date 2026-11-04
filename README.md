@@ -208,11 +208,12 @@ public page does not ask the relay on every view.
   link, by text when they ticked the texts box and by email when they gave an
   address; the page they return to after paying shows the link too.
 - **A coach's cancel** returns a credit for every paid booking: a package or
-  pack credit comes back, and a paid drop-in becomes one session credit with
-  the coach, with no expiry. Each parent who chose texts is told; the session
-  screen shows who could not be reached. A payment that arrives for a session
-  the coach cancelled while the parent was paying becomes credit the same
-  way, and the parent is told by text or email.
+  pack credit comes back, keeping the expiry it had, and a paid drop-in
+  becomes one session credit with the coach, with no expiry. Each parent who
+  chose texts is told; the session screen shows who could not be reached. A
+  payment that arrives for a session the coach cancelled while the parent was
+  paying becomes credit the same way, and the parent is told by text or
+  email.
 
 ## Texting in
 

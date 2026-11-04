@@ -212,9 +212,10 @@ deadline we promise to pass it on by.]
 - **If you cancel a session,** Coachatron cancels its bookings, texts the
   parents who opted in to texts, and gives each paid booking a session credit
   with you: a package or pack credit comes back, and a booking paid by card
-  for that one session becomes one session credit. These credits do not
-  expire. The session screen shows which parents could not be texted, so you
-  can tell them yourself. If a parent's payment arrives after you cancelled
+  for that one session becomes one session credit, which does not expire. A
+  pack's credit does not expire either; a package credit that comes back
+  keeps that package's expiry, if you set one. The session screen shows
+  which parents could not be texted, so you can tell them yourself. If a parent's payment arrives after you cancelled
   the session, the whole payment becomes credit with you, the parent is told,
   and the Money screen lists it.
   [Attorney: today the credit is automatic and a card refund goes through

@@ -96,21 +96,25 @@ The page you return to after paying shows the link too.
 - Credits are for sessions only. They have no cash value and cannot be moved to
   another coach.
 - **Expiry.** A package's credits expire only if the coach set an expiry for
-  that package. A one-time pack's sessions, and credits returned when a coach
-  cancels, do not expire.
+  that package. A one-time pack's sessions do not expire. A credit that comes
+  back when a coach cancels keeps the expiry it had (section 4).
 
 [Attorney: the checkout page does not show a package's expiry yet. It must be
 shown before an expiring package is sold. Check state rules on prepaid
 services and expiring credits (some limit expiry or require cash back for
-unused value).]
+unused value). A package credit that comes back after its package's expiry
+has passed cannot be used; decide whether a coach's cancel should give a
+credit that does not expire instead.]
 
 ## 4. Cancelling
 
 **If the coach cancels a session,** your booking is cancelled, you get a text
 if you opted in to texts, and **you get a session credit with that coach** on
 your number: the credit you used comes back, and a session you paid for by
-card becomes one session credit. These credits do not expire. If you could
-not be texted, the coach is shown that you were not reached.
+card becomes one session credit. That session credit, and a one-time pack's
+credit, do not expire; a package credit that comes back keeps that package's
+expiry, if the coach set one. If you could not be texted, the coach is shown
+that you were not reached.
 
 **If the coach cancels while you are paying,** your whole payment becomes
 credit with that coach, and we tell you by text (if you opted in) or email
