@@ -13,6 +13,7 @@ import {
   getPackageForPayment,
   getPlanForPayment,
   grantBookingCredit,
+  passBookings,
   type BookingRow,
   type CreditGrant,
 } from '../domain/pricing.js';
@@ -99,13 +100,37 @@ interface PaidItem {
   expiresAt: Date | null;
 }
 
-async function paidItem(db: DbClient, coachId: number, session: PaidSession, sessionId: number, mode: PayMode, itemId: number | null): Promise<PaidItem | null> {
+/** What was bought, for a pass of `children` (SPEC.md §9.5): a drop-in is
+ * one charge of the price for each child; a package or pack must hold a
+ * session for each of them. */
+async function paidItem(
+  db: DbClient,
+  coachId: number,
+  session: PaidSession,
+  sessionId: number,
+  mode: PayMode,
+  itemId: number | null,
+  children: number,
+): Promise<PaidItem | null> {
+  const item = await priceItem(db, coachId, session, sessionId, mode, itemId, children);
+  return item && item.sessions >= children ? item : null;
+}
+
+async function priceItem(
+  db: DbClient,
+  coachId: number,
+  session: PaidSession,
+  sessionId: number,
+  mode: PayMode,
+  itemId: number | null,
+  children: number,
+): Promise<PaidItem | null> {
   if (mode === 'dropin') {
     return {
       mode,
       paymentSource: 'DropIn',
-      priceCents: session.price_cents,
-      sessions: 1,
+      priceCents: session.price_cents * children,
+      sessions: children,
       packageId: null,
       planId: null,
       source: cancelledSessionCreditSource(sessionId),
@@ -141,8 +166,8 @@ async function paidItem(db: DbClient, coachId: number, session: PaidSession, ses
   };
 }
 
-/** The credit left after this booking's own session (package or pack). */
-async function grantRemainder(db: DbClient, booking: BookingRow, coachId: number, item: PaidItem, paymentRef: string): Promise<void> {
+/** The credit left after this pass's own sessions (package or pack). */
+async function grantRemainder(db: DbClient, booking: BookingRow, coachId: number, item: PaidItem, paymentRef: string, children: number): Promise<void> {
   if (item.mode === 'dropin') return;
   if (item.planId !== null) await ensureSubscriptionRecord(db, item.planId, booking.contact_phone, paymentRef);
   const grant: CreditGrant = {
@@ -150,7 +175,7 @@ async function grantRemainder(db: DbClient, booking: BookingRow, coachId: number
     contactPhone: booking.contact_phone,
     packageId: item.packageId,
     source: item.source,
-    remaining: item.sessions - 1,
+    remaining: item.sessions - children,
     expiresAt: item.expiresAt,
   };
   await grantBookingCredit(db, booking.id, grant);
@@ -193,14 +218,18 @@ async function handlePaid(db: DbClient, event: StoreEvent, eventId: string): Pro
     return;
   }
   const who = { coachId: session.coach_id, booking };
-  const item = await paidItem(db, session.coach_id, session, booking.session_id, parsed.mode, parsed.itemId);
+  const pass = await passBookings(db, booking);
+  const children = Math.max(1, pass.length);
+  const item = await paidItem(db, session.coach_id, session, booking.session_id, parsed.mode, parsed.itemId, children);
 
   /** The booking is no longer pending. When this payment is the one on it
    * (another event for the same payment, perhaps handled at the same
    * moment), finish what that began; otherwise it is a second payment. */
   const settled = async (current: BookingRow | null): Promise<void> => {
     if (current && current.charge_id === paymentRef) {
-      if (current.status === 'booked' && item && current.credit_id === null) await grantRemainder(db, current, session.coach_id, item, paymentRef);
+      if (current.status === 'booked' && item && current.credit_id === null) {
+        await grantRemainder(db, current, session.coach_id, item, paymentRef, children);
+      }
       return;
     }
     await attention(current?.status === 'cancelled' ? 'booking_cancelled' : 'already_booked', who);
@@ -256,12 +285,16 @@ async function handlePaid(db: DbClient, event: StoreEvent, eventId: string): Pro
   }
 
   // Books while the hold stands, or after it lapsed while there is still room.
-  const result = await bookPendingBooking(db, booking, session.capacity, {
-    paymentSource: item.paymentSource,
-    creditId: null,
-    chargeId: paymentRef,
-    grossCents: amount,
-  });
+  // A drop-in for several children is one payment, recorded as each
+  // child's share, so each child's cancel or no-show is one session.
+  const rows = item.mode === 'dropin' ? pass.map(() => ({ creditId: null, grossCents: session.price_cents })) : undefined;
+  const result = await bookPendingBooking(
+    db,
+    booking,
+    session.capacity,
+    { paymentSource: item.paymentSource, creditId: null, chargeId: paymentRef, grossCents: amount },
+    rows,
+  );
   if (result === 'closed') {
     // Cancelled since it was read above.
     await creditInstead();
@@ -275,8 +308,8 @@ async function handlePaid(db: DbClient, event: StoreEvent, eventId: string): Pro
     await attention('session_full', who);
     return;
   }
-  await grantRemainder(db, booking, session.coach_id, item, paymentRef);
-  await sendBookingConfirmation(db, booking.id);
+  await grantRemainder(db, booking, session.coach_id, item, paymentRef, children);
+  for (const child of pass) await sendBookingConfirmation(db, child.id);
   void checkOverflow(db, booking.session_id);
 }
 

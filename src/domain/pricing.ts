@@ -44,6 +44,7 @@ export interface BookingRow {
   hold_expires_at: string | null;
   phone_verified_at: string | null;
   status: string;
+  pass_id: string | null;
 }
 
 export async function getPackagesForCoach(db: DbClient, coachId: number): Promise<PackageRow[]> {
@@ -196,6 +197,12 @@ export function newBookingToken(): string {
   return crypto.randomBytes(16).toString('base64url');
 }
 
+/** SQL for "this booking is in the same pass as booking `param`" (that
+ * booking itself included). `b` is the booking alias. */
+export function inPassSql(b: string, param: string): string {
+  return `(${b}.id = ${param} or (${b}.pass_id is not null and ${b}.pass_id = (select p.pass_id from booking p where p.id = ${param})))`;
+}
+
 /** SQL for "this booking takes a spot": it was sold and not cancelled, or
  * it is pending and its hold has not run out. `b` is the booking alias. */
 export function takesSpotSql(b: string): string {
@@ -216,6 +223,8 @@ export interface PendingBooking {
   id: number;
   checkoutToken: string;
   manageToken: string;
+  /** Every booking in the pass, the first one (`id`) included. */
+  bookingIds: number[];
 }
 
 /** Locks a session's row until the transaction ends and returns its status.
@@ -249,8 +258,11 @@ export async function createPendingBooking(
     contactPhone: string;
     contactEmail: string | null;
     phoneVerified?: boolean;
+    /** More children in the same booking pass (SPEC.md §9.5). */
+    moreAthleteNames?: string[];
   },
 ): Promise<PendingBooking | null> {
+  const names = [args.athleteName, ...(args.moreAthleteNames ?? [])];
   return inTransaction(db, async (tx) => {
     if ((await lockSession(tx, args.sessionId)) !== 'scheduled') return null;
     const others = await tx.query<{ count: string }>(
@@ -266,36 +278,44 @@ export async function createPendingBooking(
          and w.session_id = (select coalesce(s.overflow_of, s.id) from session s where s.id = $1)`,
       [args.sessionId, args.contactPhone],
     );
-    if (Number(others.rows[0]?.count ?? '0') + Number(kept.rows[0]?.count ?? '0') >= args.capacity) return null;
+    if (Number(others.rows[0]?.count ?? '0') + Number(kept.rows[0]?.count ?? '0') + names.length > args.capacity) return null;
     await tx.query(
       `update booking set hold_expires_at = now()
        where session_id = $1 and contact_phone = $2 and status = 'pending' and hold_expires_at > now()`,
       [args.sessionId, args.contactPhone],
     );
-    const manageToken = newBookingToken();
+    // One checkout for the pass, through its first booking; each child
+    // gets their own manage link.
+    const passId = newBookingToken();
     const checkoutToken = newBookingToken();
-    const result = await tx.query<{ id: number }>(
-      `insert into booking (session_id, athlete_name, contact_phone, contact_email, manage_token, checkout_token,
-                            hold_expires_at, phone_verified_at, status)
-       values ($1, $2, $3, $4, $5, $6, now() + make_interval(mins => $7::int), case when $8::boolean then now() end, 'pending')
-       returning id`,
-      [
-        args.sessionId,
-        args.athleteName,
-        args.contactPhone,
-        args.contactEmail,
-        manageToken,
-        checkoutToken,
-        BOOKING_HOLD_MINUTES,
-        args.phoneVerified === true,
-      ],
-    );
-    return { id: result.rows[0].id, checkoutToken, manageToken };
+    const bookings: Array<{ id: number; manageToken: string }> = [];
+    for (const [i, name] of names.entries()) {
+      const manageToken = newBookingToken();
+      const result = await tx.query<{ id: number }>(
+        `insert into booking (session_id, athlete_name, contact_phone, contact_email, manage_token, checkout_token,
+                              hold_expires_at, phone_verified_at, status, pass_id)
+         values ($1, $2, $3, $4, $5, $6, now() + make_interval(mins => $7::int), case when $8::boolean then now() end, 'pending', $9)
+         returning id`,
+        [
+          args.sessionId,
+          name,
+          args.contactPhone,
+          args.contactEmail,
+          manageToken,
+          i === 0 ? checkoutToken : null,
+          BOOKING_HOLD_MINUTES,
+          args.phoneVerified === true,
+          passId,
+        ],
+      );
+      bookings.push({ id: result.rows[0].id, manageToken });
+    }
+    return { id: bookings[0].id, checkoutToken, manageToken: bookings[0].manageToken, bookingIds: bookings.map((b) => b.id) };
   });
 }
 
 const BOOKING_COLUMNS = `id, session_id, athlete_name, contact_phone, contact_email, payment_source, credit_id, charge_id, gross_cents,
-  manage_token, checkout_token, hold_expires_at, phone_verified_at, status`;
+  manage_token, checkout_token, hold_expires_at, phone_verified_at, status, pass_id`;
 
 export async function getBooking(db: DbClient, bookingId: number): Promise<BookingRow | null> {
   const result = await db.query<BookingRow>(`select ${BOOKING_COLUMNS} from booking where id = $1`, [bookingId]);
@@ -312,25 +332,36 @@ export async function getBookingByCheckoutToken(db: DbClient, token: string): Pr
 
 export type HoldResult = 'held' | 'full' | 'closed' | 'not_pending';
 
-/** Keeps a pending booking's spot for the parent who is about to pay: the
- * hold runs BOOKING_HOLD_MINUTES from now, so a parent who picks a way to
- * pay near the end of their hold still has time to pay. A lapsed hold is
- * renewed only while the session still has room. */
+/** Keeps a pending booking's spots (one per child in its pass) for the
+ * parent who is about to pay: the holds run BOOKING_HOLD_MINUTES from now,
+ * so a parent who picks a way to pay near the end of their hold still has
+ * time to pay. Lapsed holds are renewed only while the session still has
+ * room for every child. */
 export async function renewHold(db: DbClient, booking: Pick<BookingRow, 'id' | 'session_id'>, capacity: number): Promise<HoldResult> {
   return inTransaction(db, async (tx) => {
     if ((await lockSession(tx, booking.session_id)) !== 'scheduled') {
       return (await isPending(tx, booking.id)) ? 'closed' : 'not_pending';
     }
-    const result = await tx.query<{ id: number }>(
-      `update booking set hold_expires_at = now() + make_interval(mins => $3::int)
-       where id = $1 and status = 'pending'
-         and (hold_expires_at > now()
-              or (select count(*) from booking o where o.session_id = $2 and o.id <> $1 and ${takesSpotSql('o')}) < $4)
-       returning id`,
-      [booking.id, booking.session_id, BOOKING_HOLD_MINUTES, capacity],
+    const pass = await tx.query<{ id: number; live: boolean }>(
+      `select b.id, coalesce(b.hold_expires_at > now(), false) as live from booking b
+       where ${inPassSql('b', '$1')} and b.status = 'pending'`,
+      [booking.id],
     );
-    if (result.rows.length === 1) return 'held';
-    return (await isPending(tx, booking.id)) ? 'full' : 'not_pending';
+    if (pass.rows.length === 0) return 'not_pending';
+    if (!pass.rows.every((r) => r.live)) {
+      const others = await tx.query<{ n: string }>(
+        `select count(*)::text as n from booking o
+         where o.session_id = $2 and ${takesSpotSql('o')} and not ${inPassSql('o', '$1')}`,
+        [booking.id, booking.session_id],
+      );
+      if (Number(others.rows[0]?.n ?? '0') + pass.rows.length > capacity) return 'full';
+    }
+    await tx.query(
+      `update booking b set hold_expires_at = now() + make_interval(mins => $2::int)
+       where ${inPassSql('b', '$1')} and b.status = 'pending'`,
+      [booking.id, BOOKING_HOLD_MINUTES],
+    );
+    return 'held';
   });
 }
 
@@ -341,39 +372,62 @@ async function isPending(db: DbClient, bookingId: number): Promise<boolean> {
 
 export type BookResult = 'booked' | 'full' | 'closed' | 'not_pending';
 
-/** Flips a pending booking to booked, under the session's lock. It books
- * while the session is still scheduled and the booking still holds its
- * spot, or, once the hold has lapsed, while the session still has room.
- * A phone holds one spot per session, so a newer unpaid hold by the same
- * phone does not stand in the way: this booking takes that spot and the
- * unpaid hold ends. 'closed' when the session was cancelled, 'full' when
- * there is no room, 'not_pending' when the booking was already settled. */
+/** How one child's booking was paid, when the children of a pass differ:
+ * each its own credit, or each its own share of a drop-in payment. */
+export interface PassRowPayment {
+  creditId: number | null;
+  grossCents: number | null;
+}
+
+/** Flips a pending booking, with every child in its pass, to booked, under
+ * the session's lock. It books while the session is still scheduled and the
+ * pass still holds its spots, or, once a hold has lapsed, while the session
+ * still has room for every child. A phone holds one pass per session, so a
+ * newer unpaid hold by the same phone does not stand in the way: this pass
+ * takes those spots and the unpaid hold ends. 'closed' when the session was
+ * cancelled, 'full' when there is no room, 'not_pending' when the booking
+ * was already settled. Without `rows`, the first booking gets the credit and
+ * the payment, and the others the same credit and no payment. */
 export async function bookPendingBooking(
   db: DbClient,
   booking: Pick<BookingRow, 'id' | 'session_id'>,
   capacity: number,
   fields: { paymentSource: string; creditId: number | null; chargeId: string | null; grossCents: number | null },
+  rows?: PassRowPayment[],
 ): Promise<BookResult> {
   return inTransaction(db, async (tx) => {
     if ((await lockSession(tx, booking.session_id)) !== 'scheduled') {
       return (await isPending(tx, booking.id)) ? 'closed' : 'not_pending';
     }
-    const result = await tx.query<{ contact_phone: string }>(
-      `update booking b
-       set status = 'booked', payment_source = $3, credit_id = $4, charge_id = $5, gross_cents = $6
-       where b.id = $1 and b.status = 'pending'
-         and (b.hold_expires_at > now()
-              or (select count(*) from booking o
-                  where o.session_id = $2 and o.id <> $1 and ${takesSpotSql('o')}
-                    and not (o.status = 'pending' and o.contact_phone = b.contact_phone)) < $7)
-       returning b.contact_phone`,
-      [booking.id, booking.session_id, fields.paymentSource, fields.creditId, fields.chargeId, fields.grossCents, capacity],
+    const pass = await tx.query<{ id: number; live: boolean; contact_phone: string }>(
+      `select b.id, coalesce(b.hold_expires_at > now(), false) as live, b.contact_phone from booking b
+       where ${inPassSql('b', '$1')} and b.status = 'pending'
+       order by b.id`,
+      [booking.id],
     );
-    const phone = result.rows[0]?.contact_phone;
-    if (phone === undefined) return (await isPending(tx, booking.id)) ? 'full' : 'not_pending';
+    if (pass.rows.length === 0) return 'not_pending';
+    const phone = pass.rows[0].contact_phone;
+    if (!pass.rows.every((r) => r.live)) {
+      const others = await tx.query<{ n: string }>(
+        `select count(*)::text as n from booking o
+         where o.session_id = $2 and ${takesSpotSql('o')} and not ${inPassSql('o', '$1')}
+           and not (o.status = 'pending' and o.contact_phone = $3)`,
+        [booking.id, booking.session_id, phone],
+      );
+      if (Number(others.rows[0]?.n ?? '0') + pass.rows.length > capacity) return 'full';
+    }
+    for (const [i, row] of pass.rows.entries()) {
+      const pay = rows?.[i] ?? { creditId: fields.creditId, grossCents: i === 0 ? fields.grossCents : null };
+      await tx.query(
+        `update booking set status = 'booked', payment_source = $2, credit_id = $3, charge_id = $4, gross_cents = $5
+         where id = $1 and status = 'pending'`,
+        [row.id, fields.paymentSource, pay.creditId, fields.chargeId, pay.grossCents],
+      );
+    }
     await tx.query(
-      `update booking set hold_expires_at = now()
-       where session_id = $2 and contact_phone = $3 and status = 'pending' and id <> $1 and hold_expires_at > now()
+      `update booking b set hold_expires_at = now()
+       where b.session_id = $2 and b.contact_phone = $3 and b.status = 'pending' and not ${inPassSql('b', '$1')}
+         and b.hold_expires_at > now()
          and (select count(*) from booking o where o.session_id = $2 and ${takesSpotSql('o')}) > $4`,
       [booking.id, booking.session_id, phone, capacity],
     );
@@ -406,7 +460,8 @@ export async function grantBookingCredit(db: DbClient, bookingId: number, grant:
     const claim = await tx.query<{ id: number }>('select id from booking where id = $1 and credit_id is null for update', [bookingId]);
     if (claim.rows.length === 0) return null;
     const creditId = await createCredit(tx, grant.coachId, grant.contactPhone, grant.packageId, grant.source, grant.remaining, grant.expiresAt);
-    await tx.query('update booking set credit_id = $2 where id = $1', [bookingId, creditId]);
+    // Every child the purchase booked draws from it, so a cancel gives back to it.
+    await tx.query(`update booking b set credit_id = $2 where ${inPassSql('b', '$1')} and b.credit_id is null`, [bookingId, creditId]);
     return creditId;
   });
 }
@@ -430,6 +485,13 @@ export async function creditCancelledBooking(
       `update booking set status = 'cancelled', payment_source = $2, charge_id = $3, gross_cents = $4, credit_id = $5
        where id = $1`,
       [bookingId, payment.paymentSource, payment.chargeId, payment.grossCents, creditId],
+    );
+    // The other children in the pass are closed the same way; the payment
+    // is recorded once, on the first booking.
+    await tx.query(
+      `update booking b set status = 'cancelled', payment_source = $2, charge_id = $3, credit_id = $4
+       where ${inPassSql('b', '$1')} and b.id <> $1 and b.status = 'pending'`,
+      [bookingId, payment.paymentSource, payment.chargeId, creditId],
     );
     return creditId;
   });
@@ -477,4 +539,41 @@ export async function restoreCredit(db: DbClient, creditId: number): Promise<boo
     [creditId],
   );
   return result.rows.length === 1;
+}
+
+/** Every usable credit this phone holds with the coach, across packages
+ * and packs. A credit held for a refund is not usable. */
+export async function getCreditTotal(db: DbClient, coachId: number, contactPhone: string): Promise<number> {
+  const result = await db.query<{ n: string }>(
+    `select coalesce(sum(remaining), 0)::text as n from credit
+     where coach_id = $1 and contact_phone = $2 and remaining > 0 and (expires_at is null or expires_at > now())
+       and ${NOT_HELD_FOR_REFUND}`,
+    [coachId, contactPhone],
+  );
+  return Number(result.rows[0]?.n ?? '0');
+}
+
+/** Takes one credit per child, oldest-expiring first, possibly from several
+ * credits. All or none: when there are too few, any taken are put back and
+ * null is returned. Each id is the credit one child's booking used. */
+export async function takeCredits(db: DbClient, coachId: number, contactPhone: string, count: number): Promise<number[] | null> {
+  const taken: number[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const credit = await getCreditBalance(db, coachId, contactPhone);
+    if (!credit || !(await decrementCredit(db, credit.id))) {
+      for (const id of taken) await restoreCredit(db, id);
+      return null;
+    }
+    taken.push(credit.id);
+  }
+  return taken;
+}
+
+/** The bookings in one booking pass, in the order they were added; a
+ * booking from before passes is a pass of one. */
+export async function passBookings(db: DbClient, booking: Pick<BookingRow, 'id'>): Promise<BookingRow[]> {
+  const result = await db.query<BookingRow>(`select ${BOOKING_COLUMNS} from booking where ${inPassSql('booking', '$1')} order by id`, [
+    booking.id,
+  ]);
+  return result.rows;
 }

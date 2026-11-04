@@ -20,15 +20,16 @@ import {
   getPackageById,
   getPlansForCoach,
   getPlanById,
-  getCreditBalance,
   coachHasOpenCredits,
-  decrementCredit,
   createPendingBooking,
   getBookingByCheckoutToken,
   bookPendingBooking,
   renewHold,
   restoreCredit,
   takesSpotSql,
+  getCreditTotal,
+  passBookings,
+  takeCredits,
   markPhoneVerified,
   type BookingRow,
 } from '../domain/pricing.js';
@@ -57,7 +58,7 @@ import { canText, sendText, type SendOutcome } from '../domain/outbound.js';
 import { paymentsOpen } from '../domain/payments.js';
 import { deliverableEmail, sendBookingConfirmation } from '../domain/bookingMessages.js';
 import { offerOpenSpots } from '../domain/waitlist.js';
-import { CREDIT_WITHDRAWN_SQL, cancelByParent, cancelCutoff, cancelTerms } from '../domain/policy.js';
+import { CREDIT_WITHDRAWN_SQL, cancelByParent, cancelCutoff, cancelTerms, getBookingPolicy, MAX_CHILDREN_PER_BOOKING } from '../domain/policy.js';
 import { hasPaymentHeldForCoach } from '../domain/paymentAttention.js';
 import {
   BOOKING_HOLD_MINUTES,
@@ -165,14 +166,16 @@ function renderSessionStarted(coach: CoachRow, session: SessionForBooking) {
 function renderSessionFull(
   coach: CoachRow,
   session: SessionForBooking,
-  values: { athleteName: string; rawPhone: string; contactEmail: string | null },
+  values: { athleteName: string; rawPhone: string; contactEmail: string | null; moreNames?: string[] },
 ) {
+  const more = values.moreNames ?? [];
   return page(
     'Session full',
-    html`<h1>That session just filled up</h1>
-      <p class="muted">Someone booked the last spot, but you can wait for one to open. When one does, we hold it for you for ${BOOKING_HOLD_MINUTES} minutes and send you a link to book it.</p>
+    html`<h1>${more.length > 0 ? `Not enough spots for ${more.length + 1} children` : 'That session just filled up'}</h1>
+      <p class="muted">${more.length > 0 ? 'There are not enough spots left' : 'Someone booked the last spot'}, but you can wait for one to open. When one does, we hold it for you for ${BOOKING_HOLD_MINUTES} minutes and send you a link to book it.</p>
       <form method="post" action="/c/${coach.handle}/sessions/${session.id}/waitlist">
         <input type="hidden" name="athlete_name" value="${values.athleteName}" />
+        ${more.map((name, i) => html`<input type="hidden" name="athlete_name_${i + 2}" value="${name}" />`)}
         <input type="hidden" name="contact_phone" value="${values.rawPhone}" />
         ${smsConsentCheckbox()}
         <label for="waitlist_email">Your email (optional), to hear by email instead</label>
@@ -186,6 +189,23 @@ function renderSessionFull(
 function field(body: unknown, key: string): string {
   const value = (body as Record<string, unknown> | undefined)?.[key];
   return typeof value === 'string' ? value.trim() : '';
+}
+
+/** The children named on a booking or waitlist form: athlete_name, then
+ * athlete_name_2, athlete_name_3, and so on, blanks skipped. */
+function athleteNames(body: unknown): string[] {
+  const names = [field(body, 'athlete_name')];
+  for (let i = 2; i <= MAX_CHILDREN_PER_BOOKING + 1; i += 1) names.push(field(body, `athlete_name_${i}`));
+  return names.filter((n) => n.length > 0);
+}
+
+/** "Mia", "Mia and Leo", "Mia, Leo and Sam". */
+function namesList(names: string[]): string {
+  return names.length <= 1 ? (names[0] ?? '') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
+
+function spotsWord(n: number): string {
+  return `${n} ${n === 1 ? 'spot' : 'spots'}`;
 }
 
 function smsConsentChecked(body: unknown): boolean {
@@ -440,19 +460,25 @@ publicRouter.get('/c/:handle/sessions/:sessionId/book', async (req, res) => {
       res.status(200).send(bookingOpensSoon(coach));
       return;
     }
-    res.status(200).send(renderBookingForm(coach, session, values, undefined, { creditsOnly: true }));
+    res.status(200).send(renderBookingForm(coach, session, values, undefined, { creditsOnly: true, children: await childrenAllowed(db, coach) }));
     return;
   }
-  res.status(200).send(renderBookingForm(coach, session, values));
+  res.status(200).send(renderBookingForm(coach, session, values, undefined, { children: await childrenAllowed(db, coach) }));
 });
+
+async function childrenAllowed(db: DbClient, coach: CoachRow): Promise<number> {
+  return (await getBookingPolicy(db, coach.id)).childrenPerBooking;
+}
 
 function renderBookingForm(
   coach: CoachRow,
   session: SessionForBooking,
-  values: { athlete_name?: string; contact_phone?: string; contact_email?: string; from?: string },
+  values: { athlete_name?: string; contact_phone?: string; contact_email?: string; from?: string; more?: string[] },
   error?: string,
-  opts: { creditsOnly?: boolean } = {},
+  opts: { creditsOnly?: boolean; children?: number } = {},
 ) {
+  const children = opts.children ?? 1;
+  const extra = Array.from({ length: Math.max(0, children - 1) }, (_, i) => i + 2);
   return page(
     'Book a session',
     html`<h1>${session.name}</h1>
@@ -464,6 +490,16 @@ function renderBookingForm(
         ${values.from ? html`<input type="hidden" name="from" value="${values.from}" />` : raw('')}
         <label for="athlete_name">Athlete name</label>
         <input id="athlete_name" name="athlete_name" value="${values.athlete_name ?? ''}" required />
+        ${extra.length > 0
+          ? html`<details class="more-children"${(values.more ?? []).length > 0 ? raw(' open') : raw('')}>
+              <summary>Booking for more than one child? Up to ${children} at once</summary>
+              <p class="muted">Each child takes a spot and is paid for separately: one credit, or one drop-in each.</p>
+              ${extra.map(
+                (n) => html`<label for="athlete_name_${n}">Child ${n} (optional)</label>
+                  <input id="athlete_name_${n}" name="athlete_name_${n}" value="${values.more?.[n - 2] ?? ''}" />`,
+              )}
+            </details>`
+          : raw('')}
         <label for="contact_phone">Your phone</label>
         <input id="contact_phone" name="contact_phone" type="tel" value="${values.contact_phone ?? ''}" required />
         ${smsConsentCheckbox()}
@@ -504,21 +540,34 @@ publicRouter.post('/c/:handle/sessions/:sessionId/book', async (req, res) => {
   }
 
   const athleteName = field(req.body, 'athlete_name');
+  const moreNames = athleteNames(req.body).slice(athleteName ? 1 : 0);
   const rawPhone = field(req.body, 'contact_phone');
   const contactPhone = normalizePhone(rawPhone);
   const contactEmail = field(req.body, 'contact_email') || null;
+  const children = await childrenAllowed(db, coach);
+  const typed = {
+    athlete_name: athleteName,
+    contact_phone: rawPhone,
+    contact_email: contactEmail ?? undefined,
+    from: fromToken(field(req.body, 'from')) ?? undefined,
+    more: moreNames,
+  };
 
   if (!athleteName || !contactPhone) {
     res
       .status(422)
+      .send(renderBookingForm(coach, session, typed, 'Enter the athlete’s name and a valid phone number.', { creditsOnly, children }));
+    return;
+  }
+  // SPEC.md §9.5: one pass adds up to the coach's limit of children.
+  if (moreNames.length + 1 > children) {
+    res
+      .status(422)
       .send(
-        renderBookingForm(
-          coach,
-          session,
-          { athlete_name: athleteName, contact_phone: rawPhone, contact_email: contactEmail ?? undefined, from: fromToken(field(req.body, 'from')) ?? undefined },
-          'Enter the athlete’s name and a valid phone number.',
-          { creditsOnly },
-        ),
+        renderBookingForm(coach, session, typed, `You can book up to ${children} ${children === 1 ? 'child' : 'children'} at once.`, {
+          creditsOnly,
+          children,
+        }),
       );
     return;
   }
@@ -528,13 +577,10 @@ publicRouter.post('/c/:handle/sessions/:sessionId/book', async (req, res) => {
     res
       .status(429)
       .send(
-        renderBookingForm(
-          coach,
-          session,
-          { athlete_name: athleteName, contact_phone: rawPhone, contact_email: contactEmail ?? undefined, from: fromToken(field(req.body, 'from')) ?? undefined },
-          'Too many bookings started from here for now. Please try again later.',
-          { creditsOnly },
-        ),
+        renderBookingForm(coach, session, typed, 'Too many bookings started from here for now. Please try again later.', {
+          creditsOnly,
+          children,
+        }),
       );
     return;
   }
@@ -559,9 +605,10 @@ publicRouter.post('/c/:handle/sessions/:sessionId/book', async (req, res) => {
     contactPhone,
     contactEmail,
     phoneVerified,
+    moreAthleteNames: moreNames,
   });
   if (!pending) {
-    res.status(409).send(renderSessionFull(coach, session, { athleteName, rawPhone, contactEmail }));
+    res.status(409).send(renderSessionFull(coach, session, { athleteName, rawPhone, contactEmail, moreNames }));
     return;
   }
   res.redirect(303, `/c/${coach.handle}/checkout/${pending.checkoutToken}`);
@@ -585,6 +632,7 @@ publicRouter.post('/c/:handle/sessions/:sessionId/waitlist', async (req, res) =>
   }
 
   const athleteName = field(req.body, 'athlete_name');
+  const names = athleteNames(req.body).slice(0, await childrenAllowed(db, coach));
   const contactPhone = normalizePhone(field(req.body, 'contact_phone'));
   const contactEmail = field(req.body, 'contact_email') || null;
   if (!athleteName || !contactPhone) {
@@ -612,12 +660,15 @@ publicRouter.post('/c/:handle/sessions/:sessionId/waitlist', async (req, res) =>
 
   // A second group's waitlist is the full session's: one line, in order.
   const poolId = session.overflow_of ?? session.id;
-  await db.query('insert into waitlist (session_id, contact_phone, athlete_name, contact_email) values ($1, $2, $3, $4)', [
-    poolId,
-    contactPhone,
-    athleteName,
-    contactEmail,
-  ]);
+  // One place in line per child, in the order they were named.
+  for (const name of names) {
+    await db.query('insert into waitlist (session_id, contact_phone, athlete_name, contact_email) values ($1, $2, $3, $4)', [
+      poolId,
+      contactPhone,
+      name,
+      contactEmail,
+    ]);
+  }
 
   await checkOverflow(db, poolId);
   // A spot may already be free (a hold ran out): it goes to the line now.
@@ -647,14 +698,17 @@ async function loadCheckoutContext(db: DbClient, coach: CoachRow, token: string)
   if (!booking || !booking.checkout_token) return null;
   const session = await loadSessionForCoach(db, coach, booking.session_id, { anyStatus: true });
   if (!session) return null;
-  return { booking, session };
+  // Every child in the pass is paid for here, through its first booking.
+  const pass = await passBookings(db, booking);
+  return { booking, session, pass: pass.length > 0 ? pass : [booking] };
 }
 
 /** What the checkout screen says about session credits. Credits belong to a
  * proven phone: until the parent proves it, the screen offers a texted code
  * and says nothing about whether this number has any. */
 type CreditState =
-  | { kind: 'available'; remaining: number }
+  | { kind: 'available'; remaining: number; needed: number }
+  | { kind: 'too-few'; remaining: number; needed: number }
   | { kind: 'none-on-number' }
   | { kind: 'offer-code'; masked: string }
   | { kind: 'code-sent'; masked: string }
@@ -676,15 +730,23 @@ async function loadCheckoutOptions(
   db: DbClient,
   coach: CoachRow,
   booking: BookingRow,
-  opts: { codeSent?: boolean } = {},
+  opts: { codeSent?: boolean; children?: number } = {},
 ): Promise<CheckoutOptions> {
-  const packages = await getPackagesForCoach(db, coach.id);
-  const plans = await getPlansForCoach(db, coach.id);
+  // Each child uses one session, so only a package or pack that covers
+  // them all is offered.
+  const needed = opts.children ?? 1;
+  const packages = (await getPackagesForCoach(db, coach.id)).filter((p) => p.credits >= needed);
+  const plans = (await getPlansForCoach(db, coach.id)).filter((p) => p.credits_per_month >= needed);
   const phone = booking.contact_phone;
   let credit: CreditState = { kind: 'hidden' };
   if (booking.phone_verified_at) {
-    const balance = await getCreditBalance(db, coach.id, phone);
-    credit = balance ? { kind: 'available', remaining: balance.remaining } : { kind: 'none-on-number' };
+    const remaining = await getCreditTotal(db, coach.id, phone);
+    credit =
+      remaining === 0
+        ? { kind: 'none-on-number' }
+        : remaining >= needed
+          ? { kind: 'available', remaining, needed }
+          : { kind: 'too-few', remaining, needed };
   } else if (canText(phone) && (await coachHasOpenCredits(db, coach.id))) {
     // Whether any parent holds credits with this coach is the coach's fact,
     // not this number's, so offering a code gives nothing away.
@@ -706,7 +768,7 @@ publicRouter.get('/c/:handle/checkout/:token', async (req, res) => {
     return;
   }
   if (ctx.booking.status !== 'pending') {
-    res.status(200).send(renderAlreadyBooked(coach, ctx.session, ctx.booking));
+    res.status(200).send(renderAlreadyBooked(coach, ctx.session, ctx.booking, ctx.pass));
     return;
   }
   if (await hasPaymentHeldForCoach(db, ctx.booking.id)) {
@@ -725,7 +787,7 @@ publicRouter.get('/c/:handle/checkout/:token', async (req, res) => {
     return;
   }
 
-  const options = await loadCheckoutOptions(db, coach, ctx.booking);
+  const options = await loadCheckoutOptions(db, coach, ctx.booking, { children: ctx.pass.length });
   // While the coach cannot take payments, the page is for session credits
   // only; with no credit to offer it says booking opens soon.
   if (!options.canPay && needsPayment(ctx.session) && (options.credit.kind === 'hidden' || options.credit.kind === 'none-on-number')) {
@@ -733,7 +795,7 @@ publicRouter.get('/c/:handle/checkout/:token', async (req, res) => {
     return;
   }
 
-  res.status(200).send(renderCheckout(coach, ctx.session, req.params.token, options));
+  res.status(200).send(renderCheckout(coach, ctx.session, req.params.token, options, undefined, ctx.pass));
 });
 
 /** The manage link on the page a parent lands on, so a parent who gets no
@@ -743,13 +805,23 @@ function manageLinkBlock(booking: Pick<BookingRow, 'manage_token'>, style: 'acti
     <a class="${style}" href="/booking/${booking.manage_token}">Manage this booking</a>`;
 }
 
-function renderAlreadyBooked(coach: CoachRow, session: SessionForBooking, booking: Pick<BookingRow, 'manage_token' | 'status'>) {
+function renderAlreadyBooked(
+  coach: CoachRow,
+  session: SessionForBooking,
+  booking: Pick<BookingRow, 'manage_token' | 'status'>,
+  pass: Array<Pick<BookingRow, 'manage_token' | 'athlete_name'>> = [],
+) {
+  const links =
+    pass.length > 1
+      ? html`<p>Keep these links to see or cancel each child's booking:</p>
+          ${pass.map((b) => html`<a class="action" href="/booking/${b.manage_token}">Manage ${b.athlete_name}'s booking</a>`)}`
+      : manageLinkBlock(booking);
   if (booking.status === 'refunded') {
     return page(
       'Refunded',
       html`<h1>This booking was refunded</h1>
         <p class="muted">${session.name} — ${formatLocal(session.starts_at_utc, session.tz)}. The payment went back to your card.</p>
-        ${manageLinkBlock(booking)}
+        ${links}
         <a class="action ghost" href="/c/${coach.handle}">Back to ${coach.name}'s sessions</a>`,
     );
   }
@@ -758,7 +830,7 @@ function renderAlreadyBooked(coach: CoachRow, session: SessionForBooking, bookin
       'Cancelled',
       html`<h1>This booking was cancelled</h1>
         <p class="muted">${session.name} — ${formatLocal(session.starts_at_utc, session.tz)}</p>
-        ${manageLinkBlock(booking)}
+        ${links}
         <a class="action ghost" href="/c/${coach.handle}">Back to ${coach.name}'s sessions</a>`,
     );
   }
@@ -766,7 +838,7 @@ function renderAlreadyBooked(coach: CoachRow, session: SessionForBooking, bookin
     'Booked',
     html`<h1>You're booked</h1>
       <p class="muted">${session.name} — ${formatLocal(session.starts_at_utc, session.tz)}</p>
-      ${manageLinkBlock(booking)}
+      ${links}
       <a class="action ghost" href="/c/${coach.handle}">Back to ${coach.name}'s sessions</a>`,
   );
 }
@@ -800,8 +872,10 @@ function renderCreditState(coach: CoachRow, action: string, credit: CreditState)
     case 'available':
       return html`<form method="post" action="${action}">
         <input type="hidden" name="mode" value="credit" />
-        <button type="submit">Use 1 of ${credit.remaining} session credits</button>
+        <button type="submit">Use ${credit.needed} of ${credit.remaining} session credits</button>
       </form>`;
+    case 'too-few':
+      return html`<p class="muted">You have ${credit.remaining} session ${credit.remaining === 1 ? 'credit' : 'credits'} with ${coach.name}; this booking needs ${credit.needed}, one for each child.</p>`;
     case 'none-on-number':
       return html`<p class="muted">No session credits with ${coach.name} on this number.</p>`;
     case 'offer-code':
@@ -828,16 +902,19 @@ function renderCheckout(
   checkoutToken: string,
   options: CheckoutOptions,
   error?: string,
+  pass: Array<Pick<BookingRow, 'athlete_name'>> = [],
 ) {
   const action = `/c/${coach.handle}/checkout/${checkoutToken}`;
   const canPay = options.canPay;
   const packages = canPay ? options.packages : [];
   const plans = canPay ? options.plans : [];
+  const children = Math.max(1, pass.length);
 
   return page(
     'Checkout',
     html`<h1>${session.name}</h1>
       <p class="muted">${formatLocal(session.starts_at_utc, session.tz)}</p>
+      ${children > 1 ? html`<p class="muted">For ${namesList(pass.map((b) => b.athlete_name))}: ${spotsWord(children)}.</p>` : raw('')}
       ${canPay
         ? html`<p class="muted">Pay on the Noctusoft hosted page. Apple Pay and cards are there — this app never sees a card.</p>`
         : html`<p class="muted">${coach.name} is still setting up payments, so paying here opens soon.</p>`}
@@ -847,7 +924,9 @@ function renderCheckout(
       ${canPay || !needsPayment(session)
         ? html`<form method="post" action="${action}">
             <input type="hidden" name="mode" value="dropin" />
-            <button type="submit">Pay $${(session.price_cents / 100).toFixed(2)} — this session only</button>
+            <button type="submit">${children > 1
+              ? `Pay $${((session.price_cents * children) / 100).toFixed(2)} — this session, ${spotsWord(children)}`
+              : `Pay $${(session.price_cents / 100).toFixed(2)} — this session only`}</button>
           </form>`
         : raw('')}
 
@@ -919,7 +998,7 @@ publicRouter.post('/c/:handle/checkout/:token', async (req, res) => {
 
   // One checkout per booking: a booked booking is never sent to pay again.
   if (ctx.booking.status !== 'pending') {
-    res.status(409).send(renderAlreadyBooked(coach, ctx.session, ctx.booking));
+    res.status(409).send(renderAlreadyBooked(coach, ctx.session, ctx.booking, ctx.pass));
     return;
   }
   if (await hasPaymentHeldForCoach(db, ctx.booking.id)) {
@@ -948,8 +1027,13 @@ publicRouter.post('/c/:handle/checkout/:token', async (req, res) => {
     return;
   }
 
+  const children = ctx.pass.length;
   const showCheckout = async (status: number, error: string, opts: { codeSent?: boolean } = {}) => {
-    res.status(status).send(renderCheckout(coach, ctx.session, checkoutToken, await loadCheckoutOptions(db, coach, ctx.booking, opts), error));
+    res
+      .status(status)
+      .send(
+        renderCheckout(coach, ctx.session, checkoutToken, await loadCheckoutOptions(db, coach, ctx.booking, { ...opts, children }), error, ctx.pass),
+      );
   };
 
   try {
@@ -970,7 +1054,18 @@ publicRouter.post('/c/:handle/checkout/:token', async (req, res) => {
       }
       const outcome = await sendCreditCode(db, phone);
       if (outcome === 'sent') {
-        res.status(200).send(renderCheckout(coach, ctx.session, checkoutToken, await loadCheckoutOptions(db, coach, ctx.booking, { codeSent: true })));
+        res
+          .status(200)
+          .send(
+            renderCheckout(
+              coach,
+              ctx.session,
+              checkoutToken,
+              await loadCheckoutOptions(db, coach, ctx.booking, { codeSent: true, children }),
+              undefined,
+              ctx.pass,
+            ),
+          );
         return;
       }
       if (outcome === 'refused' && (await isOptedOut(db, phone))) {
@@ -1024,7 +1119,7 @@ publicRouter.post('/c/:handle/checkout/:token', async (req, res) => {
       }
       if (why === 'not_pending') {
         const now = await getBookingByCheckoutToken(db, checkoutToken);
-        res.status(409).send(renderAlreadyBooked(coach, ctx.session, now ?? ctx.booking));
+        res.status(409).send(renderAlreadyBooked(coach, ctx.session, now ?? ctx.booking, ctx.pass));
         return;
       }
       res.status(409).send(
@@ -1045,38 +1140,42 @@ publicRouter.post('/c/:handle/checkout/:token', async (req, res) => {
     }
 
     if (mode === 'credit') {
-      const credit = await getCreditBalance(db, coach.id, phone);
-      if (!credit || !(await decrementCredit(db, credit.id))) {
-        await showCheckout(409, 'That credit is no longer available.');
+      // One credit for each child, all or none.
+      const creditIds = await takeCredits(db, coach.id, phone, children);
+      if (!creditIds) {
+        await showCheckout(409, children > 1 ? `This booking needs ${children} session credits, one for each child.` : 'That credit is no longer available.');
         return;
       }
-      const booked = await bookPendingBooking(db, ctx.booking, ctx.session.capacity, {
-        paymentSource: 'PackageCredit',
-        creditId: credit.id,
-        chargeId: null,
-        grossCents: null,
-      });
+      const booked = await bookPendingBooking(
+        db,
+        ctx.booking,
+        ctx.session.capacity,
+        { paymentSource: 'PackageCredit', creditId: creditIds[0], chargeId: null, grossCents: null },
+        creditIds.map((creditId) => ({ creditId, grossCents: null })),
+      );
       if (booked !== 'booked') {
-        await restoreCredit(db, credit.id);
+        for (const id of creditIds) await restoreCredit(db, id);
         await notBooked(booked);
         return;
       }
-      await sendBookingConfirmation(db, bookingId);
+      for (const child of ctx.pass) await sendBookingConfirmation(db, child.id);
       void checkOverflow(db, ctx.session.id);
       res.redirect(303, `/c/${coach.handle}/checkout/${checkoutToken}`);
       return;
     }
 
     if (mode === 'dropin') {
+      // The relay's buy link names one amount, with no quantity: several
+      // children are one charge of the price for each (SPEC.md §9.5).
       const url = connectBuyUrl({
         seller: recipientKey,
-        amountCents: ctx.session.price_cents,
+        amountCents: ctx.session.price_cents * children,
         bookingId,
         checkoutToken,
         mode: 'dropin',
         email,
         handle: coach.handle,
-        description: `${ctx.session.name} — ${formatLocal(ctx.session.starts_at_utc, ctx.session.tz)}`,
+        description: `${ctx.session.name} — ${formatLocal(ctx.session.starts_at_utc, ctx.session.tz)}${children > 1 ? ` (${spotsWord(children)})` : ''}`,
       });
       res.redirect(303, url);
       return;
@@ -1085,7 +1184,7 @@ publicRouter.post('/c/:handle/checkout/:token', async (req, res) => {
     if (mode === 'package') {
       const packageId = Number(field(req.body, 'package_id'));
       const pkg = await getPackageById(db, coach.id, packageId);
-      if (!pkg) {
+      if (!pkg || pkg.credits < children) {
         res.status(404).send(notFound());
         return;
       }
@@ -1107,7 +1206,7 @@ publicRouter.post('/c/:handle/checkout/:token', async (req, res) => {
     if (mode === 'plan') {
       const planId = Number(field(req.body, 'plan_id'));
       const plan = await getPlanById(db, coach.id, planId);
-      if (!plan) {
+      if (!plan || plan.credits_per_month < children) {
         res.status(404).send(notFound());
         return;
       }
