@@ -437,9 +437,9 @@ test('a coach with sessions from before readiness was saved gets no go-live text
   await withRelay(async (relay) => {
     const db = await freshDb();
     const before = await seedCoachWithSession(db);
-    // As the database stood before migration 0013 ran.
+    // As the database stood before migration 0015 ran.
     await db.query('delete from coach_payments');
-    await db.query(`delete from schema_migrations where name = '0013_payment_readiness.sql'`);
+    await db.query(`delete from schema_migrations where name = '0015_payment_readiness.sql'`);
     await runMigrations(db);
     const row = await getPaymentsRow(db, before.coach.id);
     assert.ok(row?.published_at && row.live_texted_at);

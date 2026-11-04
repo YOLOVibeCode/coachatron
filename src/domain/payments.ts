@@ -25,7 +25,7 @@ export const PAYMENTS_LINK_TTL_MS = 7 * DAY_MS;
 /** A page view does not ask the relay again this soon after it last went unanswered. */
 export const PAYMENTS_RETRY_MS = MINUTE_MS;
 /** Reminders go about a day and about three days after the first publish.
- * Migration 0013 marks coaches from before it as sent both (reminders_sent = 2). */
+ * Migration 0015 marks coaches from before it as sent both (reminders_sent = 2). */
 const REMINDER_AFTER_MS = [24 * HOUR_MS, 72 * HOUR_MS];
 const REMINDER_GAP_MS = DAY_MS;
 
