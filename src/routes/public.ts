@@ -251,6 +251,7 @@ publicRouter.get('/privacy', (_req, res) => {
         <p>
           We do not share, sell, or provide your mobile phone number or SMS opt-in data to third parties or affiliates for marketing or promotional purposes.
         </p>`,
+      { canonicalPath: '/privacy' },
     ),
   );
 });
@@ -274,6 +275,7 @@ publicRouter.get('/terms', (_req, res) => {
           <p>Help: ${SUPPORT_EMAIL}</p>
           <p>Carriers are not liable for delayed or undelivered messages.</p>
         </section>`,
+      { canonicalPath: '/terms' },
     ),
   );
 });
@@ -326,6 +328,7 @@ function renderSmsPage(values: { phone?: string } = {}, notice?: { kind: 'error'
         <button type="submit">Opt in</button>
       </form>
       ${notice ? html`<p class="${notice.kind === 'error' ? 'error' : 'muted'}">${notice.text}</p>` : raw('')}`,
+    { canonicalPath: '/sms' },
   );
 }
 
@@ -446,6 +449,9 @@ publicRouter.get('/c/:handle', async (req, res) => {
                           : raw('')}`}
               </div>`;
             })}`,
+      // A page opened with ?from= carries a booking's manage link, so it
+      // names no canonical address.
+      req.query.from === undefined ? { canonicalPath: `/c/${encodeURIComponent(coach.handle)}` } : {},
     ),
   );
 });

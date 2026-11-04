@@ -88,6 +88,14 @@ framed; pages behind a private link or a session are not cached
 production (`APP_ENV` other than `production`) every response says
 `X-Robots-Tag: noindex` and `/robots.txt` turns every crawler away; in
 production it keeps crawlers off the coach's screens and every private link.
+A request whose host is `www.` plus `APP_BASE_URL`'s host (`www.coachatron.com`
+in production) is sent to `APP_BASE_URL` with the same path and query: 301
+for GET and HEAD, 308 for anything else, so a form post keeps its body. Every
+other host is answered as it is, and `/health` answers on any host
+(`src/lib/siteHost.ts`). Where `APP_BASE_URL` is set, the landing page,
+`/terms`, `/privacy`, `/sms` and a coach's page `/c/:handle` name their
+address on it, without the query, in `<link rel="canonical">`; the coach's
+screens and pages a private link opens do not.
 An address nothing answers gets the app's Not found page, and a request the
 app cannot read (too large, a body that does not parse, a bad percent-escape,
 a NUL character) gets its branded error page with one line on stdout, which
