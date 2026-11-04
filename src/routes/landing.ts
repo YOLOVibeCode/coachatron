@@ -9,6 +9,7 @@ import {
   type CoachRow,
 } from '../domain/auth.js';
 import { consumeStartLink, getOpenStartLink } from '../domain/startLink.js';
+import { clientKey, START_BOX_LIMITS, takeRequest } from '../domain/requestLimits.js';
 import { handleSetupMessage } from '../domain/setup.js';
 import { html, landingPage, page, raw } from '../lib/html.js';
 import { clearCookie, serializeCookie } from '../lib/cookies.js';
@@ -112,7 +113,18 @@ landingRouter.get('/', (_req, res) => {
   res.status(200).send(renderLanding());
 });
 
-landingRouter.post('/start', (req, res) => {
+landingRouter.post('/start', async (req, res) => {
+  if (!(await takeRequest(getDb(), START_BOX_LIMITS, clientKey(req)))) {
+    res.status(429).send(
+      page(
+        'Slow down',
+        html`<h1>Too many tries.</h1>
+          <p class="muted">Wait a few minutes, then try again.</p>
+          <a class="action" href="/">Say your week</a>`,
+      ),
+    );
+    return;
+  }
   const text = field(req.body, 'text');
   if (!text) {
     res.setHeader('Set-Cookie', clearCookie(START_COOKIE));

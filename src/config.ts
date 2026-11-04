@@ -32,6 +32,8 @@ export const SMS_PRODUCT_DAILY_PER_COACH = 400;
 export const SMS_PRODUCT_DAILY_FLOOR = 500;
 /** Sign-in codes per phone or email address in 24 hours. */
 export const OTP_DAILY_MAX_PER_CONTACT = 5;
+/** Wrong tries before a sign-in code stops working. */
+export const OTP_MAX_ATTEMPTS = 5;
 /** Empty: the relay's shared authenticated sender. Set to
  * no-reply@coachatron.com once coachatron.com is authenticated in SendGrid.
  * Read at call time so tests can set it. */

@@ -1,6 +1,7 @@
 import type { DbClient } from '../db/client.js';
 import { sendSms } from '../relay/sms.js';
 import { sendEmail } from '../relay/email.js';
+import { RelayHttpError } from '../relay/http.js';
 import { zonedParts, zonedTimeToUtc } from './scheduling.js';
 import {
   SMS_BRAND,
@@ -103,7 +104,8 @@ export function canText(phone: string): boolean {
   return isDomesticDestination(phone) || (textsAreCaptured() && /^\+\d{8,15}$/.test(phone));
 }
 
-export type SendOutcome = 'sent' | 'capped' | 'refused';
+/** busy: the relay's own limits (HTTP 429) refused it; try again later. */
+export type SendOutcome = 'sent' | 'capped' | 'refused' | 'busy';
 
 export interface OutboundText {
   to: string;
@@ -228,6 +230,11 @@ export async function sendText(db: DbClient, msg: OutboundText, now: Date = new 
     await log(db, msg, body, 'sent', sent.id, now);
     return 'sent';
   }
+  if (sent.status === 429) {
+    await log(db, msg, body, 'capped-relay', null, now);
+    console.warn(`sms: the relay's limits refused ${msg.template} (coach ${msg.coachId ?? '-'}); try later`);
+    return 'busy';
+  }
   if (sent.code === 21610) {
     await revokeConsent(db, msg.to);
     await log(db, msg, body, 'failed-opt-out', null, now);
@@ -265,6 +272,11 @@ export async function sendEmailMessage(db: DbClient, msg: OutboundEmail, now: Da
     await log(db, msg, msg.subject, 'sent', sent.id || null, now, 'email');
     return 'sent';
   } catch (err) {
+    if (err instanceof RelayHttpError && err.status === 429) {
+      await log(db, msg, msg.subject, 'capped-relay', null, now, 'email');
+      console.warn(`email: the relay's limits refused ${msg.template} (coach ${msg.coachId ?? '-'}); try later`);
+      return 'busy';
+    }
     await log(db, msg, msg.subject, 'failed', null, now, 'email');
     throw err;
   }

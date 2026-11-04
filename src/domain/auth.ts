@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import type { DbClient } from '../db/client.js';
 import { toE164 } from '../lib/phone.js';
+import { OTP_MAX_ATTEMPTS } from '../config.js';
 
 const OTP_TTL_MINUTES = 10;
 const SESSION_TTL_DAYS = 30;
@@ -49,36 +50,96 @@ function asContact(target: string | Contact): Contact {
   return typeof target === 'string' ? { kind: 'phone', phone: target } : target;
 }
 
-export async function createOtp(db: DbClient, target: string | Contact): Promise<string> {
+/** A fresh 6-digit code. Nothing is stored until createOtp. */
+export function newOtpCode(): string {
+  return crypto.randomInt(100000, 1000000).toString();
+}
+
+function hashCode(code: string): string {
+  return crypto.createHash('sha256').update(code).digest('hex');
+}
+
+function otpColumn(contact: Contact): 'email' | 'phone' {
+  return contact.kind === 'email' ? 'email' : 'phone';
+}
+
+/** The key request limits count a phone or an email under. */
+export function contactKey(contact: Contact): string {
+  return `${contact.kind}:${contactValue(contact)}`;
+}
+
+/** Stores a sign-in code for this phone or email and ends every earlier
+ * code for it, so one code is live at a time. Call it once the code has
+ * gone out: a request the send limits refuse leaves no code behind.
+ * smsConsent keeps the texts box ticked with a text code, to be recorded
+ * when the code proves the number. */
+export async function createOtp(
+  db: DbClient,
+  target: string | Contact,
+  opts: { code?: string; smsConsent?: boolean } = {},
+): Promise<string> {
   const contact = asContact(target);
-  const code = crypto.randomInt(100000, 1000000).toString();
-  const codeHash = crypto.createHash('sha256').update(code).digest('hex');
+  const code = opts.code ?? newOtpCode();
   const expiresAt = new Date(Date.now() + OTP_TTL_MINUTES * 60 * 1000);
 
-  await db.query('insert into otp_code (phone, email, code_hash, expires_at) values ($1, $2, $3, $4)', [
+  await db.query(
+    `update otp_code set expires_at = now()
+     where ${otpColumn(contact)} = $1 and consumed_at is null and expires_at > now()`,
+    [contactValue(contact)],
+  );
+  await db.query('insert into otp_code (phone, email, code_hash, expires_at, sms_consent) values ($1, $2, $3, $4, $5)', [
     contact.kind === 'phone' ? contact.phone : null,
     contact.kind === 'email' ? contact.email : null,
-    codeHash,
+    hashCode(code),
     expiresAt.toISOString(),
+    contact.kind === 'phone' && opts.smsConsent === true,
   ]);
 
   return code;
 }
 
-/** Read-only check: does not consume the code. Callers must call consumeOtp
- * once the whole submission (including any first-time profile fields) is
- * known to be valid, so a profile validation failure does not burn a code. */
-export async function checkOtp(db: DbClient, target: string | Contact, code: string): Promise<number | null> {
+export type OtpCheck =
+  | { ok: true; id: number; smsConsent: boolean }
+  /** wrong: try again. used-up: too many wrong tries, ask for a new code.
+   * none: no live code (expired, used, or never sent). */
+  | { ok: false; reason: 'wrong' | 'used-up' | 'none' };
+
+/** Checks a code against the one live code for this phone or email. Does
+ * not consume it: callers call consumeOtp once the whole submission
+ * (including any first-time profile fields) is known to be valid, so a
+ * profile validation failure does not burn a code. Each wrong code counts
+ * against the live code, which stops working after OTP_MAX_ATTEMPTS. The
+ * try is counted before the comparison, so tries sent at once cannot get
+ * past the limit. */
+export async function checkOtp(db: DbClient, target: string | Contact, code: string): Promise<OtpCheck> {
   const contact = asContact(target);
-  const codeHash = crypto.createHash('sha256').update(code).digest('hex');
-  const column = contact.kind === 'email' ? 'email' : 'phone';
-  const result = await db.query<{ id: number }>(
-    `select id from otp_code
-     where ${column} = $1 and code_hash = $2 and expires_at > now() and consumed_at is null
-     order by id desc limit 1`,
-    [contactValue(contact), codeHash],
+  const column = otpColumn(contact);
+  const taken = await db.query<{ id: number; code_hash: string; sms_consent: boolean; attempts: number }>(
+    `update otp_code set attempts = attempts + 1
+     where id = (
+       select id from otp_code
+       where ${column} = $1 and consumed_at is null and expires_at > now()
+       order by id desc limit 1
+     ) and attempts < $2
+     returning id, code_hash, sms_consent, attempts`,
+    [contactValue(contact), OTP_MAX_ATTEMPTS],
   );
-  return result.rows.length > 0 ? result.rows[0].id : null;
+  const row = taken.rows[0];
+  if (!row) {
+    const live = await db.query<{ id: number }>(
+      `select id from otp_code where ${column} = $1 and consumed_at is null and expires_at > now() limit 1`,
+      [contactValue(contact)],
+    );
+    return { ok: false, reason: live.rows.length > 0 ? 'used-up' : 'none' };
+  }
+  const given = Buffer.from(hashCode(code), 'hex');
+  const stored = Buffer.from(row.code_hash, 'hex');
+  if (given.length === stored.length && crypto.timingSafeEqual(given, stored)) {
+    // The right code is not a wrong try.
+    await db.query('update otp_code set attempts = attempts - 1 where id = $1', [row.id]);
+    return { ok: true, id: row.id, smsConsent: row.sms_consent };
+  }
+  return { ok: false, reason: row.attempts >= OTP_MAX_ATTEMPTS ? 'used-up' : 'wrong' };
 }
 
 export async function consumeOtp(db: DbClient, otpId: number): Promise<void> {

@@ -17,7 +17,8 @@ import {
 } from '../domain/pricing.js';
 import { checkOverflow, acceptOffer, declineOffer, describeOffer, getOfferByToken } from '../domain/cascade.js';
 import { buyerEmail, connectBuyUrl } from '../relay/buy-link.js';
-import { hasActiveConsent, recordConsent } from '../domain/sms-consent.js';
+import { hasActiveConsent, isOptedOut, optedOutNotice, recordConsent } from '../domain/sms-consent.js';
+import { clientKey, SMS_OPT_IN_LIMITS, takeRequest } from '../domain/requestLimits.js';
 import { canText, sendText } from '../domain/outbound.js';
 import { SMS_BRAND, SMS_OPT_IN_CONFIRMATION, SMS_PURPOSE, SUPPORT_EMAIL } from '../config.js';
 import type { Request } from 'express';
@@ -181,16 +182,35 @@ publicRouter.post('/sms', async (req, res) => {
     return;
   }
   const db = getDb();
+  // Typing a number here does not prove it is yours, so it cannot undo
+  // that number's STOP. Only a START from the phone does.
+  if (await isOptedOut(db, phone)) {
+    res.status(422).send(renderSmsPage({ phone: rawPhone }, { kind: 'error', text: optedOutNotice('to opt back in') }));
+    return;
+  }
+  if (!(await takeRequest(db, SMS_OPT_IN_LIMITS, clientKey(req)))) {
+    res.status(429).send(renderSmsPage({ phone: rawPhone }, { kind: 'error', text: 'Too many tries. Wait a few minutes, then try again.' }));
+    return;
+  }
   const meta = consentMeta(req, '/sms');
   await recordConsent(db, phone, meta.source, { ip: meta.ip, userAgent: meta.userAgent });
-  await sendText(db, {
-    to: phone,
-    body: SMS_OPT_IN_CONFIRMATION,
-    coachId: null,
-    template: 'opt-in-confirmation',
-    perRecipientDailyMax: 1,
-  });
-  res.status(200).send(renderSmsPage({}, { kind: 'ok', text: `You're opted in. We texted ${phone} to confirm. Reply STOP any time to opt out.` }));
+  let confirmed = false;
+  try {
+    confirmed =
+      (await sendText(db, {
+        to: phone,
+        body: SMS_OPT_IN_CONFIRMATION,
+        coachId: null,
+        template: 'opt-in-confirmation',
+        perRecipientDailyMax: 1,
+      })) === 'sent';
+  } catch (err) {
+    console.error('sms opt-in confirmation not sent:', err instanceof Error ? err.message : err);
+  }
+  const text = confirmed
+    ? `You're opted in. We texted ${phone} to confirm. Reply STOP any time to opt out.`
+    : "You're opted in. Reply STOP to any of our texts to opt out.";
+  res.status(200).send(renderSmsPage({}, { kind: 'ok', text }));
 });
 
 // ---- Screen 8: coach's public page (sessions list) ----

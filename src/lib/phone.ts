@@ -28,3 +28,8 @@ export function isUsOrCanada(e164: string): boolean {
   const match = /^\+1([2-9]\d{2})\d{7}$/.exec(e164);
   return match !== null && !PLUS_ONE_ELSEWHERE.has(match[1]);
 }
+
+/** (833) 364-5083 for a US or Canadian number; anything else as given. */
+export function displayPhone(e164: string): string {
+  return /^\+1\d{10}$/.test(e164) ? `(${e164.slice(2, 5)}) ${e164.slice(5, 8)}-${e164.slice(8)}` : e164;
+}

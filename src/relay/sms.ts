@@ -7,7 +7,9 @@ export interface SendSmsRequest {
 
 export type SendSmsResult =
   | { ok: true; id: string }
-  | { ok: false; code: number; message: string };
+  /** code is Twilio's (or the relay's own, e.g. 20429 for its caps);
+   * status is the relay's HTTP status, 429 when its limits refused. */
+  | { ok: false; code: number; message: string; status: number };
 
 export async function sendSms(req: SendSmsRequest): Promise<SendSmsResult> {
   // X-App-Env (from RELAY_APP_ENV): dev is captured in smtp4dev as an email
@@ -34,5 +36,5 @@ export async function sendSms(req: SendSmsRequest): Promise<SendSmsResult> {
   } catch {
     // keep defaults
   }
-  return { ok: false, code, message };
+  return { ok: false, code, message, status: res.status };
 }

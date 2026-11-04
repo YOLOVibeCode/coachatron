@@ -3,6 +3,7 @@ import { advanceCascade } from '../domain/cascade.js';
 import { topUpAllSlots, zonedParts } from '../domain/scheduling.js';
 import { clipSms, formatConfirmWhen } from '../lib/time.js';
 import { sendText } from '../domain/outbound.js';
+import { purgeRequestLimits } from '../domain/requestLimits.js';
 
 /** No non-urgent SMS between 9pm and 8am local (SPEC.md §10). */
 const QUIET_END_HOUR = 8;
@@ -74,6 +75,7 @@ const STEPS: Array<[string, TickStep]> = [
   ['top up weekly slots', topUpAllSlots],
   ['advance overflow cascades', advanceCascade],
   ['send reminders', sendDueReminders],
+  ['purge old request limits', purgeRequestLimits],
 ];
 
 /** The scheduled job (SPEC.md §11: "a scheduled job over a table"). Each

@@ -49,6 +49,8 @@ export interface FakeRelay {
   url: string;
   sms: FakeSms[];
   emails: FakeEmail[];
+  /** When true, the relay's own caps refuse texts / emails with a 429. */
+  limited: { sms: boolean; email: boolean };
   buyLinks: FakeBuyLink[];
   onboards: FakeOnboard[];
   /** The relay's current agreement_version for every product. */
@@ -86,6 +88,7 @@ export async function startFakeRelay(): Promise<FakeRelay> {
 
   const relay = {
     agreementVersion: 'v1',
+    limited: { sms: false, email: false },
   };
 
   const seller = '/connect/:product/recipients/:sellerKey';
@@ -146,6 +149,11 @@ export async function startFakeRelay(): Promise<FakeRelay> {
   app.post('/sms/send', (req, res) => {
     if (!requireApiKey(req, res)) return;
     const to = String(req.body.to);
+    if (relay.limited.sms) {
+      // The relay's sms-caps.js refusal.
+      res.status(429).json({ error: true, code: 20429, message: `Too many texts to ${to} in the last hour. Try again later.` });
+      return;
+    }
     if (to === '+15552161000') {
       res.status(400).json({ error: true, code: 21610, message: 'unsubscribed' });
       return;
@@ -157,6 +165,10 @@ export async function startFakeRelay(): Promise<FakeRelay> {
   // The relay's native shape: to, subject, text or html, optional from / fromName.
   app.post('/email/send', (req, res) => {
     if (!requireApiKey(req, res)) return;
+    if (relay.limited.email) {
+      res.status(429).json({ error: true, message: 'Too many requests, please try again later.' });
+      return;
+    }
     const { to, subject, text, html, from, fromName } = req.body ?? {};
     if (!to || !subject || (!html && !text)) {
       res.status(422).json({ error: true, message: 'to, subject, and html or text are required' });
