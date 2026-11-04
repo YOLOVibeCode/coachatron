@@ -332,12 +332,26 @@ test('a family with session credits can still book with them while payments are 
       assert.match(formHtml, /only with session credits/);
       assert.match(formHtml, /Continue with a credit/);
 
+      // A number without credits gets the same answer as one with them
+      // until its phone is proven; after that it is told booking opens soon.
       const none = await form(base, bookPath, { athlete_name: 'Mia Ortiz', contact_phone: '5550008888' });
-      assert.equal(none.status, 409, 'a phone without credits cannot book yet');
-      const noneHtml = await none.text();
+      assert.equal(none.status, 303, 'every number goes on to checkout');
+      const nonePath = none.headers.get('location') ?? '';
+      assert.match(nonePath, new RegExp(`^/c/${seed.coach.handle}/checkout/[A-Za-z0-9_-]{22}$`));
+      const noneOffer = await (await fetch(`${base}${nonePath}`)).text();
+      assert.match(noneOffer, /Text me a code/);
+      assert.doesNotMatch(noneOffer, /session credits with .* on this number|Use 1 of/);
+      assert.doesNotMatch(noneOffer, /Pay \$/);
+      assert.equal((await form(base, nonePath, { mode: 'send_code' })).status, 200);
+      const noneCode = /\b(\d{6})\b/.exec(relay.sms.filter((m) => m.to === '+15550008888').at(-1)?.body ?? '')?.[1];
+      assert.ok(noneCode, 'a code was texted');
+      assert.equal((await form(base, nonePath, { mode: 'verify_code', code: noneCode })).status, 303);
+      const noneHtml = await (await fetch(`${base}${nonePath}`)).text();
       assert.match(noneHtml, /Booking opens soon/);
       assert.match(noneHtml, /Only session credits can be used until then/);
-      assert.equal((await db.query('select id from booking where athlete_name = $1', ['Mia Ortiz'])).rows.length, 0);
+      assert.equal((await form(base, nonePath, { mode: 'credit' })).status, 409, 'no credit to use');
+      const noneRows = await db.query<{ status: string }>('select status from booking where athlete_name = $1', ['Mia Ortiz']);
+      assert.equal(noneRows.rows[0].status, 'pending', 'nothing is booked');
 
       const booked = await form(base, bookPath, { athlete_name: 'Sam Reyes', contact_phone: '5550007777' });
       assert.equal(booked.status, 303);

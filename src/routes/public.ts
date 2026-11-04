@@ -471,8 +471,15 @@ publicRouter.post('/c/:handle/sessions/:sessionId/book', async (req, res) => {
     return;
   }
   // While the coach cannot take payments, a family with session credits can
-  // still book; checkout then offers only the credit.
+  // still book; checkout then offers only the credit. Whether any family
+  // holds credits is the coach's fact, so this is the only check here: the
+  // typed number's own credits are looked at once the phone is proven at
+  // checkout, and every number gets the same answer until then.
   const creditsOnly = needsPayment(session) && !(await paymentsOpen(db, coach));
+  if (creditsOnly && !(await coachHasOpenCredits(db, coach.id))) {
+    res.status(409).send(bookingOpensSoon(coach));
+    return;
+  }
 
   const athleteName = field(req.body, 'athlete_name');
   const rawPhone = field(req.body, 'contact_phone');
@@ -507,11 +514,6 @@ publicRouter.post('/c/:handle/sessions/:sessionId/book', async (req, res) => {
           { creditsOnly },
         ),
       );
-    return;
-  }
-
-  if (creditsOnly && !(await getCreditBalance(db, coach.id, contactPhone))) {
-    res.status(409).send(bookingOpensSoon(coach, CREDITS_ONLY_NOTE));
     return;
   }
 
