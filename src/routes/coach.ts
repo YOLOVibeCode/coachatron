@@ -49,7 +49,8 @@ import { createWeeklySlots, deactivateSlot, listWeeklySlots, type WeeklySlot } f
 import { coachNav, html, oneTimeCodeNote, page, raw, smsConsentCheckbox } from '../lib/html.js';
 import { cancelReach, cancelScheduledSession, dropInCreditNote, previewSessionCancel, type CancelReach } from '../domain/cancelSession.js';
 import { DEFAULT_TZ, formatCoachDollars, formatLocal, formatTimeRange, isValidTimeZone } from '../lib/time.js';
-import { getPackagesForCoach, getPlansForCoach, createPackage, createPlan } from '../domain/pricing.js';
+import { getPackagesForCoach, getPlansForCoach, createPackage, createPlan, takesSpotSql } from '../domain/pricing.js';
+import { dollarsToCents, LIMITS, rowId, wholeNumber } from '../lib/input.js';
 import {
   canWaive,
   CREDIT_WITHDRAWN_SQL,
@@ -156,6 +157,18 @@ export const SESSION_COOKIE = 'cx_session';
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 export const coachRouter = Router();
+
+// Every id in a coach URL is a row id: anything else (abc, 1.5, a number
+// past what the column holds) is a 404 before the route runs.
+for (const name of ['id', 'bookingId', 'slotId', 'sessionId']) {
+  coachRouter.param(name, (req, res, next, value) => {
+    if (rowId(value) === null) {
+      res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
+      return;
+    }
+    next();
+  });
+}
 
 function field(body: unknown, key: string): string {
   const value = (body as Record<string, unknown> | undefined)?.[key];
@@ -547,25 +560,43 @@ type SessionTypeFields = {
 
 function parseSessionTypeBody(body: Record<string, unknown>): SessionTypeFields | null {
   const name = field(body, 'name');
-  const durationMin = Number(field(body, 'duration_min'));
-  const capacity = Number(field(body, 'capacity'));
-  const priceDollars = Number(field(body, 'price_dollars'));
-  const priceCents = Math.round(priceDollars * 100);
+  const durationMin = wholeNumber(field(body, 'duration_min'), LIMITS.durationMin);
+  const capacity = wholeNumber(field(body, 'capacity'), LIMITS.capacity);
+  const priceCents = dollarsToCents(field(body, 'price_dollars'), LIMITS.priceCents);
   const backupPayRaw = field(body, 'backup_pay_dollars');
-  const backupPayCents = backupPayRaw ? Math.round(Number(backupPayRaw) * 100) : null;
-  if (
-    !name ||
-    !Number.isInteger(durationMin) ||
-    durationMin <= 0 ||
-    !Number.isInteger(capacity) ||
-    capacity <= 0 ||
-    !Number.isFinite(priceCents) ||
-    priceCents <= 0 ||
-    (backupPayCents !== null && (!Number.isFinite(backupPayCents) || backupPayCents < 0))
-  ) {
+  const backupPayCents = backupPayRaw ? dollarsToCents(backupPayRaw, LIMITS.backupPayCents) : null;
+  if (!name || durationMin === null || capacity === null || priceCents === null || (backupPayRaw && backupPayCents === null)) {
     return null;
   }
   return { name, durationMin, capacity, priceCents, backupPayCents };
+}
+
+/** The form's message when a number is missing or out of range. */
+const SESSION_TYPE_RANGES = `Fill in every field: ${LIMITS.durationMin.min}–${LIMITS.durationMin.max} minutes, ${LIMITS.capacity.min}–${LIMITS.capacity.max} athletes, and a price up to ${formatCoachDollars(LIMITS.priceCents.max)}.`;
+
+/** The future session of this type with the most spots taken, when that is
+ * more than the new capacity. Sessions given their own capacity (a backup
+ * coach joined) keep it and are not counted. */
+async function sessionAboveCapacity(
+  db: DbClient,
+  coachId: number,
+  typeId: number,
+  capacity: number,
+): Promise<{ starts_at_utc: string; tz: string; taken: number } | null> {
+  const result = await db.query<{ starts_at_utc: string; tz: string; taken: number }>(
+    `select s.starts_at_utc, s.tz, count(b.id)::int as taken
+     from session s
+     join session_type st on st.id = s.session_type_id
+     join booking b on b.session_id = s.id and ${takesSpotSql('b')}
+     where st.id = $1 and st.coach_id = $2 and s.status = 'scheduled' and s.starts_at_utc > now()
+       and s.capacity_override is null
+     group by s.id
+     having count(b.id) > $3
+     order by count(b.id) desc, s.starts_at_utc
+     limit 1`,
+    [typeId, coachId, capacity],
+  );
+  return result.rows[0] ?? null;
 }
 
 function renderSessionTypeForm(
@@ -580,13 +611,13 @@ function renderSessionTypeForm(
     <label for="name">Session name</label>
     <input id="name" name="name" required placeholder="e.g. Group training" value="${values?.name ?? ''}" />
     <label for="duration_min">Duration (minutes)</label>
-    <input id="duration_min" name="duration_min" type="number" min="1" required value="${values?.durationMin ?? ''}" />
+    <input id="duration_min" name="duration_min" type="number" min="${LIMITS.durationMin.min}" max="${LIMITS.durationMin.max}" required value="${values?.durationMin ?? ''}" />
     <label for="capacity">Capacity</label>
-    <input id="capacity" name="capacity" type="number" min="1" required value="${values?.capacity ?? ''}" />
+    <input id="capacity" name="capacity" type="number" min="${LIMITS.capacity.min}" max="${LIMITS.capacity.max}" required value="${values?.capacity ?? ''}" />
     <label for="price_dollars">Price (dollars)</label>
-    <input id="price_dollars" name="price_dollars" type="number" min="0" step="0.01" required value="${priceDollars ?? ''}" />
+    <input id="price_dollars" name="price_dollars" type="number" min="0.01" max="${LIMITS.priceCents.max / 100}" step="0.01" required value="${priceDollars ?? ''}" />
     <label for="backup_pay_dollars">Backup coach pays (dollars, optional)</label>
-    <input id="backup_pay_dollars" name="backup_pay_dollars" type="number" min="0" step="0.01" value="${backupPayDollars ?? ''}" />
+    <input id="backup_pay_dollars" name="backup_pay_dollars" type="number" min="0" max="${LIMITS.backupPayCents.max / 100}" step="0.01" value="${backupPayDollars ?? ''}" />
     <button type="submit">${submitLabel}</button>
   </form>`;
 }
@@ -637,7 +668,7 @@ coachRouter.post('/app/session-types', requireAuth, async (req, res) => {
       page(
         'Session types',
         html`<h1>Session types</h1>
-          <p class="error">Fill in every field with a positive number.</p>
+          <p class="error">${SESSION_TYPE_RANGES}</p>
           <a class="action" href="/app/session-types">Back</a>`,
       ),
     );
@@ -699,13 +730,25 @@ coachRouter.post('/app/session-types/:id/edit', requireAuth, async (req, res) =>
       page(
         'Edit session type',
         html`<h1>Edit session type</h1>
-          <p class="error">Fill in every field with a positive number.</p>
+          <p class="error">${SESSION_TYPE_RANGES}</p>
           <a class="action" href="/app/session-types/${typeId}/edit">Back</a>`,
       ),
     );
     return;
   }
   const db = getDb();
+  const crowded = await sessionAboveCapacity(db, coachId, typeId, parsed.capacity);
+  if (crowded) {
+    res.status(422).send(
+      page(
+        'Edit session type',
+        html`<h1>Edit session type</h1>
+          <p class="error">${formatLocal(crowded.starts_at_utc, crowded.tz)} already has ${crowded.taken} booked. Set the capacity to at least ${crowded.taken}, or cancel that session first.</p>
+          <a class="action" href="/app/session-types/${typeId}/edit">Back</a>`,
+      ),
+    );
+    return;
+  }
   const updated = await db.query<{ id: number }>(
     `update session_type
      set name = $1, duration_min = $2, capacity = $3, price_cents = $4, backup_pay_cents = $5
@@ -1341,7 +1384,7 @@ coachRouter.post('/app/setup/publish', requireAuth, async (req, res) => {
     res.redirect(303, '/signin');
     return;
   }
-  const counts = await publishSetupPlan(db, coach, Number(field(req.body, 'id')));
+  const counts = await publishSetupPlan(db, coach, rowId(field(req.body, 'id')) ?? 0);
   if (counts) await notePublished(db, (await findCoachById(db, coach.id)) ?? coach);
   res.redirect(303, counts ? '/app/schedule?published=1' : '/app/schedule?setup=1&e=stale');
 });
@@ -1349,7 +1392,7 @@ coachRouter.post('/app/setup/publish', requireAuth, async (req, res) => {
 coachRouter.post('/app/setup/discard', requireAuth, async (req, res) => {
   const db = getDb();
   const coachId = res.locals.coachId as number;
-  await discardDraft(db, coachId, Number(field(req.body, 'id')));
+  await discardDraft(db, coachId, rowId(field(req.body, 'id')) ?? 0);
   res.redirect(303, '/app/schedule?setup=1');
 });
 
@@ -1376,7 +1419,7 @@ coachRouter.post('/app/schedule/confirm', requireAuth, async (req, res) => {
     res.redirect(303, '/signin');
     return;
   }
-  const pendingId = Number(field(req.body, 'id'));
+  const pendingId = rowId(field(req.body, 'id')) ?? 0;
   const yes = field(req.body, 'answer') === 'yes';
   if (Number.isInteger(pendingId) && pendingId > 0) {
     await resolvePendingForCoach(db, coach, pendingId, yes);
@@ -1847,11 +1890,11 @@ coachRouter.get('/app/pricing', requireAuth, async (_req, res) => {
             <label for="pkg_name">Package name</label>
             <input id="pkg_name" name="name" required placeholder="e.g. 10-session pack" />
             <label for="pkg_credits">Number of sessions</label>
-            <input id="pkg_credits" name="credits" type="number" min="1" required placeholder="e.g. 10" />
+            <input id="pkg_credits" name="credits" type="number" min="${LIMITS.credits.min}" max="${LIMITS.credits.max}" required placeholder="e.g. 10" />
             <label for="pkg_price_dollars">Price (dollars)</label>
-            <input id="pkg_price_dollars" name="price_dollars" type="number" min="0" step="0.01" required placeholder="e.g. 150" />
+            <input id="pkg_price_dollars" name="price_dollars" type="number" min="0.01" max="${LIMITS.priceCents.max / 100}" step="0.01" required placeholder="e.g. 150" />
             <label for="pkg_expires_days">Expires after days (optional)</label>
-            <input id="pkg_expires_days" name="expires_days" type="number" min="1" placeholder="e.g. 60" />
+            <input id="pkg_expires_days" name="expires_days" type="number" min="${LIMITS.expiresDays.min}" max="${LIMITS.expiresDays.max}" placeholder="e.g. 60" />
             <button type="submit">Create package</button>
           </form>
         </details>
@@ -1870,9 +1913,9 @@ coachRouter.get('/app/pricing', requireAuth, async (_req, res) => {
             <label for="plan_name">Pack name</label>
             <input id="plan_name" name="name" required placeholder="e.g. 4-session pack" />
             <label for="plan_price_dollars">Price (dollars)</label>
-            <input id="plan_price_dollars" name="price_dollars" type="number" min="0" step="0.01" required placeholder="e.g. 120" />
+            <input id="plan_price_dollars" name="price_dollars" type="number" min="0.01" max="${LIMITS.priceCents.max / 100}" step="0.01" required placeholder="e.g. 120" />
             <label for="plan_credits">Sessions in the pack</label>
-            <input id="plan_credits" name="credits_per_month" type="number" min="1" required placeholder="e.g. 4" />
+            <input id="plan_credits" name="credits_per_month" type="number" min="${LIMITS.credits.min}" max="${LIMITS.credits.max}" required placeholder="e.g. 4" />
             <button type="submit">Create pack</button>
           </form>
         </details>
@@ -1908,24 +1951,23 @@ coachRouter.post('/app/pricing/package', requireAuth, async (req, res) => {
   const db = getDb();
   const coachId = res.locals.coachId as number;
   const name = field(req.body, 'name');
-  const credits = Number(field(req.body, 'credits'));
-  const priceDollars = Number(field(req.body, 'price_dollars'));
+  const credits = wholeNumber(field(req.body, 'credits'), LIMITS.credits);
+  const priceCents = dollarsToCents(field(req.body, 'price_dollars'), LIMITS.priceCents);
   const expiresDaysRaw = field(req.body, 'expires_days');
-  const expiresDays = expiresDaysRaw ? Number(expiresDaysRaw) : undefined;
+  const expiresDays = expiresDaysRaw ? wholeNumber(expiresDaysRaw, LIMITS.expiresDays) : undefined;
 
-  if (!name || !Number.isInteger(credits) || credits <= 0 || priceDollars <= 0 || (expiresDays !== undefined && !Number.isInteger(expiresDays))) {
+  if (!name || credits === null || priceCents === null || expiresDays === null) {
     res.status(422).send(
       page(
         'Pricing',
         html`<h1>Pricing & credits</h1>
-          <p class="error">Fill in package details correctly.</p>
+          <p class="error">Fill in the package: ${LIMITS.credits.min}–${LIMITS.credits.max} sessions, a price up to ${formatCoachDollars(LIMITS.priceCents.max)}, and, if it expires, ${LIMITS.expiresDays.min}–${LIMITS.expiresDays.max} days.</p>
           <a class="action" href="/app/pricing">Back</a>`,
       ),
     );
     return;
   }
 
-  const priceCents = Math.round(priceDollars * 100);
   await createPackage(db, coachId, name, credits, priceCents, expiresDays);
   res.redirect(303, '/app/pricing');
 });
@@ -1934,22 +1976,21 @@ coachRouter.post('/app/pricing/plan', requireAuth, async (req, res) => {
   const db = getDb();
   const coachId = res.locals.coachId as number;
   const name = field(req.body, 'name');
-  const priceDollars = Number(field(req.body, 'price_dollars'));
-  const creditsPerMonth = Number(field(req.body, 'credits_per_month'));
+  const priceCents = dollarsToCents(field(req.body, 'price_dollars'), LIMITS.priceCents);
+  const creditsPerMonth = wholeNumber(field(req.body, 'credits_per_month'), LIMITS.credits);
 
-  if (!name || !Number.isInteger(creditsPerMonth) || creditsPerMonth <= 0 || priceDollars <= 0) {
+  if (!name || creditsPerMonth === null || priceCents === null) {
     res.status(422).send(
       page(
         'Pricing',
         html`<h1>Pricing & credits</h1>
-          <p class="error">Fill in the pack details correctly.</p>
+          <p class="error">Fill in the pack: a price up to ${formatCoachDollars(LIMITS.priceCents.max)} and ${LIMITS.credits.min}–${LIMITS.credits.max} sessions.</p>
           <a class="action" href="/app/pricing">Back</a>`,
       ),
     );
     return;
   }
 
-  const priceCents = Math.round(priceDollars * 100);
   await createPlan(db, coachId, name, priceCents, creditsPerMonth);
   res.redirect(303, '/app/pricing');
 });
@@ -1984,7 +2025,7 @@ coachRouter.get('/app/roster', requireAuth, async (_req, res) => {
                       : html`<p class="muted">Not opted in yet: no offers until they do. Send them their link to opt in:</p>
                           <p class="optin-link"><a href="${optInLinks.get(m.id) ?? ''}">${optInLinks.get(m.id) ?? ''}</a></p>`}
                     <form class="roster-priority-form" method="post" action="/app/roster/${m.id}/priority">
-                      <input type="number" name="priority" value="${m.priority}" min="0" required aria-label="Priority for ${m.name}" />
+                      <input type="number" name="priority" value="${m.priority}" min="${LIMITS.rosterPriority.min}" max="${LIMITS.rosterPriority.max}" required aria-label="Priority for ${m.name}" />
                       <button type="submit">Update priority</button>
                     </form>
                   </li>`,
@@ -2029,10 +2070,12 @@ coachRouter.post('/app/roster/:id/priority', requireAuth, async (req, res) => {
   const db = getDb();
   const coachId = res.locals.coachId as number;
   const id = Number(req.params.id);
-  const newPriority = Number(field(req.body, 'priority'));
+  const newPriority = wholeNumber(field(req.body, 'priority'), LIMITS.rosterPriority);
 
-  if (!Number.isInteger(newPriority) || newPriority < 0) {
-    res.status(422).send(page('Error', html`<h1>Invalid priority</h1>`));
+  if (newPriority === null) {
+    res.status(422).send(
+      page('Error', html`<h1>Invalid priority</h1><p class="error">Use a whole number from ${LIMITS.rosterPriority.min} to ${LIMITS.rosterPriority.max}.</p>`),
+    );
     return;
   }
 

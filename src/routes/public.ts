@@ -15,6 +15,7 @@ import {
 } from '../domain/auth.js';
 import { html, operatorLine, page, raw, smsConsentCheckbox } from '../lib/html.js';
 import { formatLocal } from '../lib/time.js';
+import { rowId } from '../lib/input.js';
 import {
   getPackagesForCoach,
   getPackageById,
@@ -79,6 +80,15 @@ import {
 import type { Request } from 'express';
 
 export const publicRouter = Router();
+
+// A session id in a public URL is a row id; anything else is a 404.
+publicRouter.param('sessionId', (req, res, next, value) => {
+  if (rowId(value) === null) {
+    res.status(404).send(notFound());
+    return;
+  }
+  next();
+});
 
 interface SessionForBooking {
   id: number;
@@ -1271,7 +1281,7 @@ publicRouter.post('/c/:handle/checkout/:token', async (req, res) => {
     }
 
     if (mode === 'package') {
-      const packageId = Number(field(req.body, 'package_id'));
+      const packageId = rowId(field(req.body, 'package_id')) ?? 0;
       const pkg = await getPackageById(db, coach.id, packageId);
       if (!pkg || pkg.credits < children) {
         res.status(404).send(notFound());
@@ -1293,7 +1303,7 @@ publicRouter.post('/c/:handle/checkout/:token', async (req, res) => {
     }
 
     if (mode === 'plan') {
-      const planId = Number(field(req.body, 'plan_id'));
+      const planId = rowId(field(req.body, 'plan_id')) ?? 0;
       const plan = await getPlanById(db, coach.id, planId);
       if (!plan || plan.credits_per_month < children) {
         res.status(404).send(notFound());

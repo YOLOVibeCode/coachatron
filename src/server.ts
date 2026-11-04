@@ -10,6 +10,7 @@ import { getDb } from './db/client.js';
 import { runMigrations } from './db/migrate.js';
 import { runTick } from './jobs/tick.js';
 import { pageHeaders, trustProxyHops } from './lib/headers.js';
+import { refuseNulCharacters } from './lib/input.js';
 
 const TICK_MS = 60_000;
 
@@ -25,6 +26,7 @@ export function createApp() {
   app.use('/webhooks/sms-status', express.raw({ type: '*/*' }), smsStatusRouter);
   app.use(express.urlencoded({ extended: true }));
   app.use(express.json());
+  app.use(refuseNulCharacters);
 
   app.use(healthRouter);
   // GET / is also the Railway healthcheck, so it never touches the database.
