@@ -252,7 +252,14 @@ test('until payments work, booking and paying answer a friendly page and nothing
   await withRelay(async (relay) => {
     const db = await freshDb();
     const seed = await seedCoachWithSession(db, { paymentsReady: false });
-    const pending = await createPendingBooking(db, seed.sessionId, 'Sam Reyes', '+15550007777', null);
+    const pending = await createPendingBooking(db, {
+      sessionId: seed.sessionId,
+      capacity: 2,
+      athleteName: 'Sam Reyes',
+      contactPhone: '+15550007777',
+      contactEmail: null,
+    });
+    assert.ok(pending);
     await withServer(async (base) => {
       const bookPath = `/c/${seed.coach.handle}/sessions/${seed.sessionId}/book`;
       const formPage = await fetch(`${base}${bookPath}`);
@@ -268,7 +275,7 @@ test('until payments work, booking and paying answer a friendly page and nothing
       const rows = await db.query('select id from booking where athlete_name = $1', ['Mia Ortiz']);
       assert.equal(rows.rows.length, 0, 'no booking is started');
 
-      const checkoutPath = `/c/${seed.coach.handle}/checkout/${pending}`;
+      const checkoutPath = `/c/${seed.coach.handle}/checkout/${pending.id}`;
       const checkout = await fetch(`${base}${checkoutPath}`);
       assert.equal(checkout.status, 200);
       const checkoutHtml = await checkout.text();

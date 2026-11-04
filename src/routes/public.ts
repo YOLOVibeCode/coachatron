@@ -13,8 +13,10 @@ import {
   decrementCredit,
   createPendingBooking,
   getBooking,
-  markBookingBooked,
-  countBookedForSession,
+  bookPendingBooking,
+  renewHold,
+  restoreCredit,
+  takesSpotSql,
 } from '../domain/pricing.js';
 import { checkOverflow, acceptOffer, declineOffer, describeOffer, getOfferByToken } from '../domain/cascade.js';
 import { buyerEmail, connectBuyUrl } from '../relay/buy-link.js';
@@ -70,6 +72,38 @@ function bookingOpensSoon(coach: CoachRow, note?: string) {
 }
 
 const CREDITS_ONLY_NOTE = 'Only session credits can be used until then.';
+function sessionStarted(session: { starts_at_utc: string }): boolean {
+  return new Date(session.starts_at_utc) <= new Date();
+}
+
+function renderSessionStarted(coach: CoachRow, session: SessionForBooking) {
+  return page(
+    'Session started',
+    html`<h1>That session has started</h1>
+      <p class="muted">${session.name} — ${formatLocal(session.starts_at_utc, session.tz)} can no longer be booked.</p>
+      <a class="action" href="/c/${coach.handle}">See other times</a>`,
+  );
+}
+
+function renderSessionFull(
+  coach: CoachRow,
+  session: SessionForBooking,
+  values: { athleteName: string; rawPhone: string; contactEmail: string | null },
+) {
+  return page(
+    'Session full',
+    html`<h1>That session just filled up</h1>
+      <p class="muted">Someone booked the last spot, but you can wait for one to open.</p>
+      <form method="post" action="/c/${coach.handle}/sessions/${session.id}/waitlist">
+        <input type="hidden" name="athlete_name" value="${values.athleteName}" />
+        <input type="hidden" name="contact_phone" value="${values.rawPhone}" />
+        <input type="hidden" name="contact_email" value="${values.contactEmail ?? ''}" />
+        ${smsConsentCheckbox()}
+        <button type="submit">Join the waitlist</button>
+      </form>
+      <a class="action" href="/c/${coach.handle}">See other times</a>`,
+  );
+}
 
 function field(body: unknown, key: string): string {
   const value = (body as Record<string, unknown> | undefined)?.[key];
@@ -254,7 +288,7 @@ publicRouter.get('/c/:handle', async (req, res) => {
     booked: string;
   }>(
     `select s.id, s.starts_at_utc, s.tz, st.name, st.capacity, st.price_cents,
-            coalesce((select count(*) from booking b where b.session_id = s.id and b.status = 'booked'), 0)::text as booked
+            coalesce((select count(*) from booking b where b.session_id = s.id and ${takesSpotSql('b')}), 0)::text as booked
      from session s
      join session_type st on st.id = s.session_type_id
      where st.coach_id = $1 and s.status = 'scheduled' and s.starts_at_utc > now()
@@ -306,6 +340,10 @@ publicRouter.get('/c/:handle/sessions/:sessionId/book', async (req, res) => {
   const session = await loadSessionForCoach(db, coach, Number(req.params.sessionId));
   if (!session) {
     res.status(404).send(notFound());
+    return;
+  }
+  if (sessionStarted(session)) {
+    res.status(409).send(renderSessionStarted(coach, session));
     return;
   }
   if (needsPayment(session) && !(await paymentsOpen(db, coach))) {
@@ -361,6 +399,10 @@ publicRouter.post('/c/:handle/sessions/:sessionId/book', async (req, res) => {
     return;
   }
 
+  if (sessionStarted(session)) {
+    res.status(409).send(renderSessionStarted(coach, session));
+    return;
+  }
   // While the coach cannot take payments, a family with session credits can
   // still book; checkout then offers only the credit.
   const creditsOnly = needsPayment(session) && !(await paymentsOpen(db, coach));
@@ -395,30 +437,20 @@ publicRouter.post('/c/:handle/sessions/:sessionId/book', async (req, res) => {
     await recordConsent(db, contactPhone, meta.source, { ip: meta.ip, userAgent: meta.userAgent });
   }
 
-  // Re-check capacity server-side even if the list page the parent saw was
-  // stale — SPEC.md §7.2.
-  const bookedCount = await countBookedForSession(db, session.id);
-  if (bookedCount >= session.capacity) {
-    res.status(409).send(
-      page(
-        'Session full',
-        html`<h1>That session just filled up</h1>
-          <p class="muted">Someone booked the last spot, but you can wait for one to open.</p>
-          <form method="post" action="/c/${coach.handle}/sessions/${session.id}/waitlist">
-            <input type="hidden" name="athlete_name" value="${athleteName}" />
-            <input type="hidden" name="contact_phone" value="${rawPhone}" />
-            <input type="hidden" name="contact_email" value="${contactEmail ?? ''}" />
-            ${smsConsentCheckbox()}
-            <button type="submit">Join the waitlist</button>
-          </form>
-          <a class="action" href="/c/${coach.handle}">See other times</a>`,
-      ),
-    );
+  // Capacity is checked server-side even if the list page the parent saw was
+  // stale (SPEC.md §7.2). The pending booking holds the spot while they pay.
+  const pending = await createPendingBooking(db, {
+    sessionId: session.id,
+    capacity: session.capacity,
+    athleteName,
+    contactPhone,
+    contactEmail,
+  });
+  if (!pending) {
+    res.status(409).send(renderSessionFull(coach, session, { athleteName, rawPhone, contactEmail }));
     return;
   }
-
-  const bookingId = await createPendingBooking(db, session.id, athleteName, contactPhone, contactEmail);
-  res.redirect(303, `/c/${coach.handle}/checkout/${bookingId}`);
+  res.redirect(303, `/c/${coach.handle}/checkout/${pending.id}`);
 });
 
 // Joining the waitlist for a full session (SPEC.md §7.3 step 1: "the
@@ -605,8 +637,13 @@ publicRouter.post('/c/:handle/checkout/:bookingId', async (req, res) => {
     return;
   }
 
+  // One checkout per booking: a booked booking is never sent to pay again.
   if (ctx.booking.status !== 'pending') {
-    res.status(200).send(renderAlreadyBooked(coach, ctx.session));
+    res.status(409).send(renderAlreadyBooked(coach, ctx.session));
+    return;
+  }
+  if (sessionStarted(ctx.session)) {
+    res.status(409).send(renderSessionStarted(coach, ctx.session));
     return;
   }
 
@@ -619,6 +656,19 @@ publicRouter.post('/c/:handle/checkout/:bookingId', async (req, res) => {
   const paying = mode === 'package' || mode === 'plan' || (mode === 'dropin' && needsPayment(ctx.session));
   if (paying && !(await paymentsOpen(db, coach))) {
     res.status(409).send(bookingOpensSoon(coach));
+    return;
+  }
+
+  // Whatever the parent picks, their spot must still be theirs: a lapsed
+  // hold is renewed only while the session has room.
+  if (!(await renewHold(db, ctx.booking, ctx.session.capacity))) {
+    res.status(409).send(
+      renderSessionFull(coach, ctx.session, {
+        athleteName: ctx.booking.athlete_name,
+        rawPhone: phone,
+        contactEmail: ctx.booking.contact_email,
+      }),
+    );
     return;
   }
 
@@ -641,12 +691,23 @@ publicRouter.post('/c/:handle/checkout/:bookingId', async (req, res) => {
           );
         return;
       }
-      await markBookingBooked(db, bookingId, {
+      const booked = await bookPendingBooking(db, ctx.booking, ctx.session.capacity, {
         paymentSource: 'PackageCredit',
         creditId: credit.id,
         chargeId: null,
         grossCents: null,
       });
+      if (!booked) {
+        await restoreCredit(db, credit.id);
+        res.status(409).send(
+          renderSessionFull(coach, ctx.session, {
+            athleteName: ctx.booking.athlete_name,
+            rawPhone: phone,
+            contactEmail: ctx.booking.contact_email,
+          }),
+        );
+        return;
+      }
       void checkOverflow(db, ctx.session.id);
       res.redirect(303, `/c/${coach.handle}/checkout/${bookingId}`);
       return;

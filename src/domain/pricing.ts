@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import type { DbClient } from '../db/client.js';
+import { BOOKING_HOLD_MINUTES } from '../config.js';
 
 export interface PackageRow {
   id: number;
@@ -39,6 +40,9 @@ export interface BookingRow {
   charge_id: string | null;
   gross_cents: number | null;
   manage_token: string;
+  checkout_token: string | null;
+  hold_expires_at: string | null;
+  phone_verified_at: string | null;
   status: string;
 }
 
@@ -162,52 +166,139 @@ export async function createSubscriptionRecord(db: DbClient, planId: number, con
   return result.rows[0].id;
 }
 
-/** Creates the booking in `pending` status with no payment mode chosen yet
- * — the checkout step (screen 10) decides drop-in/package/plan/credit and
- * fills in payment_source, charge_id, gross_cents, and flips status. */
-export async function createPendingBooking(
-  db: DbClient,
-  sessionId: number,
-  athleteName: string,
-  contactPhone: string,
-  contactEmail: string | null,
-): Promise<number> {
-  const manageToken = crypto.randomBytes(32).toString('hex');
-  const result = await db.query<{ id: number }>(
-    `insert into booking (session_id, athlete_name, contact_phone, contact_email, manage_token, status)
-     values ($1, $2, $3, $4, $5, 'pending')
-     returning id`,
-    [sessionId, athleteName, contactPhone, contactEmail, manageToken],
-  );
-  return result.rows[0].id;
+/** A token for a booking's manage link or checkout page: 128 random bits,
+ * URL-safe, and short enough to leave room in a one-segment text. */
+export function newBookingToken(): string {
+  return crypto.randomBytes(16).toString('base64url');
 }
 
-export async function getBooking(db: DbClient, bookingId: number): Promise<BookingRow | null> {
-  const result = await db.query<BookingRow>(
-    `select id, session_id, athlete_name, contact_phone, contact_email, payment_source, credit_id, charge_id, gross_cents, manage_token, status
-     from booking where id = $1`,
-    [bookingId],
+/** SQL for "this booking takes a spot": it was sold and not cancelled, or
+ * it is pending and its hold has not run out. `b` is the booking alias. */
+export function takesSpotSql(b: string): string {
+  return `(${b}.status in ('booked', 'attended', 'noshow') or (${b}.status = 'pending' and ${b}.hold_expires_at > now()))`;
+}
+
+/** Spots taken in a session: live bookings plus unexpired holds. */
+export async function countTakenSpots(db: DbClient, sessionId: number, exceptBookingId: number | null = null): Promise<number> {
+  const result = await db.query<{ count: string }>(
+    `select count(*)::text as count from booking b
+     where b.session_id = $1 and b.id <> coalesce($2::int, -1) and ${takesSpotSql('b')}`,
+    [sessionId, exceptBookingId],
   );
+  return Number(result.rows[0]?.count ?? '0');
+}
+
+export interface PendingBooking {
+  id: number;
+  checkoutToken: string;
+  manageToken: string;
+}
+
+/** Creates the booking in `pending` status, holding one spot for
+ * BOOKING_HOLD_MINUTES while the parent chooses how to pay. The checkout
+ * step (screen 10) fills in payment_source, charge_id, gross_cents, and
+ * flips status.
+ *
+ * Returns null, and keeps nothing, when the session has no spot left. The
+ * row is written first and then counted against every live booking and
+ * every earlier unexpired hold, so two parents racing for the last spot
+ * cannot both hold it: the later one sees the earlier one and steps back. */
+export async function createPendingBooking(
+  db: DbClient,
+  args: {
+    sessionId: number;
+    capacity: number;
+    athleteName: string;
+    contactPhone: string;
+    contactEmail: string | null;
+    phoneVerified?: boolean;
+  },
+): Promise<PendingBooking | null> {
+  const manageToken = newBookingToken();
+  const checkoutToken = newBookingToken();
+  const result = await db.query<{ id: number }>(
+    `insert into booking (session_id, athlete_name, contact_phone, contact_email, manage_token, checkout_token,
+                          hold_expires_at, phone_verified_at, status)
+     values ($1, $2, $3, $4, $5, $6, now() + make_interval(mins => $7::int), case when $8::boolean then now() end, 'pending')
+     returning id`,
+    [
+      args.sessionId,
+      args.athleteName,
+      args.contactPhone,
+      args.contactEmail,
+      manageToken,
+      checkoutToken,
+      BOOKING_HOLD_MINUTES,
+      args.phoneVerified === true,
+    ],
+  );
+  const id = result.rows[0].id;
+  const ahead = await db.query<{ count: string }>(
+    `select count(*)::text as count from booking b
+     where b.session_id = $1 and b.id <> $2
+       and (b.status in ('booked', 'attended', 'noshow') or (b.status = 'pending' and b.hold_expires_at > now() and b.id < $2))`,
+    [args.sessionId, id],
+  );
+  if (Number(ahead.rows[0]?.count ?? '0') >= args.capacity) {
+    await db.query("delete from booking where id = $1 and status = 'pending'", [id]);
+    return null;
+  }
+  return { id, checkoutToken, manageToken };
+}
+
+const BOOKING_COLUMNS = `id, session_id, athlete_name, contact_phone, contact_email, payment_source, credit_id, charge_id, gross_cents,
+  manage_token, checkout_token, hold_expires_at, phone_verified_at, status`;
+
+export async function getBooking(db: DbClient, bookingId: number): Promise<BookingRow | null> {
+  const result = await db.query<BookingRow>(`select ${BOOKING_COLUMNS} from booking where id = $1`, [bookingId]);
   return result.rows[0] ?? null;
 }
 
-export async function markBookingBooked(
-  db: DbClient,
-  bookingId: number,
-  fields: { paymentSource: string; creditId: number | null; chargeId: string | null; grossCents: number | null },
-): Promise<void> {
-  await db.query(
-    `update booking
-     set status = 'booked', payment_source = $2, credit_id = $3, charge_id = $4, gross_cents = $5
-     where id = $1`,
-    [bookingId, fields.paymentSource, fields.creditId, fields.chargeId, fields.grossCents],
-  );
+/** The booking behind a checkout page. Only the checkout token finds it,
+ * never the serial id. */
+export async function getBookingByCheckoutToken(db: DbClient, token: string): Promise<BookingRow | null> {
+  if (!token) return null;
+  const result = await db.query<BookingRow>(`select ${BOOKING_COLUMNS} from booking where checkout_token = $1`, [token]);
+  return result.rows[0] ?? null;
 }
 
-export async function countBookedForSession(db: DbClient, sessionId: number): Promise<number> {
-  const result = await db.query<{ count: string }>(
-    "select count(*)::text as count from booking where session_id = $1 and status = 'booked'",
-    [sessionId],
+/** Keeps a pending booking's spot for the parent who is about to pay: an
+ * unexpired hold stands, and a lapsed one is renewed only while the session
+ * still has room. False when the booking is not pending or the spot is gone. */
+export async function renewHold(db: DbClient, booking: Pick<BookingRow, 'id' | 'session_id'>, capacity: number): Promise<boolean> {
+  const result = await db.query<{ id: number }>(
+    `update booking
+     set hold_expires_at = case when hold_expires_at > now() then hold_expires_at else now() + make_interval(mins => $3::int) end
+     where id = $1 and status = 'pending'
+       and (hold_expires_at > now()
+            or (select count(*) from booking o where o.session_id = $2 and o.id <> $1 and ${takesSpotSql('o')}) < $4)
+     returning id`,
+    [booking.id, booking.session_id, BOOKING_HOLD_MINUTES, capacity],
   );
-  return Number(result.rows[0]?.count ?? '0');
+  return result.rows.length === 1;
+}
+
+/** Flips a pending booking to booked. It books when the booking still holds
+ * its spot, or, once the hold has lapsed, when the session still has room.
+ * False when the booking is no longer pending or the session is full. */
+export async function bookPendingBooking(
+  db: DbClient,
+  booking: Pick<BookingRow, 'id' | 'session_id'>,
+  capacity: number,
+  fields: { paymentSource: string; creditId: number | null; chargeId: string | null; grossCents: number | null },
+): Promise<boolean> {
+  const result = await db.query<{ id: number }>(
+    `update booking
+     set status = 'booked', payment_source = $3, credit_id = $4, charge_id = $5, gross_cents = $6
+     where id = $1 and status = 'pending'
+       and (hold_expires_at > now()
+            or (select count(*) from booking o where o.session_id = $2 and o.id <> $1 and ${takesSpotSql('o')}) < $7)
+     returning id`,
+    [booking.id, booking.session_id, fields.paymentSource, fields.creditId, fields.chargeId, fields.grossCents, capacity],
+  );
+  return result.rows.length === 1;
+}
+
+export async function restoreCredit(db: DbClient, creditId: number): Promise<void> {
+  await db.query('update credit set remaining = remaining + 1 where id = $1', [creditId]);
 }

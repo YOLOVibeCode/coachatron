@@ -36,6 +36,8 @@ export const SMS_PRODUCT_DAILY_FLOOR = 500;
 export const OTP_DAILY_MAX_PER_CONTACT = 5;
 /** Wrong tries before a sign-in code stops working. */
 export const OTP_MAX_ATTEMPTS = 5;
+/** How long a pending booking holds its spot while the parent pays. */
+export const BOOKING_HOLD_MINUTES = 15;
 /** Empty: the relay's shared authenticated sender. Set to
  * no-reply@coachatron.com once coachatron.com is authenticated in SendGrid.
  * Read at call time so tests can set it. */

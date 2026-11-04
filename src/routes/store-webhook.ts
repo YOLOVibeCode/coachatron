@@ -9,7 +9,7 @@ import {
   getBooking,
   getPackageById,
   getPlanById,
-  markBookingBooked,
+  bookPendingBooking,
 } from '../domain/pricing.js';
 import { checkOverflow } from '../domain/cascade.js';
 import { findCoachBySellerKey } from '../domain/auth.js';
@@ -30,6 +30,12 @@ async function onPaid(event: StoreEvent): Promise<void> {
 
   const paymentRef = (event.refs?.paymentId || event.refs?.orderId || event.id) ?? null;
   const amount = event.money?.amountCents ?? booking.gross_cents;
+  const capacity = await capacityForSession(booking.session_id);
+  const markBookingBooked = (
+    _db: typeof db,
+    _id: number,
+    fields: { paymentSource: string; creditId: number | null; chargeId: string | null; grossCents: number | null },
+  ) => bookPendingBooking(db, booking, capacity, fields);
 
   if (parsed.mode === 'dropin') {
     await markBookingBooked(db, booking.id, {
@@ -105,6 +111,14 @@ async function onSellerEvent(event: StoreEvent): Promise<void> {
   const charges = event.seller?.chargesEnabled;
   if (typeof charges === 'boolean') await recordChargesEnabled(db, coach, charges);
   else await refreshPaymentsStatus(db, coach);
+}
+
+async function capacityForSession(sessionId: number): Promise<number> {
+  const row = await getDb().query<{ capacity: number }>(
+    'select st.capacity from session s join session_type st on st.id = s.session_type_id where s.id = $1',
+    [sessionId],
+  );
+  return row.rows[0]?.capacity ?? 0;
 }
 
 async function coachIdForBooking(sessionId: number): Promise<number | null> {
