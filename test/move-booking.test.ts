@@ -599,3 +599,28 @@ test('Session detail says where a moved booking is now, once, and nothing when i
     });
   });
 });
+
+test("once children who used their own credits are in different sessions, the pass page shows each child's own time", async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const { seed, from, to } = await twoSessions(db);
+    const mia = await creditBooking(db, seed.coach.id, from, 'Mia');
+    const leo = await creditBooking(db, seed.coach.id, from, 'Leo');
+    const checkout = newBookingToken();
+    await db.query("update booking set pass_id = 'pass-credits' where id = any($1::int[])", [[mia.id, leo.id]]);
+    await db.query('update booking set checkout_token = $2 where id = $1', [mia.id, checkout]);
+    const passPage = async (base: string) => readable(await (await fetch(`${base}/c/${seed.coach.handle}/checkout/${checkout}`)).text());
+    await withServer(async (base) => {
+      const together = await passPage(base);
+      assert.ok(together.includes(`Goalkeeper Group — ${await startsAt(db, from)}`), 'one time while both are there');
+
+      assert.equal((await move(base, leo.token, to)).status, 303);
+      const apart = await passPage(base);
+      assert.match(apart, /You're booked/);
+      assert.ok(!apart.includes(`Goalkeeper Group — ${await startsAt(db, from)}`), 'no one time for both');
+      assert.ok(apart.includes(`Mia: ${await startsAt(db, from)}`), apart);
+      assert.ok(apart.includes(`Leo: ${await startsAt(db, to)}`), apart);
+      assert.ok(apart.includes(`/booking/${mia.token}`) && apart.includes(`/booking/${leo.token}`));
+    });
+  });
+});

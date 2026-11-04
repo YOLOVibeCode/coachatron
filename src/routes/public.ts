@@ -782,7 +782,21 @@ async function loadCheckoutContext(db: DbClient, coach: CoachRow, token: string)
   if (!session) return null;
   // Every child in the pass is paid for here, through its first booking.
   const pass = await passBookings(db, booking);
-  return { booking, session, pass: pass.length > 0 ? pass : [booking] };
+  return { booking, session, pass: await withOwnTimes(db, pass.length > 0 ? pass : [booking]) };
+}
+
+/** A pass's bookings, each with its own session's time once they are not all
+ * in one session: children who each used their own credit move one at a
+ * time from their manage links (SPEC.md §7.2). */
+async function withOwnTimes(db: DbClient, pass: BookingRow[]): Promise<Array<BookingRow & { when?: string }>> {
+  const ids = [...new Set(pass.map((b) => b.session_id))];
+  if (ids.length <= 1) return pass;
+  const sessions = await db.query<{ id: number; starts_at_utc: string | Date; tz: string }>(
+    'select id, starts_at_utc, tz from session where id = any($1::int[])',
+    [ids],
+  );
+  const when = new Map(sessions.rows.map((s) => [s.id, formatLocal(new Date(s.starts_at_utc).toISOString(), s.tz)]));
+  return pass.map((b) => ({ ...b, when: when.get(b.session_id) }));
 }
 
 /** What the checkout screen says about session credits. Credits belong to a
@@ -891,18 +905,25 @@ function renderAlreadyBooked(
   coach: CoachRow,
   session: SessionForBooking,
   booking: Pick<BookingRow, 'manage_token' | 'status'>,
-  pass: Array<Pick<BookingRow, 'manage_token' | 'athlete_name'>> = [],
+  pass: Array<Pick<BookingRow, 'manage_token' | 'athlete_name'> & { when?: string }> = [],
 ) {
+  // Once the children are in different sessions, each link says its own
+  // time and the heading names none.
+  const apart = pass.some((b) => b.when !== undefined);
   const links =
     pass.length > 1
       ? html`<p>Keep these links to see or cancel each child's booking:</p>
-          ${pass.map((b) => html`<a class="action" href="/booking/${b.manage_token}">Manage ${b.athlete_name}'s booking</a>`)}`
+          ${pass.map(
+            (b) => html`${b.when ? html`<p class="muted">${b.athlete_name}: ${b.when}</p>` : raw('')}
+              <a class="action" href="/booking/${b.manage_token}">Manage ${b.athlete_name}'s booking</a>`,
+          )}`
       : manageLinkBlock(booking);
+  const what = apart ? session.name : `${session.name} — ${formatLocal(session.starts_at_utc, session.tz)}`;
   if (booking.status === 'refunded') {
     return page(
       'Refunded',
       html`<h1>This booking was refunded</h1>
-        <p class="muted">${session.name} — ${formatLocal(session.starts_at_utc, session.tz)}. The payment went back to your card.</p>
+        <p class="muted">${what}. The payment went back to your card.</p>
         ${links}
         <a class="action ghost" href="/c/${coach.handle}">Back to ${coach.name}'s sessions</a>`,
     );
@@ -911,7 +932,7 @@ function renderAlreadyBooked(
     return page(
       'Cancelled',
       html`<h1>This booking was cancelled</h1>
-        <p class="muted">${session.name} — ${formatLocal(session.starts_at_utc, session.tz)}</p>
+        <p class="muted">${what}</p>
         ${links}
         <a class="action ghost" href="/c/${coach.handle}">Back to ${coach.name}'s sessions</a>`,
     );
@@ -919,7 +940,7 @@ function renderAlreadyBooked(
   return page(
     'Booked',
     html`<h1>You're booked</h1>
-      <p class="muted">${session.name} — ${formatLocal(session.starts_at_utc, session.tz)}</p>
+      <p class="muted">${what}</p>
       ${links}
       <a class="action ghost" href="/c/${coach.handle}">Back to ${coach.name}'s sessions</a>`,
   );

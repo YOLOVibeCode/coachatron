@@ -258,7 +258,9 @@ SPEC.md §8.1.
   while the booking is still in the session it read (under a share lock on
   the booking), so a move that lands between the tick's read and its claim
   sends no reminder for the old time and leaves the new time's reminder due.
-  The freed spot is offered to the waitlist.
+  The freed spot is offered to the waitlist. Once children who each used
+  their own credit are in different sessions, the checkout link's page
+  shows each child's own time beside their manage link.
 - **A coach's cancel** returns a credit for every paid booking, including a
   paid drop-in, which becomes one session credit with the coach with no
   expiry. Each step can run again, so a cancel that stopped part way
