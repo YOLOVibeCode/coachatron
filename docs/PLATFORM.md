@@ -136,11 +136,12 @@ All sends go through the relay. Rules from SPEC.md §10 stand (transactional onl
   coachatron --rotate` in the relay repo). `INBOUND_SMS_URL` must equal the
   manifest `url` exactly. The relay ignores a non-XML reply, so Coachatron
   answers by sending a text, not TwiML.
-- **Only texts Twilio signed are acted on.** The relay also sends
-  `x-relay-twilio-verified`: `1` when Twilio's own signature checked out, `0`
-  when not. With the relay's `TWILIO_SIGNATURE_MODE=log` it still forwards the
-  `0` kind, so the app answers anything but `1` with an empty TwiML 200 and
-  does nothing with it.
+- **Only texts and status callbacks Twilio signed are acted on.** The relay
+  also sends `x-relay-twilio-verified`: `1` when Twilio's own signature
+  checked out, `0` when not. With the relay's `TWILIO_SIGNATURE_MODE=log` it
+  still forwards the `0` kind, so the app answers anything but `1` with an
+  empty TwiML 200 and does nothing with it: no reply, no opt-out, and no
+  change to `message_log`.
 - Texts reach only US and Canadian numbers, by the app's and the relay's
   policy; the other `+1` countries and the territories are refused. A coach
   elsewhere joins by email (SPEC.md §7.1).
@@ -303,8 +304,10 @@ Destination price is enforced by country code: only `+1` (US and Canada) is
 texted, since the relay does not report a per-destination price. "Active
 coach" means a coach with a scheduled session ahead. Sign-in codes are also
 capped at 5 per number or email per day, and requests that send a code, opt
-in at `/sms`, or use the landing page's box are limited per client address
-(`src/domain/requestLimits.ts`). A code stops working after 5 wrong tries.
+in at `/sms`, join a waitlist, or use the landing page's box are limited per
+client address (`src/domain/requestLimits.ts`). A code stops working after 5
+wrong tries, works once, and checks for a number or email count against its
+hourly limit only while it has a live code.
 When the relay's own caps answer 429, the send path returns `busy` and the
 page asks to try again later.
 
