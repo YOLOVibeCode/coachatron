@@ -63,6 +63,13 @@ export async function recordPaymentAttention(db: DbClient, item: AttentionInput)
   );
 }
 
+/** Whether a payment for this booking arrived but was kept for the coach
+ * instead of booking it, so the parent is told that and not asked to pay. */
+export async function hasPaymentHeldForCoach(db: DbClient, bookingId: number): Promise<boolean> {
+  const result = await db.query<{ id: number }>('select id from payment_attention where booking_id = $1 limit 1', [bookingId]);
+  return result.rows.length > 0;
+}
+
 export interface AttentionItem {
   id: number;
   reason: AttentionReason;

@@ -35,6 +35,7 @@ import { clientKey, SMS_OPT_IN_LIMITS, takeRequest, WAITLIST_LIMITS } from '../d
 import { canText, sendText } from '../domain/outbound.js';
 import { paymentsOpen } from '../domain/payments.js';
 import { sendBookingConfirmation } from '../domain/bookingMessages.js';
+import { hasPaymentHeldForCoach } from '../domain/paymentAttention.js';
 import { OTP_DAILY_MAX_PER_CONTACT, SMS_BRAND, SMS_OPT_IN_CONFIRMATION, SMS_PURPOSE, SUPPORT_EMAIL } from '../config.js';
 import type { Request } from 'express';
 
@@ -645,6 +646,10 @@ publicRouter.get('/c/:handle/checkout/:token', async (req, res) => {
     res.status(200).send(renderAlreadyBooked(coach, ctx.session, ctx.booking));
     return;
   }
+  if (await hasPaymentHeldForCoach(db, ctx.booking.id)) {
+    res.status(200).send(renderPaymentHeld(coach, ctx.session, ctx.booking));
+    return;
+  }
   if (ctx.session.status !== 'scheduled') {
     res.status(200).send(renderSessionCancelled(coach, ctx.session));
     return;
@@ -700,6 +705,19 @@ function renderPaymentConfirming(coach: CoachRow, session: SessionForBooking, bo
       <a class="action" href="/c/${coach.handle}/checkout/${checkoutToken}?paid=1">Check again</a>
       ${manageLinkBlock(booking, 'action ghost')}
       <p class="muted">Didn't finish paying? <a href="/c/${coach.handle}/checkout/${checkoutToken}">Choose how to pay</a>.</p>`,
+  );
+}
+
+/** A payment arrived for this booking but could not book it (the session
+ * filled or started first, or the amount did not match). The coach has it
+ * on the Money screen; the parent is told, and not offered to pay again. */
+function renderPaymentHeld(coach: CoachRow, session: SessionForBooking, booking: Pick<BookingRow, 'manage_token'>) {
+  return page(
+    'Payment received',
+    html`<h1>We got your payment</h1>
+      <p class="muted">${session.name} — ${formatLocal(session.starts_at_utc, session.tz)}. We could not book this spot with it. ${coach.name} has it and will be in touch. Please don't pay again.</p>
+      ${manageLinkBlock(booking, 'action ghost')}
+      <a class="action ghost" href="/c/${coach.handle}">Back to ${coach.name}'s sessions</a>`,
   );
 }
 
@@ -797,6 +815,10 @@ publicRouter.post('/c/:handle/checkout/:token', async (req, res) => {
     res.status(409).send(renderAlreadyBooked(coach, ctx.session, ctx.booking));
     return;
   }
+  if (await hasPaymentHeldForCoach(db, ctx.booking.id)) {
+    res.status(409).send(renderPaymentHeld(coach, ctx.session, ctx.booking));
+    return;
+  }
   if (ctx.session.status !== 'scheduled') {
     res.status(409).send(renderSessionCancelled(coach, ctx.session));
     return;
@@ -868,9 +890,18 @@ publicRouter.post('/c/:handle/checkout/:token', async (req, res) => {
       return;
     }
 
-    // Whatever the parent picks, their spot must still be theirs: a lapsed
-    // hold is renewed only while the session has room.
-    if (!(await renewHold(db, ctx.booking, ctx.session.capacity))) {
+    // The spot was not this booking's after all: say why, with what the
+    // parent can do next.
+    const notBooked = async (why: 'full' | 'closed' | 'not_pending') => {
+      if (why === 'closed') {
+        res.status(409).send(renderSessionCancelled(coach, ctx.session));
+        return;
+      }
+      if (why === 'not_pending') {
+        const now = await getBookingByCheckoutToken(db, checkoutToken);
+        res.status(409).send(renderAlreadyBooked(coach, ctx.session, now ?? ctx.booking));
+        return;
+      }
       res.status(409).send(
         renderSessionFull(coach, ctx.session, {
           athleteName: ctx.booking.athlete_name,
@@ -878,6 +909,13 @@ publicRouter.post('/c/:handle/checkout/:token', async (req, res) => {
           contactEmail: ctx.booking.contact_email,
         }),
       );
+    };
+
+    // Whatever the parent picks, their spot must still be theirs: a lapsed
+    // hold is renewed only while the session has room.
+    const hold = await renewHold(db, ctx.booking, ctx.session.capacity);
+    if (hold !== 'held') {
+      await notBooked(hold);
       return;
     }
 
@@ -893,15 +931,9 @@ publicRouter.post('/c/:handle/checkout/:token', async (req, res) => {
         chargeId: null,
         grossCents: null,
       });
-      if (!booked) {
+      if (booked !== 'booked') {
         await restoreCredit(db, credit.id);
-        res.status(409).send(
-          renderSessionFull(coach, ctx.session, {
-            athleteName: ctx.booking.athlete_name,
-            rawPhone: phone,
-            contactEmail: ctx.booking.contact_email,
-          }),
-        );
+        await notBooked(booked);
         return;
       }
       await sendBookingConfirmation(db, bookingId);
@@ -1053,12 +1085,14 @@ interface BookingWithSession {
   session_type_name: string;
   coach_id: number;
   coach_handle: string;
+  coach_name: string;
 }
 
 async function loadBookingByToken(db: DbClient, token: string): Promise<BookingWithSession | null> {
   const result = await db.query<BookingWithSession>(
     `select b.id, b.session_id, b.athlete_name, b.contact_phone, b.contact_email, b.phone_verified_at, b.status, b.credit_id,
-            s.starts_at_utc, s.tz, s.location_text, st.name as session_type_name, c.id as coach_id, c.handle as coach_handle
+            s.starts_at_utc, s.tz, s.location_text, st.name as session_type_name, c.id as coach_id, c.handle as coach_handle,
+            c.name as coach_name
      from booking b
      join session s on s.id = b.session_id
      join session_type st on st.id = s.session_type_id
@@ -1082,6 +1116,7 @@ publicRouter.get('/booking/:token', async (req, res) => {
     res.status(404).send(notFound());
     return;
   }
+  const held = booking.status === 'pending' && (await hasPaymentHeldForCoach(db, booking.id));
 
   res.status(200).send(
     page(
@@ -1096,9 +1131,11 @@ publicRouter.get('/booking/:token', async (req, res) => {
             ? html`<span class="good">Confirmed</span>`
             : booking.status === 'cancelled'
               ? html`<span class="muted">Cancelled</span>`
-              : booking.status === 'pending'
-                ? html`<span>Payment not confirmed yet</span>`
-                : html`<span>${booking.status}</span>`}
+              : held
+                ? html`<span>Payment received, not booked. ${booking.coach_name} will be in touch.</span>`
+                : booking.status === 'pending'
+                  ? html`<span>Payment not confirmed yet</span>`
+                  : html`<span>${booking.status}</span>`}
         </p>
 
         <h2>Action</h2>

@@ -17,17 +17,21 @@ export async function postStorePaid(
     amountCents: number;
     paymentId?: string;
     sellerKey?: string;
+    /** Defaults to one id per payment. */
+    eventId?: string;
+    /** When the payment was made; defaults to now. */
+    occurredAt?: Date;
   },
 ): Promise<Response> {
   const callbackUrl = `${base}/webhooks/store`;
   const event = {
-    id: `rel_evt_${args.paymentId ?? args.userId}`,
+    id: args.eventId ?? `rel_evt_${args.paymentId ?? args.userId}`,
     type: 'marketplace.purchase.paid',
     version: 1,
     store: 'coachatron',
     product: 'coachatron',
     mode: 'test',
-    occurredAt: new Date().toISOString(),
+    occurredAt: (args.occurredAt ?? new Date()).toISOString(),
     buyer: { userId: args.userId, email: 'parent@example.com' },
     item: { code: 'NOCTU-COACHATRON-CHARGE', key: 'charge', kind: 'sku', name: 'Charge', quantity: 1 },
     money: {

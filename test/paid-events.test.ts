@@ -91,15 +91,18 @@ test('a delivery that fails part way lets the retry handle the event', async (t)
   await withRelay(async () => {
     const db = await freshDb();
     const seed = await seedCoachWithSession(db, { capacity: 3 });
-    const query = db.query.bind(db);
     let failNext = true;
-    db.query = (async (sql: string, params?: unknown[]) => {
-      if (failNext && sql.includes("set status = 'booked'")) {
-        failNext = false;
-        throw new Error('database unavailable');
-      }
-      return query(sql, params);
-    }) as DbClient['query'];
+    const failing = (query: DbClient['query']) =>
+      (async (sql: string, params?: unknown[]) => {
+        if (failNext && sql.includes("set status = 'booked'")) {
+          failNext = false;
+          throw new Error('database unavailable');
+        }
+        return query(sql, params);
+      }) as DbClient['query'];
+    const transaction = db.transaction!.bind(db);
+    db.query = failing(db.query.bind(db));
+    db.transaction = <T>(fn: (tx: DbClient) => Promise<T>) => transaction((tx) => fn({ query: failing(tx.query.bind(tx)) }));
     await withServer(async (base) => {
       const { userId } = await startPay(base, seed.coach.handle, '5551112222', seed.sessionId);
       const first = await postStorePaid(base, { userId, amountCents: 3500, paymentId: 'ch_retry' });
@@ -282,5 +285,117 @@ test('a parent who cannot be told about their credit is flagged to the coach', a
     assert.equal(relay.sms.filter((m) => m.to === '+15551112222').length, 0);
     assert.equal(relay.emails.length, 0);
     assert.deepEqual((await attention(db)).map((a) => a.outcome), ['credit:1:not-told']);
+  });
+});
+
+test('a payment whose session the coach cancels while it is being handled becomes credit, and the parent is told', async (t) => {
+  captureErrors(t);
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 3, priceCents: 3500 });
+    await withServer(async (base) => {
+      const { userId, key } = await startPay(base, seed.coach.handle, '5551112222', seed.sessionId);
+      // The coach's cancel lands after the payment read the session and
+      // before it booked.
+      const query = db.query.bind(db);
+      let cancelled = false;
+      db.query = (async (sql: string, params?: unknown[]) => {
+        const result = await query(sql, params);
+        if (!cancelled && sql.includes('st.capacity, st.price_cents')) {
+          cancelled = true;
+          assert.equal((await cancelScheduledSession(db, seed.coach.id, seed.sessionId)).kind, 'cancelled');
+        }
+        return result;
+      }) as DbClient['query'];
+      assert.equal((await postStorePaid(base, { userId, amountCents: 3500, paymentId: 'ch_mid_cancel' })).status, 200);
+      assert.ok(cancelled);
+      assert.match(await (await fetch(`${base}/c/${seed.coach.handle}/checkout/${key}`)).text(), /This booking was cancelled/);
+    });
+    assert.equal(await countSold(db, seed.sessionId), 0);
+    const booking = await latestBooking(db);
+    assert.equal(booking.status, 'cancelled');
+    const credits = await db.query<{ remaining: number }>("select remaining from credit where contact_phone = '+15551112222'");
+    assert.deepEqual(credits.rows.map((r) => r.remaining), [1]);
+    assert.equal(relay.sms.filter((m) => m.to === '+15551112222' && /session credit/.test(m.body)).length, 1);
+    assert.equal(relay.sms.filter((m) => m.to === '+15551112222' && /booked/i.test(m.body)).length, 0, 'no booked confirmation');
+    assert.deepEqual((await attention(db)).map((a) => [a.reason, a.outcome]), [['session_cancelled', 'credit:1:told']]);
+  });
+});
+
+test('a payment made before the session started books even when its event arrives after the start', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 3 });
+    await withServer(async (base) => {
+      const { userId } = await startPay(base, seed.coach.handle, '5551112222', seed.sessionId);
+      await db.query("update session set starts_at_utc = now() - interval '1 minute' where id = $1", [seed.sessionId]);
+      const paidAt = new Date(Date.now() - 5 * 60_000);
+      assert.equal((await postStorePaid(base, { userId, amountCents: 3500, paymentId: 'ch_in_time', occurredAt: paidAt })).status, 200);
+    });
+    assert.equal(await countSold(db, seed.sessionId), 1);
+    assert.deepEqual(await attention(db), []);
+  });
+});
+
+test('two events for one payment handled at the same moment book once and add one credit', async (t) => {
+  captureErrors(t);
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 3 });
+    const packageId = await seedPackage(db, seed.coach.id, 10, 30000);
+    await withServer(async (base) => {
+      const { userId } = await startPay(base, seed.coach.handle, '5551112222', seed.sessionId, { mode: 'package', package_id: String(packageId) });
+      // The second event is handled in full after the first has read the
+      // booking as pending and before it books.
+      const query = db.query.bind(db);
+      let second: Promise<Response> | null = null;
+      db.query = (async (sql: string, params?: unknown[]) => {
+        const result = await query(sql, params);
+        if (!second && sql.includes('from booking where id = $1') && sql.includes('checkout_token')) {
+          second = postStorePaid(base, { userId, amountCents: 30000, paymentId: 'ch_pair', eventId: 'rel_evt_mirror' });
+          assert.equal((await second).status, 200);
+        }
+        return result;
+      }) as DbClient['query'];
+      assert.equal((await postStorePaid(base, { userId, amountCents: 30000, paymentId: 'ch_pair', eventId: 'rel_evt_base' })).status, 200);
+      assert.ok(second);
+    });
+    assert.equal(await countSold(db, seed.sessionId), 1);
+    const credits = await db.query<{ remaining: number }>("select remaining from credit where contact_phone = '+15551112222'");
+    assert.deepEqual(credits.rows.map((r) => r.remaining), [9]);
+    assert.deepEqual(await attention(db), [], 'not shown to the coach as paid twice');
+  });
+});
+
+test('a parent whose payment could not book is told so, and is not offered to pay again', async (t) => {
+  captureErrors(t);
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { capacity: 1, priceCents: 3500 });
+    await withServer(async (base) => {
+      const late = await startPay(base, seed.coach.handle, '5551112222', seed.sessionId);
+      await expireHolds(db, seed.sessionId);
+      const other = await startPay(base, seed.coach.handle, '5553334444', seed.sessionId);
+      await postStorePaid(base, { userId: other.userId, amountCents: 3500, paymentId: 'ch_other' });
+      await postStorePaid(base, { userId: late.userId, amountCents: 3500, paymentId: 'ch_late_full' });
+      const links = relay.buyLinks.length;
+
+      for (const path of [`/c/${seed.coach.handle}/checkout/${late.key}?paid=1`, `/c/${seed.coach.handle}/checkout/${late.key}`]) {
+        const body = await (await fetch(`${base}${path}`)).text();
+        assert.match(body, /We got your payment/, path);
+        assert.match(body, /Jamie Coach has it and will be in touch/, path);
+        assert.doesNotMatch(body, /Confirming your payment|name="mode"/, path);
+      }
+      const again = await postCheckout(base, seed.coach.handle, late.key, { mode: 'dropin' });
+      assert.equal(again.status, 409);
+      assert.equal(again.headers.get('location'), null);
+      assert.equal(relay.buyLinks.length, links, 'no second payment is started');
+
+      const manage = (await db.query<{ manage_token: string }>("select manage_token from booking where contact_phone = '+15551112222'")).rows[0];
+      const page = await (await fetch(`${base}/booking/${manage.manage_token}`)).text();
+      assert.match(page, /Payment received, not booked\. Jamie Coach will be in touch\./);
+      assert.doesNotMatch(page, /Payment not confirmed yet/);
+    });
+    assert.deepEqual((await attention(db)).map((a) => a.reason), ['session_full']);
   });
 });

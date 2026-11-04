@@ -165,7 +165,11 @@ one-field-per-screen.
 3. Chooses how to pay: **this session** ($35), **a package** (10 for $300), or
    **a monthly plan** ($120/mo). Existing credits are detected by phone number
    and applied automatically.
-   *(Updated 2026-11-03: the spot is held for 15 minutes while the parent pays.
+   *(Updated 2026-11-03: the spot is held for 15 minutes while the parent pays,
+   counted again from when they pick a way to pay. One phone holds one spot
+   per session at a time: sending the form again moves the hold to the new
+   booking, and a payment for the earlier one still books it. A payment that arrives but cannot book (the session filled or
+   started first) is kept for the coach, and the parent's pages say so.
    A plan is charged once, so parents and coaches see it as a one-time pack.
    Credits are used once the phone is proven: a code texted to it at
    checkout, or arriving from a manage link that was proven the same way.)*

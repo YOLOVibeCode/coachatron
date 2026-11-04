@@ -154,6 +154,15 @@ async function grantRemainder(db: DbClient, booking: BookingRow, coachId: number
   await grantBookingCredit(db, booking.id, grant);
 }
 
+/** When the parent paid: the event's own time, never later than now. A
+ * payment made before the session started counts as made in time even when
+ * its event arrives after the start. */
+function paidAt(event: StoreEvent): Date {
+  const now = new Date();
+  const at = new Date(typeof event.occurredAt === 'string' ? event.occurredAt : '');
+  return Number.isNaN(at.getTime()) || at > now ? now : at;
+}
+
 async function handlePaid(db: DbClient, event: StoreEvent, eventId: string): Promise<void> {
   const parsed = parseBuyerRef(event.buyer?.userId);
   const paymentRef = event.refs?.paymentId || event.refs?.orderId || event.id || eventId;
@@ -184,13 +193,19 @@ async function handlePaid(db: DbClient, event: StoreEvent, eventId: string): Pro
   const who = { coachId: session.coach_id, booking };
   const item = await paidItem(db, session.coach_id, session, booking.session_id, parsed.mode, parsed.itemId);
 
-  if (booking.status !== 'pending') {
-    // The same payment again (another event for it): finish what it began.
-    if (booking.charge_id === paymentRef) {
-      if (booking.status === 'booked' && item && booking.credit_id === null) await grantRemainder(db, booking, session.coach_id, item, paymentRef);
+  /** The booking is no longer pending. When this payment is the one on it
+   * (another event for the same payment, perhaps handled at the same
+   * moment), finish what that began; otherwise it is a second payment. */
+  const settled = async (current: BookingRow | null): Promise<void> => {
+    if (current && current.charge_id === paymentRef) {
+      if (current.status === 'booked' && item && current.credit_id === null) await grantRemainder(db, current, session.coach_id, item, paymentRef);
       return;
     }
-    await attention(booking.status === 'cancelled' ? 'booking_cancelled' : 'already_booked', who);
+    await attention(current?.status === 'cancelled' ? 'booking_cancelled' : 'already_booked', who);
+  };
+
+  if (booking.status !== 'pending') {
+    await settled(booking);
     return;
   }
   if (!item) {
@@ -205,7 +220,7 @@ async function handlePaid(db: DbClient, event: StoreEvent, eventId: string): Pro
   // The coach cancelled the session while this parent was paying: the whole
   // payment becomes credit with the coach, the same as a coach's cancel
   // gives back, and the parent is told.
-  if (session.status === 'cancelled') {
+  const creditInstead = async (): Promise<void> => {
     const grant: CreditGrant = {
       coachId: session.coach_id,
       contactPhone: booking.contact_phone,
@@ -220,30 +235,42 @@ async function handlePaid(db: DbClient, event: StoreEvent, eventId: string): Pro
       grossCents: amount,
     });
     if (creditId === null) {
-      await attention('already_booked', who);
+      await settled(await getBooking(db, booking.id));
       return;
     }
     if (item.planId !== null) await ensureSubscriptionRecord(db, item.planId, booking.contact_phone, paymentRef);
     const told = await sendPaymentCredited(db, booking.id, item.sessions);
     const reached = told.text === 'sent' || told.email === 'sent';
     await attention('session_cancelled', who, { outcome: `credit:${item.sessions}:${reached ? 'told' : 'not-told'}` });
+  };
+
+  if (session.status === 'cancelled') {
+    await creditInstead();
     return;
   }
-  if (session.status !== 'scheduled' || new Date(session.starts_at_utc) <= new Date()) {
+  if (session.status !== 'scheduled' || new Date(session.starts_at_utc) <= paidAt(event)) {
     await attention('session_started', who);
     return;
   }
 
   // Books while the hold stands, or after it lapsed while there is still room.
-  const booked = await bookPendingBooking(db, booking, session.capacity, {
+  const result = await bookPendingBooking(db, booking, session.capacity, {
     paymentSource: item.paymentSource,
     creditId: null,
     chargeId: paymentRef,
     grossCents: amount,
   });
-  if (!booked) {
-    const now = await getBooking(db, booking.id);
-    await attention(now && now.status !== 'pending' ? 'already_booked' : 'session_full', who);
+  if (result === 'closed') {
+    // Cancelled since it was read above.
+    await creditInstead();
+    return;
+  }
+  if (result === 'not_pending') {
+    await settled(await getBooking(db, booking.id));
+    return;
+  }
+  if (result === 'full') {
+    await attention('session_full', who);
     return;
   }
   await grantRemainder(db, booking, session.coach_id, item, paymentRef);
