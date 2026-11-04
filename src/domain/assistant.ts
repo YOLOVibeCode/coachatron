@@ -505,7 +505,7 @@ async function renderConfirm(
     const session = sessionById(sessions, classified.session_id);
     if (!session) return null;
     const when = formatConfirmWhen(session.startsAtUtc, session.tz);
-    return clipSms(`Ask your roster to cover ${when} ${session.name}? Reply Y.`);
+    return clipSms(`Ask your roster for a backup coach for ${when} ${session.name}? Reply Y.`);
   }
   return null;
 }
@@ -528,7 +528,7 @@ async function executeWrite(
     return executeBroadcast(db, coach, classified);
   }
   if (classified.intent === 'roster.offer' && classified.session_id != null) {
-    await startCascade(db, classified.session_id);
+    await startCascade(db, classified.session_id, 'backup');
     return 'Asked the next person on your roster.';
   }
   return catchThat().text;

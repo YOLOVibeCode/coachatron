@@ -146,7 +146,7 @@ test('journey 2: parent books and pays a drop-in via the fake relay', async () =
   });
 });
 
-test('journey 3: full session + a waiter triggers the overflow ask, coach Y, roster Y, offer accepted', async () => {
+test('journey 3: full session + a waiter triggers the overflow ask, coach 2, roster Y, offer accepted', async () => {
   await withRelay(async (relay) => {
     const db = await freshDb();
     const seed = await seedCoachWithSession(db, { capacity: 1 });
@@ -164,7 +164,7 @@ test('journey 3: full session + a waiter triggers the overflow ask, coach Y, ros
     assert.equal(offersBeforeYes.rows.length, 0);
 
     await withServer(async (base) => {
-      const yesRes = await smsTo(base, seed.coach.phone, 'Y');
+      const yesRes = await smsTo(base, seed.coach.phone, '2');
       assert.equal(yesRes.status, 200);
 
       const offers = await db.query<{ id: number; roster_member_id: number; state: string; token: string }>(

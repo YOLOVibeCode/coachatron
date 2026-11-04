@@ -1,5 +1,18 @@
 export type InboundKeyword = 'STOP' | 'START' | 'HELP';
 
+/** A coach's reply to an overflow ask (SPEC.md §7.3, §10): 1 for a second
+ * group, 2 for a backup coach, N for no. Y is read too, so a coach who
+ * answers it can be shown the choices again. */
+export type OverflowReply = '1' | '2' | 'N' | 'Y';
+
+export function overflowReply(body: string): OverflowReply | null {
+  const token = body.trim().replace(/[.!]+$/, '').toUpperCase();
+  if (token === '1' || token === '2') return token;
+  if (token === 'N' || token === 'NO') return 'N';
+  if (token === 'Y' || token === 'YES') return 'Y';
+  return null;
+}
+
 const STOP_WORDS = new Set(['STOP', 'STOPALL', 'UNSUBSCRIBE', 'CANCEL', 'END', 'QUIT', 'REVOKE', 'OPTOUT']);
 const START_WORDS = new Set(['START', 'UNSTOP']);
 const HELP_WORDS = new Set(['HELP', 'INFO']);

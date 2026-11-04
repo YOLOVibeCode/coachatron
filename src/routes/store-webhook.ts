@@ -71,7 +71,7 @@ interface PaidSession {
 
 async function loadPaidSession(db: DbClient, sessionId: number): Promise<PaidSession | null> {
   const result = await db.query<PaidSession>(
-    `select st.coach_id, s.status, s.starts_at_utc, st.capacity, st.price_cents
+    `select st.coach_id, s.status, s.starts_at_utc, coalesce(s.capacity_override, st.capacity) as capacity, st.price_cents
      from session s join session_type st on st.id = s.session_type_id
      where s.id = $1`,
     [sessionId],

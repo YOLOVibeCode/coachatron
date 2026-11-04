@@ -260,7 +260,7 @@ test('roster live offer Y never reaches the model; other text gets one link a da
     setComplete(llm);
     try {
       await withServer(async (base) => {
-        await smsTo(base, seed.coach.phone, 'Y');
+        await smsTo(base, seed.coach.phone, '2');
         const banana = await smsTo(base, member.phone, 'cancel tomorrow');
         assert.equal(banana.status, 200);
         assert.match(await banana.text(), /<Response/);
@@ -301,7 +301,7 @@ test('second sentence re-asks then replaces the pending confirm', async () => {
   });
 });
 
-test('overflow ask retires a waiting cancel; overflow Y still starts the cascade', async () => {
+test('overflow ask retires a waiting cancel; the coach answering 2 starts the cascade', async () => {
   await withRelay(async () => {
     const db = await freshDb();
     const seed = await seedCoachWithSession(db, { capacity: 1 });
@@ -317,7 +317,7 @@ test('overflow ask retires a waiting cancel; overflow Y still starts the cascade
       await checkOverflow(db, seed.sessionId);
 
       await withServer(async (base) => {
-        const yes = await smsTo(base, seed.coach.phone, 'Y');
+        const yes = await smsTo(base, seed.coach.phone, '2');
         assert.equal(yes.status, 200);
         assert.match(await yes.text(), /<Response/);
       });

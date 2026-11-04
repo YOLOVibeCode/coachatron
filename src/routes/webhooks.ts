@@ -2,13 +2,7 @@ import { Router, type Request, type Response } from 'express';
 import { getDb, type DbClient } from '../db/client.js';
 import { sendText } from '../domain/outbound.js';
 import { findCoachByPhone, normalizePhone } from '../domain/auth.js';
-import {
-  acceptOffer,
-  declineOffer,
-  startCascade,
-  findPendingAskSessionForCoach,
-  resolveAskWithoutCascade,
-} from '../domain/cascade.js';
+import { acceptOffer, answerAsk, declineOffer, hasOpenAsk } from '../domain/cascade.js';
 import { handleCoachMessage, keywordToken } from '../domain/assistant.js';
 import { getLivePending, logAssistant, takeDailyReplySlot } from '../domain/assistantPending.js';
 import { createStartLink, phoneHasBooking } from '../domain/startLink.js';
@@ -21,7 +15,7 @@ import {
 import { clipSms } from '../lib/time.js';
 import { formField, parseRelayFormBody, verifyRelaySignature } from '../lib/relay-inbound.js';
 import { inboundSmsUrl } from '../lib/inboundSms.js';
-import { matchInboundKeyword } from '../domain/sms-keywords.js';
+import { matchInboundKeyword, overflowReply } from '../domain/sms-keywords.js';
 import { clearRevocation, confirmConsentFromReply, hasPendingConsent, revokeConsent } from '../domain/sms-consent.js';
 
 export const smsInboundRouter = Router();
@@ -79,6 +73,8 @@ function twimlMessage(res: Response, text: string): void {
     .type('text/xml')
     .send(`<?xml version="1.0" encoding="UTF-8"?><Response><Message>${escapeXml(text)}</Message></Response>`);
 }
+
+const OVERFLOW_CHOICES_REPLY = 'Coachatron: reply 1 to open a second group, 2 to add a backup coach, or N for no.';
 
 function helpReplyText(): string {
   return `${SMS_BRAND}: booking confirmations and reminders for coaching sessions. Help: ${SUPPORT_EMAIL}. Msg frequency varies. Msg & data rates may apply. Reply STOP to opt out.`;
@@ -201,25 +197,33 @@ smsInboundRouter.post('/', async (req, res) => {
 
   const coach = await findCoachByPhone(db, from);
   if (coach) {
-    if (kw === 'Y' || kw === 'N') {
-      const assistantPending = await getLivePending(db, coach.id, now);
-      if (!assistantPending) {
-        const pendingAsk = await findPendingAskSessionForCoach(db, coach.id);
-        if (pendingAsk) {
-          if (kw === 'Y') {
-            await startCascade(db, pendingAsk);
-            twimlEmpty(res);
-            return;
-          }
-          await resolveAskWithoutCascade(db, pendingAsk);
-          twimlEmpty(res);
-          return;
+    // The coach's answer to their open overflow question (SPEC.md §7.3):
+    // 1 or 2 always answer it; N answers it unless the assistant is waiting
+    // on a Y or N of its own. A bare Y gets the choices again.
+    const reply = overflowReply(body);
+    if (reply && (await hasOpenAsk(db, coach.id))) {
+      if (reply === '1' || reply === '2') {
+        await answerAsk(db, coach.id, reply === '1' ? 'second_group' : 'backup');
+        twimlEmpty(res);
+        return;
+      }
+      if (!(await getLivePending(db, coach.id, now))) {
+        if (reply === 'N') {
+          await answerAsk(db, coach.id, 'no');
+        } else {
+          await sendText(
+            db,
+            { to: from, body: OVERFLOW_CHOICES_REPLY, coachId: coach.id, template: 'assistant' },
+            now,
+          );
         }
+        twimlEmpty(res);
+        return;
       }
     }
 
-    const reply = await handleCoachMessage(db, coach, body, 'sms', now);
-    await sendText(db, { to: from, body: reply.text, coachId: coach.id, template: 'assistant' }, now);
+    const answer = await handleCoachMessage(db, coach, body, 'sms', now);
+    await sendText(db, { to: from, body: answer.text, coachId: coach.id, template: 'assistant' }, now);
     twimlEmpty(res);
     return;
   }

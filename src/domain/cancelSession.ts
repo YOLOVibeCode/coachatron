@@ -4,6 +4,7 @@ import { OPT_OUT_LINE, canText, sendText, toOneSegment } from './outbound.js';
 import { cancelledSessionCreditSource, createCredit, holdCreditForRefund, restoreCredit } from './pricing.js';
 import { plain } from './bookingMessages.js';
 import { hasActiveConsent } from './sms-consent.js';
+import { endOverflowForSession } from './cascade.js';
 
 /** A coach's cancel of one session (web and text assistant). Each step can
  * be run again safely, so a cancel that stopped part way finishes on the
@@ -115,8 +116,10 @@ export async function cancelScheduledSession(
     return { kind: 'already_started' };
   }
 
-  // 1. Close the session, so nothing new is booked into it from here on.
+  // 1. Close the session, so nothing new is booked into it from here on,
+  // and end its overflow: no question for the coach, no offer to claim.
   await db.query("update session set status = 'cancelled' where id = $1 and status = 'scheduled'", [sessionId]);
+  await endOverflowForSession(db, sessionId, 'cancelled');
 
   // 2. Cancel each live booking and return its credit together, one booking
   // at a time. A package or pack booking gets its credit back; a paid

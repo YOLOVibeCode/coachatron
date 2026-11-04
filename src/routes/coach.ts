@@ -78,7 +78,14 @@ import {
 } from '../domain/refunds.js';
 import { handleCoachMessage, loadScheduleAssistant, resolvePendingForCoach } from '../domain/assistant.js';
 import { clearCookie, parseCookies, serializeCookie } from '../lib/cookies.js';
-import { answerAskFromWeb, pendingAskForCoach, type PendingAsk } from '../domain/cascade.js';
+import {
+  answerAsk,
+  pendingAskForCoach,
+  runningCascadesForCoach,
+  type OverflowAnswer,
+  type PendingAsk,
+  type RunningCascade,
+} from '../domain/cascade.js';
 import { readStartText, START_COOKIE } from '../lib/startCookie.js';
 import {
   coachHasSchedule,
@@ -941,6 +948,7 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
     justPublished: req.query.published === '1',
   });
   const askCard = renderAskCard(await pendingAskForCoach(db, coachId));
+  const cascadeCards = renderRunningCascades(await runningCascadesForCoach(db, coachId));
   const phoneState = typeof req.query.phone === 'string' ? req.query.phone : '';
   const phoneCard = coach.phone
     ? phoneState === 'done'
@@ -984,6 +992,7 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
           <h1>Coming up</h1>
           ${live}
           ${askCard}
+          ${cascadeCards}
           ${phoneCard}
           ${emailCard}
           <p><a class="action ghost" href="/app/schedule?setup=1">Add more by talking</a></p>
@@ -1023,16 +1032,42 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
 
 // ---- Screen 2 actions: the overflow question and adding a mobile ----
 
+/** The overflow question (SPEC.md §7.3), the same one the text asks:
+ * a second group, a backup coach, or not now. */
 function renderAskCard(ask: PendingAsk | null) {
   if (!ask) return raw('');
-  return html`<div class="card ask-reply">
-    <p><strong>${ask.label} is full</strong>, ${ask.waiting} waiting. Open a second group? We'll ask your roster one at a time.</p>
+  return html`<div class="card ask-reply overflow-ask">
+    <p><strong>${ask.label} is full</strong> with ${ask.waiting} waiting. Open a second group, or add a backup coach? We'll ask your roster one at a time.</p>
     <form class="btn-row" method="post" action="/app/overflow/${ask.sessionId}">
-      <button type="submit" name="answer" value="yes">Ask my roster</button>
+      <button type="submit" name="answer" value="1">Second group</button>
+      <button type="submit" name="answer" value="2" class="ghost">Backup coach</button>
       <button type="submit" name="answer" value="no" class="ghost">Not now</button>
     </form>
   </div>`;
 }
+
+const OVERFLOW_JOB: Record<RunningCascade['kind'], string> = {
+  second_group: 'a second group',
+  backup: 'a backup coach',
+};
+
+/** Where each cascade under way has got to. */
+function renderRunningCascades(cascades: RunningCascade[]) {
+  if (cascades.length === 0) return raw('');
+  return html`${cascades.map(
+    (c) => html`<div class="card overflow-running">
+      <p>Asking your roster for ${OVERFLOW_JOB[c.kind]} for <strong>${c.label}</strong>.
+        ${c.offeredTo ? `Offered to ${c.offeredTo.name} until ${clockTime(c.offeredTo.expiresAt, c.tz)}.` : ''}</p>
+    </div>`,
+  )}`;
+}
+
+/** "6:20 PM" in the session's zone. */
+function clockTime(isoUtc: string, tz: string): string {
+  return new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit' }).format(new Date(isoUtc));
+}
+
+const OVERFLOW_ANSWERS: Record<string, OverflowAnswer> = { '1': 'second_group', '2': 'backup', no: 'no' };
 
 const PHONE_NOTICES: Record<string, string> = {
   bad: 'Enter a US or Canadian mobile number.',
@@ -1177,7 +1212,11 @@ coachRouter.post('/app/email/verify', requireAuth, async (req, res) => {
 coachRouter.post('/app/overflow/:sessionId', requireAuth, async (req, res) => {
   const db = getDb();
   const coachId = res.locals.coachId as number;
-  await answerAskFromWeb(db, coachId, Number(req.params.sessionId), field(req.body, 'answer') === 'yes');
+  const answer = field(req.body, 'answer');
+  const sessionId = Number(req.params.sessionId);
+  if (Object.hasOwn(OVERFLOW_ANSWERS, answer) && Number.isInteger(sessionId)) {
+    await answerAsk(db, coachId, OVERFLOW_ANSWERS[answer], sessionId);
+  }
   res.redirect(303, '/app/schedule');
 });
 

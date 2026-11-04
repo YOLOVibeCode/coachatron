@@ -74,7 +74,8 @@ async function loadSessionForCoach(
   opts: { anyStatus?: boolean } = {},
 ): Promise<SessionForBooking | null> {
   const result = await db.query<SessionForBooking>(
-    `select s.id, s.starts_at_utc, s.tz, st.id as session_type_id, st.name, st.capacity, st.price_cents, s.status
+    `select s.id, s.starts_at_utc, s.tz, st.id as session_type_id, st.name, coalesce(s.capacity_override, st.capacity) as capacity,
+            st.price_cents, s.status
      from session s
      join session_type st on st.id = s.session_type_id
      where s.id = $1 and st.coach_id = $2 and ($3::boolean or s.status = 'scheduled')`,
@@ -347,7 +348,7 @@ publicRouter.get('/c/:handle', async (req, res) => {
     price_cents: number;
     booked: string;
   }>(
-    `select s.id, s.starts_at_utc, s.tz, st.name, st.capacity, st.price_cents,
+    `select s.id, s.starts_at_utc, s.tz, st.name, coalesce(s.capacity_override, st.capacity) as capacity, st.price_cents,
             coalesce((select count(*) from booking b where b.session_id = s.id and ${takesSpotSql('b')}), 0)::text as booked
      from session s
      join session_type st on st.id = s.session_type_id
@@ -1110,17 +1111,19 @@ publicRouter.get('/offer/:token', async (req, res) => {
     res.status(404).send(notFound());
     return;
   }
-  res.status(200).send(renderOfferPage(offer.state, await describeOffer(db, offer.sessionId)));
+  res.status(200).send(renderOfferPage(offer.state, await describeOffer(db, offer)));
 });
 
-function renderOfferPage(state: string, summary: string | null, message?: string) {
+type OfferDescription = Awaited<ReturnType<typeof describeOffer>>;
+
+function renderOfferPage(state: string, about: OfferDescription, message?: string) {
   const resolved = state !== 'sent';
   return page(
     'Overflow offer',
-    html`<h1>Backup coach needed</h1>
-      ${summary ? html`<p>${summary}</p>` : raw('')}
+    html`<h1>${about?.heading ?? 'Overflow offer'}</h1>
+      ${about ? html`<p>${about.summary}</p>` : raw('')}
       ${resolved
-        ? html`<p class="muted">This offer is no longer open (${state}).</p>`
+        ? html`<p class="muted">This offer is no longer open (${OFFER_STATE_WORDS[state] ?? state}).</p>`
         : html`<form method="post">
             <button type="submit" name="action" value="accept">Accept</button>
           </form>
@@ -1131,6 +1134,14 @@ function renderOfferPage(state: string, summary: string | null, message?: string
   );
 }
 
+const OFFER_STATE_WORDS: Record<string, string> = {
+  accepted: 'accepted',
+  declined: 'declined',
+  expired: 'expired',
+  withdrawn: 'closed',
+  unsent: 'closed',
+};
+
 publicRouter.post('/offer/:token', async (req, res) => {
   const db = getDb();
   const offer = await getOfferByToken(db, req.params.token);
@@ -1140,25 +1151,28 @@ publicRouter.post('/offer/:token', async (req, res) => {
   }
 
   const action = field(req.body, 'action');
-  const summary = await describeOffer(db, offer.sessionId);
+  const about = await describeOffer(db, offer);
   if (offer.state !== 'sent') {
-    res.status(200).send(renderOfferPage(offer.state, summary));
+    res.status(200).send(renderOfferPage(offer.state, about));
     return;
   }
 
   if (action === 'accept') {
     const accepted = await acceptOffer(db, offer.id);
-    res
-      .status(200)
-      .send(renderOfferPage(accepted ? 'accepted' : offer.state, summary, accepted ? undefined : 'Too late — someone else already claimed it.'));
+    if (accepted) {
+      res.status(200).send(renderOfferPage('accepted', about));
+      return;
+    }
+    const now = await getOfferByToken(db, req.params.token);
+    res.status(200).send(renderOfferPage(now?.state ?? offer.state, about, 'Too late: this offer has closed.'));
     return;
   }
   if (action === 'decline') {
     await declineOffer(db, offer.id);
-    res.status(200).send(renderOfferPage('declined', summary));
+    res.status(200).send(renderOfferPage('declined', about));
     return;
   }
-  res.status(422).send(renderOfferPage(offer.state, summary, 'Choose accept or decline.'));
+  res.status(422).send(renderOfferPage(offer.state, about, 'Choose accept or decline.'));
 });
 
 // ---- Screen 11: manage booking (M5 self-service) ----
