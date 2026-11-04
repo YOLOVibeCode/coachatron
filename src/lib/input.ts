@@ -68,12 +68,14 @@ function hasNul(value: unknown, depth = 0): boolean {
   return Object.values(value as Record<string, unknown>).some((v) => hasNul(v, depth + 1));
 }
 
-/** Answers 400 for a request whose path, query or form carries a NUL
- * character, before any route reads it. Raw webhook bodies are Buffers and
- * are checked by their own signatures, so they pass through. */
-export function refuseNulCharacters(req: Request, res: Response, next: NextFunction): void {
+/** Refuses a request whose path, query or form carries a NUL character,
+ * before any route reads it: a 400 the request caused, marked the way
+ * body-parser marks its own (`expose`), so the error handler answers the
+ * branded 400 page and logs one client-error line. Raw webhook bodies are
+ * Buffers and are checked by their own signatures, so they pass through. */
+export function refuseNulCharacters(req: Request, _res: Response, next: NextFunction): void {
   if (/%00/.test(req.originalUrl) || hasNul(req.query) || (!Buffer.isBuffer(req.body) && hasNul(req.body))) {
-    res.status(400).type('text/plain').send('Bad request');
+    next(Object.assign(new Error('The request has a NUL character'), { status: 400, expose: true, type: 'nul.character' }));
     return;
   }
   next();

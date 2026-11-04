@@ -26,15 +26,21 @@ async function withEnv(vars: Record<string, string | undefined>, fn: () => Promi
   }
 }
 
-/** Collects what is logged at warn and error level while `fn` runs. */
-async function captureLogs(fn: () => Promise<void>): Promise<{ warn: string[]; error: string[] }> {
-  const logs = { warn: [] as string[], error: [] as string[] };
-  const { warn, error } = console;
+/** Collects what is logged while `fn` runs: on stdout (console.info and
+ * console.log) and on stderr (console.warn and console.error), which
+ * Railway files at level error. */
+async function captureLogs(fn: () => Promise<void>): Promise<{ info: string[]; warn: string[]; error: string[] }> {
+  const logs = { info: [] as string[], warn: [] as string[], error: [] as string[] };
+  const { info, log, warn, error } = console;
+  console.info = (...args: unknown[]) => logs.info.push(args.map(String).join(' '));
+  console.log = (...args: unknown[]) => logs.info.push(args.map(String).join(' '));
   console.warn = (...args: unknown[]) => logs.warn.push(args.map(String).join(' '));
   console.error = (...args: unknown[]) => logs.error.push(args.map(String).join(' '));
   try {
     await fn();
   } finally {
+    console.info = info;
+    console.log = log;
     console.warn = warn;
     console.error = error;
   }
@@ -52,7 +58,7 @@ function assertBranded(body: string, heading: RegExp, what: string): void {
 
 const jsonHeaders = { 'content-type': 'application/json' };
 
-test('a body too large gets the branded 413 page and one warning line, with no stack', async () => {
+test('a body too large gets the branded 413 page and one line on stdout, with no stack', async () => {
   await freshDb();
   let res: Response | undefined;
   let body = '';
@@ -69,11 +75,11 @@ test('a body too large gets the branded 413 page and one warning line, with no s
   assert.equal(res?.status, 413);
   assert.match(res?.headers.get('content-type') ?? '', /^text\/html/);
   assertBranded(body, /<h1>Too much to send<\/h1>/, '413');
-  assert.deepEqual(logs.warn, ['413 POST /signin/otp entity.too.large'], 'one line: status, method, path without the query, type');
-  assert.deepEqual(logs.error, [], 'nothing at error level');
+  assert.deepEqual(logs.info, ['413 POST /signin/otp entity.too.large'], 'one line: status, method, path without the query, type');
+  assert.deepEqual([...logs.warn, ...logs.error], [], 'nothing on stderr, which Railway files at level error');
 });
 
-test('a body that does not parse gets the branded 400 page and one warning line', async () => {
+test('a body that does not parse gets the branded 400 page and one line on stdout', async () => {
   await freshDb();
   const statuses: number[] = [];
   const bodies: string[] = [];
@@ -105,12 +111,12 @@ test('a body that does not parse gets the branded 400 page and one warning line'
   assert.deepEqual(statuses, [400, 400, 400]);
   for (const body of bodies) assertBranded(body, /<h1>Something was wrong with that<\/h1>/, '400');
   assert.doesNotMatch(bodies[0], /pat@/, 'what was sent is not echoed back');
-  assert.deepEqual(logs.warn, [
+  assert.deepEqual(logs.info, [
     '400 POST /signin/otp entity.parse.failed',
     '400 POST /sms querystring.parse.rangeError',
     '400 POST /signin/otp Error',
   ]);
-  assert.deepEqual(logs.error, []);
+  assert.deepEqual([...logs.warn, ...logs.error], []);
 });
 
 test('a bad percent-escape in a link is a branded 400, and the log leaves out a private link\'s key', async () => {
@@ -128,13 +134,50 @@ test('a bad percent-escape in a link is a branded 400, and the log leaves out a 
   );
   assert.deepEqual(statuses, [400, 400, 400]);
   for (const body of bodies) assertBranded(body, /<h1>Something was wrong with that<\/h1>/, 'URIError');
-  assert.deepEqual(logs.warn, [
+  assert.deepEqual(logs.info, [
     '400 GET /c/pat%E0%A4%A URIError',
     '400 GET /booking/:token/cancel URIError',
     '400 GET /app/sessions/%zz URIError',
   ]);
-  assert.ok(!logs.warn.join('\n').includes('abc123'), 'the manage link\'s key is not logged');
-  assert.deepEqual(logs.error, []);
+  assert.ok(!logs.info.join('\n').includes('abc123'), 'the manage link\'s key is not logged');
+  assert.deepEqual([...logs.warn, ...logs.error], []);
+});
+
+test('a NUL character in a link or a form gets the branded 400 page and one line on stdout', async () => {
+  await freshDb();
+  const statuses: number[] = [];
+  const bodies: string[] = [];
+  const types: string[] = [];
+  const logs = await captureLogs(() =>
+    withServer(async (base) => {
+      const sent = [
+        await fetch(`${base}/c/pat%00`, { redirect: 'manual' }),
+        await fetch(`${base}/booking/abc123%00/cancel?x=1`, { redirect: 'manual' }),
+        await fetch(`${base}/sms`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ phone: '214555\u00000101' }),
+          redirect: 'manual',
+        }),
+        await fetch(`${base}/signin/otp`, { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ contact: 'pat\u0000@example.com' }) }),
+      ];
+      for (const res of sent) {
+        statuses.push(res.status);
+        types.push(res.headers.get('content-type') ?? '');
+        bodies.push(await res.text());
+      }
+    }),
+  );
+  assert.deepEqual(statuses, [400, 400, 400, 400]);
+  for (const type of types) assert.match(type, /^text\/html/);
+  for (const body of bodies) assertBranded(body, /<h1>Something was wrong with that<\/h1>/, 'NUL');
+  assert.deepEqual(logs.info, [
+    '400 GET /c/pat%00 nul.character',
+    '400 GET /booking/:token/cancel nul.character',
+    '400 POST /sms nul.character',
+    '400 POST /signin/otp nul.character',
+  ]);
+  assert.deepEqual([...logs.warn, ...logs.error], []);
 });
 
 test('a fault in a route logs its stack once and shows a branded 500 that gives nothing away', async () => {
@@ -158,7 +201,7 @@ test('a fault in a route logs its stack once and shows a branded 500 that gives 
   assert.equal(logs.error.length, 1, 'logged once');
   assert.match(logs.error[0], /^500 GET \/c\/pat: Error: connection to the database was lost\n\s+at /, 'with its stack');
   assert.doesNotMatch(logs.error[0], /secret-link/, 'and without the query');
-  assert.deepEqual(logs.warn, []);
+  assert.deepEqual([...logs.info, ...logs.warn], []);
 });
 
 test('the relay refusing a reply is a fault here: its message and stack are logged at error level', async () => {
@@ -182,7 +225,7 @@ test('the relay refusing a reply is a fault here: its message and stack are logg
   });
   assert.equal(res?.status, 500, 'not the relay\'s 400: the request that came in was fine');
   assertBranded(body, /<h1>Something went wrong<\/h1>/, '500');
-  assert.deepEqual(logs.warn, [], 'not a warning about the request');
+  assert.deepEqual([...logs.info, ...logs.warn], [], 'not a line about the request');
   assert.equal(logs.error.length, 1, 'logged once');
   assert.match(
     logs.error[0],

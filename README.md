@@ -79,10 +79,11 @@ production (`APP_ENV` other than `production`) every response says
 `X-Robots-Tag: noindex` and `/robots.txt` turns every crawler away; in
 production it keeps crawlers off the coach's screens and every private link.
 An address nothing answers gets the app's Not found page, and a request the
-app cannot read (too large, a body that does not parse, a bad percent-escape)
-gets its branded error page with one warning line in the log. Any other
-error, the relay refusing a text included, logs its stack once at error level,
-and the visitor gets a branded 500 page that says nothing about it.
+app cannot read (too large, a body that does not parse, a bad percent-escape,
+a NUL character) gets its branded error page with one line on stdout, which
+Railway files at info level rather than error. Any other error, the relay
+refusing a text included, logs its stack once at error level, and the
+visitor gets a branded 500 page that says nothing about it.
 
 ## Status
 
