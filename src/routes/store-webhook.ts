@@ -15,6 +15,7 @@ import { checkOverflow } from '../domain/cascade.js';
 import { findCoachBySellerKey } from '../domain/auth.js';
 import { recordChargesEnabled, refreshPaymentsStatus } from '../domain/payments.js';
 import { connectProduct } from '../relay/seller.js';
+import { sendBookingConfirmation } from '../domain/bookingMessages.js';
 
 export const storeWebhookRouter = Router();
 
@@ -31,6 +32,7 @@ async function onPaid(event: StoreEvent): Promise<void> {
   const paymentRef = (event.refs?.paymentId || event.refs?.orderId || event.id) ?? null;
   const amount = event.money?.amountCents ?? booking.gross_cents;
   const capacity = await capacityForSession(booking.session_id);
+  let booked = false;
   const markBookingBooked = (
     _db: typeof db,
     _id: number,
@@ -38,7 +40,7 @@ async function onPaid(event: StoreEvent): Promise<void> {
   ) => bookPendingBooking(db, booking, capacity, fields);
 
   if (parsed.mode === 'dropin') {
-    await markBookingBooked(db, booking.id, {
+    booked = await markBookingBooked(db, booking.id, {
       paymentSource: 'DropIn',
       creditId: null,
       chargeId: paymentRef,
@@ -59,7 +61,7 @@ async function onPaid(event: StoreEvent): Promise<void> {
       pkg.credits - 1,
       expiresAt,
     );
-    await markBookingBooked(db, booking.id, {
+    booked = await markBookingBooked(db, booking.id, {
       paymentSource: 'PackageCredit',
       creditId,
       chargeId: paymentRef,
@@ -80,7 +82,7 @@ async function onPaid(event: StoreEvent): Promise<void> {
       plan.credits_per_month - 1,
       null,
     );
-    await markBookingBooked(db, booking.id, {
+    booked = await markBookingBooked(db, booking.id, {
       paymentSource: 'Subscription',
       creditId,
       chargeId: paymentRef,
@@ -90,6 +92,8 @@ async function onPaid(event: StoreEvent): Promise<void> {
     return;
   }
 
+  if (!booked) return;
+  await sendBookingConfirmation(db, booking.id);
   void checkOverflow(db, booking.session_id);
 }
 

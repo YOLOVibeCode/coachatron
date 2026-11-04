@@ -55,6 +55,8 @@ export interface FakeRelay {
   emails: FakeEmail[];
   /** When true, the relay's own caps refuse texts / emails with a 429. */
   limited: { sms: boolean; email: boolean };
+  /** Numbers whose text the fake refuses with a 502, as if the relay were down. Empty by default. */
+  failSmsTo: Set<string>;
   buyLinks: FakeBuyLink[];
   onboards: FakeOnboard[];
   /** The relay's current agreement_version for every product. */
@@ -92,6 +94,7 @@ export async function startFakeRelay(): Promise<FakeRelay> {
   const sms: FakeSms[] = [];
   const emails: FakeEmail[] = [];
   const buyLinks: FakeBuyLink[] = [];
+  const failSmsTo = new Set<string>();
   const onboards: FakeOnboard[] = [];
   const sellers = new Map<string, FakeSeller>();
   const id = (product: string, sellerKey: string) => `${product}/${sellerKey}`;
@@ -188,6 +191,10 @@ export async function startFakeRelay(): Promise<FakeRelay> {
       res.status(400).json({ error: true, code: 21610, message: 'unsubscribed' });
       return;
     }
+    if (failSmsTo.has(to)) {
+      res.status(502).json({ error: true, message: 'relay unavailable' });
+      return;
+    }
     const body = String(req.body.body);
     const sid = `SMfake${String(sms.length + 1).padStart(26, '0')}`;
     sms.push({ to, body, appEnv: req.header('x-app-env') ?? null, sid });
@@ -236,6 +243,7 @@ export async function startFakeRelay(): Promise<FakeRelay> {
     url: base,
     sms,
     emails,
+    failSmsTo,
     buyLinks,
     onboards,
     seller: (product: string, sellerKey: string) => sellers.get(id(product, sellerKey)),

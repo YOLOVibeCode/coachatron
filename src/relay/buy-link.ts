@@ -52,14 +52,18 @@ export function connectBuyUrl(args: {
     user: buyerRef(args.bookingId, args.mode, args.itemId),
     email: args.email,
     description: args.description,
-    returnUrl: `${process.env.APP_BASE_URL ?? APP_BASE_URL}/c/${args.handle}/checkout/${args.checkoutToken}`,
+    returnUrl: `${process.env.APP_BASE_URL ?? APP_BASE_URL}/c/${args.handle}/checkout/${args.checkoutToken}?paid=1`,
     baseUrl: storeBaseUrl(),
   });
   return url;
 }
 
+/** The stand-in address domain for a parent who gave no email. Nothing is
+ * ever sent to it. */
+export const PLACEHOLDER_EMAIL_DOMAIN = 'book.coachatron.test';
+
 export function buyerEmail(phone: string, email: string | null, bookingId: number): string {
   if (email && email.includes('@')) return email;
   const digits = phone.replace(/\D/g, '') || String(bookingId);
-  return `${digits}@book.coachatron.test`;
+  return `${digits}@${PLACEHOLDER_EMAIL_DOMAIN}`;
 }

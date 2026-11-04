@@ -127,7 +127,7 @@ const ONE_TIME_TEMPLATES = new Set(['otp', 'auto-reply', 'assistant']);
  * carries it. */
 const NO_OPT_OUT_LINE_TEMPLATES = new Set(['assistant']);
 
-const OPT_OUT_LINE = 'Reply STOP to opt out.';
+export const OPT_OUT_LINE = 'Reply STOP to opt out.';
 
 function withBrand(body: string): string {
   const prefix = `${SMS_BRAND}:`;

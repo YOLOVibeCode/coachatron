@@ -34,6 +34,7 @@ import { hasActiveConsent, isOptedOut, optedOutNotice, recordConsent } from '../
 import { clientKey, SMS_OPT_IN_LIMITS, takeRequest, WAITLIST_LIMITS } from '../domain/requestLimits.js';
 import { canText, sendText } from '../domain/outbound.js';
 import { paymentsOpen } from '../domain/payments.js';
+import { sendBookingConfirmation } from '../domain/bookingMessages.js';
 import { OTP_DAILY_MAX_PER_CONTACT, SMS_BRAND, SMS_OPT_IN_CONFIRMATION, SMS_PURPOSE, SUPPORT_EMAIL } from '../config.js';
 import type { Request } from 'express';
 
@@ -624,7 +625,12 @@ publicRouter.get('/c/:handle/checkout/:token', async (req, res) => {
     return;
   }
   if (ctx.booking.status !== 'pending') {
-    res.status(200).send(renderAlreadyBooked(coach, ctx.session));
+    res.status(200).send(renderAlreadyBooked(coach, ctx.session, ctx.booking));
+    return;
+  }
+  // Back from the hosted payment page before its confirmation has arrived.
+  if (req.query.paid === '1') {
+    res.status(200).send(renderPaymentConfirming(coach, ctx.session, ctx.booking, req.params.token));
     return;
   }
 
@@ -639,12 +645,40 @@ publicRouter.get('/c/:handle/checkout/:token', async (req, res) => {
   res.status(200).send(renderCheckout(coach, ctx.session, req.params.token, options));
 });
 
-function renderAlreadyBooked(coach: CoachRow, session: SessionForBooking) {
+/** The manage link on the page a parent lands on, so a parent who gets no
+ * texts or email still has it. */
+function manageLinkBlock(booking: Pick<BookingRow, 'manage_token'>) {
+  return html`<p>Keep this link to see or cancel the booking:</p>
+    <a class="action" href="/booking/${booking.manage_token}">Manage this booking</a>`;
+}
+
+function renderAlreadyBooked(coach: CoachRow, session: SessionForBooking, booking: Pick<BookingRow, 'manage_token' | 'status'>) {
+  if (booking.status === 'cancelled') {
+    return page(
+      'Cancelled',
+      html`<h1>This booking was cancelled</h1>
+        <p class="muted">${session.name} — ${formatLocal(session.starts_at_utc, session.tz)}</p>
+        ${manageLinkBlock(booking)}
+        <a class="action ghost" href="/c/${coach.handle}">Back to ${coach.name}'s sessions</a>`,
+    );
+  }
   return page(
     'Booked',
     html`<h1>You're booked</h1>
       <p class="muted">${session.name} — ${formatLocal(session.starts_at_utc, session.tz)}</p>
-      <a class="action" href="/c/${coach.handle}">Back to ${coach.name}'s sessions</a>`,
+      ${manageLinkBlock(booking)}
+      <a class="action ghost" href="/c/${coach.handle}">Back to ${coach.name}'s sessions</a>`,
+  );
+}
+
+function renderPaymentConfirming(coach: CoachRow, session: SessionForBooking, booking: Pick<BookingRow, 'manage_token'>, checkoutToken: string) {
+  return page(
+    'Confirming payment',
+    html`<h1>Confirming your payment</h1>
+      <p class="muted">${session.name} — ${formatLocal(session.starts_at_utc, session.tz)}. If you paid, this takes a moment. Please don't pay again.</p>
+      <a class="action" href="/c/${coach.handle}/checkout/${checkoutToken}?paid=1">Check again</a>
+      ${manageLinkBlock(booking)}
+      <p class="muted">Didn't finish paying? <a href="/c/${coach.handle}/checkout/${checkoutToken}">Choose how to pay</a>.</p>`,
   );
 }
 
@@ -739,7 +773,7 @@ publicRouter.post('/c/:handle/checkout/:token', async (req, res) => {
 
   // One checkout per booking: a booked booking is never sent to pay again.
   if (ctx.booking.status !== 'pending') {
-    res.status(409).send(renderAlreadyBooked(coach, ctx.session));
+    res.status(409).send(renderAlreadyBooked(coach, ctx.session, ctx.booking));
     return;
   }
   if (sessionStarted(ctx.session)) {
@@ -845,6 +879,7 @@ publicRouter.post('/c/:handle/checkout/:token', async (req, res) => {
         );
         return;
       }
+      await sendBookingConfirmation(db, bookingId);
       void checkOverflow(db, ctx.session.id);
       res.redirect(303, `/c/${coach.handle}/checkout/${checkoutToken}`);
       return;
@@ -989,6 +1024,7 @@ interface BookingWithSession {
   credit_id: number | null;
   starts_at_utc: string;
   tz: string;
+  location_text: string | null;
   session_type_name: string;
   coach_id: number;
   coach_handle: string;
@@ -997,7 +1033,7 @@ interface BookingWithSession {
 async function loadBookingByToken(db: DbClient, token: string): Promise<BookingWithSession | null> {
   const result = await db.query<BookingWithSession>(
     `select b.id, b.session_id, b.athlete_name, b.contact_phone, b.contact_email, b.phone_verified_at, b.status, b.credit_id,
-            s.starts_at_utc, s.tz, st.name as session_type_name, c.id as coach_id, c.handle as coach_handle
+            s.starts_at_utc, s.tz, s.location_text, st.name as session_type_name, c.id as coach_id, c.handle as coach_handle
      from booking b
      join session s on s.id = b.session_id
      join session_type st on st.id = s.session_type_id
@@ -1026,7 +1062,7 @@ publicRouter.get('/booking/:token', async (req, res) => {
     page(
       'Manage booking',
       html`<h1>${booking.session_type_name}</h1>
-        <p class="muted">${formatLocal(booking.starts_at_utc, booking.tz)}</p>
+        <p class="muted">${formatLocal(booking.starts_at_utc, booking.tz)}${booking.location_text ? ` · ${booking.location_text}` : ''}</p>
 
         <p class="card">
           <strong>Athlete:</strong> ${booking.athlete_name}<br />
@@ -1035,15 +1071,17 @@ publicRouter.get('/booking/:token', async (req, res) => {
             ? html`<span class="good">Confirmed</span>`
             : booking.status === 'cancelled'
               ? html`<span class="muted">Cancelled</span>`
-              : html`<span>${booking.status}</span>`}
+              : booking.status === 'pending'
+                ? html`<span>Payment not confirmed yet</span>`
+                : html`<span>${booking.status}</span>`}
         </p>
 
         <h2>Action</h2>
-        ${booking.status !== 'cancelled' && cancellationAllowed(booking)
+        ${booking.status === 'booked' && cancellationAllowed(booking)
           ? html`<form method="post" action="/booking/${req.params.token}/cancel">
               <button type="submit" class="action">Cancel this booking</button>
             </form>`
-          : booking.status === 'cancelled'
+          : booking.status === 'cancelled' || booking.status === 'pending'
             ? raw('')
             : html`<p class="muted">Cancellations are not accepted after the session starts.</p>`}
 

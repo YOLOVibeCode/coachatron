@@ -495,7 +495,7 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           assert.equal(q.currency, 'USD');
           assert.equal(q.user, `booking:${bookingId}:dropin`, 'the buyer ref names the booking and the drop-in');
           assert.equal(q.email, PARENT_EMAIL);
-          assert.equal(q.return, `${appBase}${checkoutPath}`, 'the hosted page returns to this checkout');
+          assert.equal(q.return, `${appBase}${checkoutPath}?paid=1`, 'the hosted page returns to this checkout, saying the parent paid');
           assert.match(q.desc, /^Group — Sat, \w{3} \d{1,2}, 9:00\sAM$/, 'the hosted page says what is being paid for');
           const nowS = Math.floor(Date.now() / 1000);
           assert.ok(Number(q.exp) > nowS && Number(q.exp) <= nowS + 86_400 + 60, `the link expires within a day: ${q.exp}`);
