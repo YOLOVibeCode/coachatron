@@ -89,6 +89,11 @@ async function aggregateSessionSlots(db: DbClient, coachId: number, from: Date, 
   return { count: Number(result.rows[0]?.count ?? '0'), totalCents: Number(result.rows[0]?.total_cents ?? '0') };
 }
 
+/** A booking that was sold and not cancelled: still booked, or already
+ * marked attended or no-show. Marking attendance must not take a booking
+ * out of the coach's totals. */
+export const EARNED_BOOKING_STATUSES = "('booked', 'attended', 'noshow')";
+
 /** Counts live bookings (not session slots) on sessions in a window - used
  * for "booked this week," which is about demand actually realized: three
  * athletes booked into one session slot is 3 booked, not 1. Cents is the
@@ -101,7 +106,7 @@ async function aggregateBookings(db: DbClient, coachId: number, from: Date, to: 
      join session s on s.id = b.session_id
      join session_type st on st.id = s.session_type_id
      where st.coach_id = $1
-       and b.status = 'booked'
+       and b.status in ${EARNED_BOOKING_STATUSES}
        and s.starts_at_utc >= $2
        and s.starts_at_utc < $3`,
     [coachId, from.toISOString(), to.toISOString()],
@@ -133,7 +138,7 @@ export async function summarizeMoney(db: DbClient, coachId: number, now: Date): 
        join session s on s.id = b.session_id
        join session_type st on st.id = s.session_type_id
        where st.coach_id = $1
-         and b.status = 'booked'
+         and b.status in ${EARNED_BOOKING_STATUSES}
          and s.starts_at_utc >= $2
          and s.starts_at_utc < $3`,
       [coachId, thisWeekStart.toISOString(), nextWeekStart.toISOString()],

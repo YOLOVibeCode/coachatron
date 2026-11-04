@@ -253,3 +253,28 @@ test('money screen shows correct data with credits that have expiry', async () =
   // but for money screen we sum all remaining, including expired ones per the schema design)
   assert.equal(summary.outstandingCreditCount, 15, 'both credits should be summed');
 });
+
+test('marking a booking attended or a no-show keeps it in booked and collected', async () => {
+  const { seedCoachWithSession, seedBookedSession } = await import('./helpers/fixtures.js');
+  const { summarizeMoney } = await import('../src/domain/money.js');
+  const db = await freshDb();
+  const seed = await seedCoachWithSession(db, { capacity: 4, priceCents: 3500 });
+  const first = await seedBookedSession(db, seed.sessionId, 'Athlete One', '+15550000001');
+  const second = await seedBookedSession(db, seed.sessionId, 'Athlete Two', '+15550000002');
+  await db.query('update booking set gross_cents = 3500 where id in ($1, $2)', [first, second]);
+  // "Now" is the session's own start, so it is always inside "this week".
+  const start = (await db.query<{ starts_at_utc: string }>('select starts_at_utc from session where id = $1', [seed.sessionId])).rows[0];
+  const now = new Date(start.starts_at_utc);
+
+  const before = await summarizeMoney(db, seed.coach.id, now);
+  assert.deepEqual([before.bookedThisWeekCount, before.bookedThisWeekCents, before.collectedThisWeekCents], [2, 7000, 7000]);
+
+  await db.query("update booking set status = 'attended' where id = $1", [first]);
+  await db.query("update booking set status = 'noshow' where id = $1", [second]);
+  const after = await summarizeMoney(db, seed.coach.id, now);
+  assert.deepEqual([after.bookedThisWeekCount, after.bookedThisWeekCents, after.collectedThisWeekCents], [2, 7000, 7000]);
+
+  await db.query("update booking set status = 'cancelled' where id = $1", [second]);
+  const cancelled = await summarizeMoney(db, seed.coach.id, now);
+  assert.deepEqual([cancelled.bookedThisWeekCount, cancelled.collectedThisWeekCents], [1, 3500]);
+});
