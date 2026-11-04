@@ -299,3 +299,25 @@ test('a coach without the texts box gets no go-live text and no reminders', asyn
     assert.equal((await db.query('select id from message_log')).rows.length, 0);
   });
 });
+
+// ---- the page link on the coach's screens -------------------------------
+
+test('the page link stays on Schedule and Money in a box made to copy', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const { coach, cookie } = await textingCoach(db);
+    await withServer(async (base) => {
+      await publishByHand(base, db, cookie);
+      const link = `https://coachatron.com/c/${coach.handle}`;
+      for (const path of ['/app/schedule', '/app/money']) {
+        const page = await (await fetch(`${base}${path}`, { headers: { cookie } })).text();
+        assert.match(page, new RegExp(`<input id="page-link" type="text" readonly value="${link}"`), path);
+        assert.match(page, /Copy link/, path);
+        assert.match(page, /href="sms:\?&amp;body=Book%20with%20me/, path);
+      }
+      const schedule = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
+      assert.match(schedule, /Parents can(&#39;|')t book until payments are set up\./);
+      assert.match(schedule, /<a class="action" href="\/app\/money">Connect payments<\/a>/);
+    });
+  });
+});

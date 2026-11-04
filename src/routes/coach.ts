@@ -31,10 +31,12 @@ import {
 import { APP_BASE_URL, APP_FEE_BPS, OTP_DAILY_MAX_PER_CONTACT, SELLER_AGREEMENT_VERSION } from '../config.js';
 import { acceptSellerAgreement, getSellerStatus, startSellerOnboarding } from '../relay/seller.js';
 import {
+  coachPageUrl,
   consumePaymentsLink,
   markPaymentsStarted,
   notePublished,
   openPaymentsLink,
+  paymentsOpen,
   recordSellerStatus,
 } from '../domain/payments.js';
 import { createWeeklySlots, deactivateSlot, listWeeklySlots, type WeeklySlot } from '../domain/scheduling.js';
@@ -854,24 +856,32 @@ function renderSetupScreen(
   );
 }
 
-async function paymentsConnected(coach: CoachRow): Promise<boolean | null> {
-  try {
-    return (await getSellerStatus(getConnectRecipientKey(coach)))?.chargesEnabled === true;
-  } catch {
-    return null;
-  }
-}
+// Copies the page link; selecting the box is the fallback where the
+// clipboard is not allowed.
+const COPY_LINK_SCRIPT =
+  "var i=document.getElementById('page-link');i.focus();i.select();" +
+  "try{navigator.clipboard.writeText(i.value).then(function(){},function(){});this.textContent='Copied'}catch(e){}";
 
-function renderLiveCard(coach: CoachRow, connected: boolean | null) {
-  const link = `${process.env.APP_BASE_URL ?? APP_BASE_URL}/c/${coach.handle}`;
+/** The coach's page link, always in view on Schedule and Money: one box to
+ * select or copy, and a way to text it. On Schedule the main action is
+ * sharing it, or, until payments work, setting them up. Money has its own. */
+function renderPageLinkCard(coach: CoachRow, opts: { main: 'share' | 'payments' | 'none'; justPublished?: boolean }) {
+  const link = coachPageUrl(coach.handle);
   const share = `sms:?&body=${encodeURIComponent(`Book with me: ${link}`)}`;
-  return html`<div class="card">
-    <p><strong>You're live.</strong> Parents book at ${link.replace(/^https?:\/\//, '')}</p>
-    ${connected === false
-      ? html`<p class="muted">They can't pay you until payments are connected.</p>
-          <a class="action" href="/app/money">Connect payments</a>
-          <a class="action ghost" href="${share}">Share your link</a>`
-      : html`<a class="action" href="${share}">Share your link</a>`}
+  return html`<div class="card page-link">
+    ${opts.justPublished
+      ? html`<p><strong>You're live.</strong> Parents book at ${link.replace(/^https?:\/\//, '')}</p>`
+      : raw('')}
+    <label for="page-link">Your page</label>
+    <input id="page-link" type="text" readonly value="${link}" onfocus="this.select()" />
+    <div class="btn-row">
+      <button type="button" class="ghost" onclick="${COPY_LINK_SCRIPT}">Copy link</button>
+      <a class="action${opts.main === 'share' ? '' : ' ghost'}" href="${share}">Share your link</a>
+    </div>
+    ${opts.main === 'payments'
+      ? html`<p class="muted">Parents can't book until payments are set up.</p>
+          <a class="action" href="/app/money">Connect payments</a>`
+      : raw('')}
   </div>`;
 }
 
@@ -892,7 +902,10 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
     res.status(200).send(renderSetupScreen(coach, draft, notice, hasSchedule, startText));
     return;
   }
-  const live = req.query.published === '1' ? renderLiveCard(coach, await paymentsConnected(coach)) : raw('');
+  const live = renderPageLinkCard(coach, {
+    main: (await paymentsOpen(db, coach)) ? 'share' : 'payments',
+    justPublished: req.query.published === '1',
+  });
   const askCard = renderAskCard(await pendingAskForCoach(db, coachId));
   const phoneState = typeof req.query.phone === 'string' ? req.query.phone : '';
   const phoneCard = coach.phone
@@ -1735,6 +1748,7 @@ async function renderMoney(res: Response, coach: CoachRow, opts: { status?: numb
       html`${coachNav('money')}
         <h1>Money</h1>
         ${renderPaymentsCard(payments, opts.notice ?? null, opts.error ?? null)}
+        ${renderPageLinkCard(coach, { main: 'none' })}
         <h2>This week</h2>
         <p class="money-figure">${formatDollars(summary.collectedThisWeekCents)}</p>
         <p class="muted">Collected (gross): ${formatDollars(summary.collectedThisWeekCents)}</p>
