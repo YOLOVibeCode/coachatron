@@ -38,9 +38,8 @@ railway config apply
   says "already up to date".
 - **Production draining.** On 2026-11-04 `railway config apply` worked in
   production and set `deploy.drainingSeconds` to 15, the healthcheck path to
-  `/health` and the start command to `node dist/server.js`, so production's
-  plan no longer lists a `deploy.drainingSeconds` change. Before that, apply
+  `/health` and the start command to `node dist/server.js`. Before that, apply
   and `railway environment edit` would not set it there, so production was
   given the variable `RAILWAY_DEPLOYMENT_DRAINING_SECONDS=15` instead. That
-  variable is now a leftover: `railway.ts` still keeps it with `preserve()`,
-  and it can be removed from Railway and from the file together later.
+  variable was removed from Railway and from `railway.ts` later the same day;
+  the setting in `railway.ts` is the only one now.
