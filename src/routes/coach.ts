@@ -49,6 +49,7 @@ import {
   type PaymentsStep,
 } from '../domain/payments.js';
 import { createWeeklySlots, deactivateSlot, listWeeklySlots, type WeeklySlot } from '../domain/scheduling.js';
+import { keptOwnPlace, mountLocationRoutes, ownPlacesNote, placeFromForm, sessionPlaceSection, typeLocationsSection, weeklyPlaceFields } from './locations.js';
 import { coachNav, html, oneTimeCodeNote, page, raw, smsConsentCheckbox, type SafeHtml } from '../lib/html.js';
 import { cancelReach, cancelScheduledSession, dropInCreditNote, previewSessionCancel, type CancelReach } from '../domain/cancelSession.js';
 import { DEFAULT_TZ, formatClockLocal, formatCoachDollars, formatLocal, formatTimeRange, isValidTimeZone } from '../lib/time.js';
@@ -74,7 +75,9 @@ import {
   waiveBooking,
   type BookingPolicy,
 } from '../domain/policy.js';
+import { cancelGivesField, cancelGivesSummary, cardRefundsNote } from './cancelRefund.js';
 import { summarizeMoney } from '../domain/money.js';
+import { moneyDownloadRouter, renderDownloadBlock } from './moneyExport.js';
 import { namesList } from '../domain/bookingMessages.js';
 import { describeAttention, listPaymentAttention, type AttentionItem } from '../domain/paymentAttention.js';
 import {
@@ -102,6 +105,7 @@ import {
 } from '../domain/refunds.js';
 import { handleCoachMessage, loadScheduleAssistant, resolvePendingForCoach } from '../domain/assistant.js';
 import { clearCookie, parseCookies, serializeCookie } from '../lib/cookies.js';
+import { calendarBlock, calendarRoutes } from './calendar.js';
 import {
   answerAsk,
   pendingAskForCoach,
@@ -737,6 +741,7 @@ coachRouter.get('/app/session-types/:id/edit', requireAuth, async (req, res) => 
           priceCents: t.price_cents,
           backupPayCents: t.backup_pay_cents,
         })}
+        ${await typeLocationsSection(db, typeId, req.query)}
         <a class="action ghost" href="/app/session-types">Back</a>`,
     ),
   );
@@ -811,7 +816,7 @@ coachRouter.get('/app/session-types/:id/generate-week', requireAuth, async (req,
     return;
   }
   const kept = typeof req.query.kept === 'string' ? Number(req.query.kept) : 0;
-  res.status(200).send(renderWeeklyTimes(typeRows.rows[0], await listWeeklySlots(db, typeId), kept));
+  res.status(200).send(renderWeeklyTimes(typeRows.rows[0], await listWeeklySlots(db, typeId), kept, undefined, await weeklyPlaceFields(db, typeId)));
 });
 
 function renderWeeklyTimes(
@@ -819,6 +824,7 @@ function renderWeeklyTimes(
   slots: Array<{ id: number; weekday: number; time_local: string; location_text: string | null }>,
   kept: number,
   error?: string,
+  where: SafeHtml = raw(''),
 ) {
   const typeLine = `${type.name} · ${type.duration_min} min · ${type.capacity} athletes · ${formatCoachDollars(type.price_cents)}`;
   return page(
@@ -845,8 +851,7 @@ function renderWeeklyTimes(
             html`<label><input type="checkbox" name="day_${i}" value="1" /> ${label}
               <input type="time" name="time_${i}" aria-label="${label} start time" /></label>`,
         )}
-        <label for="location">Where (optional)</label>
-        <input id="location" name="location" placeholder="Field 3" />
+        ${where}
         <button type="submit">Add weekly times</button>
       </form>
       ${error ? html`<p class="error">${error}</p>` : raw('')}`,
@@ -876,9 +881,15 @@ coachRouter.post('/app/session-types/:id/generate-week', requireAuth, async (req
   const tz = coachRows.rows[0]?.tz ?? DEFAULT_TZ;
 
   const body = req.body as Record<string, unknown>;
-  const locationText = field(body, 'location') || null;
+  const place = await placeFromForm(db, typeId, body);
+  const locationText = place.ok ? place.text : null;
   const current = await listWeeklySlots(db, typeId);
-  const refuse = (message: string) => res.status(422).send(renderWeeklyTimes(typeRows.rows[0], current, 0, message));
+  const where = await weeklyPlaceFields(db, typeId);
+  const refuse = (message: string) => res.status(422).send(renderWeeklyTimes(typeRows.rows[0], current, 0, message, where));
+  if (!place.ok) {
+    refuse(place.error);
+    return;
+  }
   const slots: WeeklySlot[] = [];
   for (let i = 0; i < 7; i += 1) {
     const checked = field(body, `day_${i}`) === '1';
@@ -889,7 +900,7 @@ coachRouter.post('/app/session-types/:id/generate-week', requireAuth, async (req
       refuse(`${WEEKDAY_LABELS[i]}: use a time from 00:00 to 23:59.`);
       return;
     }
-    slots.push({ weekday: i, timeLocal, locationText });
+    slots.push({ weekday: i, timeLocal, locationText, locationId: place.locationId });
   }
 
   if (slots.length === 0) {
@@ -912,10 +923,11 @@ coachRouter.post('/app/session-types/:id/generate-week', requireAuth, async (req
     return;
   }
 
-  await createWeeklySlots(db, typeId, tz, slots, new Date());
+  const saved = await createWeeklySlots(db, typeId, tz, slots, new Date());
   const coach = await findCoachById(db, coachId);
   if (coach) await notePublished(db, coach);
-  res.redirect(303, '/app/schedule');
+  // A new place the type had no room to save is explained on this screen.
+  res.redirect(303, keptOwnPlace(saved) ? `/app/session-types/${typeId}/generate-week` : '/app/schedule');
 });
 
 coachRouter.post('/app/session-types/:id/slots/:slotId/remove', requireAuth, async (req, res) => {
@@ -929,6 +941,10 @@ coachRouter.post('/app/session-types/:id/slots/:slotId/remove', requireAuth, asy
   }
   res.redirect(303, `/app/session-types/${typeId}/generate-week${kept > 0 ? `?kept=${kept}` : ''}`);
 });
+
+// Saved locations: the list on the edit form above, the weekly times'
+// "where", and one session's move on Session detail (routes/locations.ts).
+mountLocationRoutes(coachRouter, requireAuth);
 
 // ---- Screen 2: schedule ----
 
@@ -1099,6 +1115,7 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
   );
 
   const assistant = await loadScheduleAssistant(db, coachId);
+  const calendar = await calendarBlock(db, coachId, req.query.calendar);
 
   res.status(200).send(
     page(
@@ -1107,6 +1124,7 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
           ${coachNav('schedule')}
           <h1>Coming up</h1>
           ${live}
+          ${req.query.published === '1' ? await ownPlacesNote(db, coachId) : raw('')}
           ${askCard}
           ${cascadeCards}
           ${phoneCard}
@@ -1134,6 +1152,7 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
                     <div class="meta"><span>${formatTimeRange(s.starts_at_utc, s.duration_min, s.tz)} · ${s.name} · ${s.booked} of ${s.capacity} spots booked${Number(s.holding) > 0 ? ` · ${s.holding} holding` : ''} · ${formatCoachDollars(s.price_cents)}</span></div>
                   </a>`,
               )}
+          ${calendar}
         </div>
         <div class="schedule-ask">
           <form method="post" action="/app/schedule/ask" onsubmit="this.querySelector('button[type=submit]').disabled=true;this.querySelector('button[type=submit]').textContent='Working…';">
@@ -1145,6 +1164,10 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
     ),
   );
 });
+
+// Screen 2's "Add to your calendar" block: its form, and the calendar file
+// the link opens (src/routes/calendar.ts).
+coachRouter.use(calendarRoutes(requireAuth));
 
 // ---- Screen 2 actions: the overflow question and adding a mobile ----
 
@@ -1600,6 +1623,7 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
               )}
             </ul>`}
         
+        ${await sessionPlaceSection(db, coachId, sessionId, req.query)}
         <h2>Action</h2>
         ${session.status === 'scheduled' && new Date(session.starts_at_utc) >= new Date()
           ? html`<a class="action" href="/app/sessions/${sessionId}/cancel">Cancel session</a>`
@@ -1980,11 +2004,11 @@ function renderPolicySection(policy: BookingPolicy, error?: string) {
   return html`<h2 id="policy">Booking policy</h2>
     <div class="card policy">
       <p><strong>No-show:</strong> the booking's credit is used. You can give it back on the session's screen.</p>
-      <p><strong>Cancelling:</strong> a parent who cancels ${window} gets their credit back (a paid drop-in becomes a session credit).${hours === 0
+      <p><strong>Cancelling:</strong> a parent who cancels ${window} gets their credit back (${cancelGivesSummary(policy)}).${hours === 0
         ? ''
         : ` Inside ${hours} ${hours === 1 ? 'hour' : 'hours'} it counts as a no-show, and you can give it back.`}</p>
       <p><strong>Children:</strong> a parent can book up to ${children} ${children === 1 ? 'child' : 'children'} at once. Each takes a spot and uses a credit or a drop-in.</p>
-      <p class="muted">Card refunds are separate: they go through Coachatron support.</p>
+      <p class="muted">${cardRefundsNote(policy)}</p>
     </div>
     <details${error ? raw(' open') : raw('')}>
       <summary>Change the policy</summary>
@@ -1993,6 +2017,7 @@ function renderPolicySection(policy: BookingPolicy, error?: string) {
         <input id="cancel_window_hours" name="cancel_window_hours" type="number" min="0" max="${MAX_CANCEL_WINDOW_HOURS}" required value="${hours}" />
         <label for="children_per_booking">Children per booking</label>
         <input id="children_per_booking" name="children_per_booking" type="number" min="1" max="${MAX_CHILDREN_PER_BOOKING}" required value="${children}" />
+        ${cancelGivesField(policy)}
         <button type="submit">Save policy</button>
       </form>
       ${error ? html`<p class="error">${error}</p>` : raw('')}
@@ -2061,7 +2086,11 @@ coachRouter.get('/app/pricing', requireAuth, async (_req, res) => {
 coachRouter.post('/app/pricing/policy', requireAuth, async (req, res) => {
   const db = getDb();
   const coachId = res.locals.coachId as number;
-  const policy = parseBookingPolicy(field(req.body, 'cancel_window_hours'), field(req.body, 'children_per_booking'));
+  const policy = parseBookingPolicy(
+    field(req.body, 'cancel_window_hours'),
+    field(req.body, 'children_per_booking'),
+    field(req.body, 'cancel_gives'),
+  );
   if (!policy) {
     res.status(422).send(
       page(
@@ -2440,6 +2469,7 @@ async function renderMoney(
         </div>
         ${renderRecentPayments(recent, refunds, checks)}
         ${renderRefunds(refundList.filter((r) => !needsAttention(r)))}
+        ${renderDownloadBlock(coach.tz)}
         <a class="action" href="/app/schedule">Back to schedule</a>
         <form method="post" action="/signout">
           <button type="submit" class="ghost">Sign out</button>
@@ -2447,6 +2477,9 @@ async function renderMoney(
     ),
   );
 }
+
+// The payments and bookings downloads behind Money's Download block.
+coachRouter.use(moneyDownloadRouter(requireAuth));
 
 coachRouter.get('/app/money', requireAuth, async (req, res) => {
   const coach = await findCoachById(getDb(), res.locals.coachId as number);

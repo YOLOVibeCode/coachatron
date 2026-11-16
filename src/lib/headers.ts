@@ -14,7 +14,7 @@ export function isPrivateLinkPath(path: string): boolean {
  * line: /booking/<token>/cancel is written as /booking/:token/cancel. */
 export function pathForLog(path: string): string {
   return path
-    .replace(/^(\/(?:booking|start|offer|p)\/)[^/]+/i, '$1:token')
+    .replace(/^(\/(?:booking|start|offer|p|cal)\/)[^/]+/i, '$1:token')
     .replace(/^(\/c\/[^/]+\/checkout\/)[^/]+/i, '$1:token');
 }
 

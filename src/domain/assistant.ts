@@ -2,6 +2,7 @@ import type { DbClient } from '../db/client.js';
 import type { CoachRow } from './auth.js';
 import { startCascade } from './cascade.js';
 import { summarizeMoney } from './money.js';
+import { writeSessionPlace } from './locations.js';
 import { addCalendarDays, SLOT_HORIZON_DAYS, zonedParts, zonedTimeToUtc } from './scheduling.js';
 import { APP_BASE_URL } from '../config.js';
 import { reserveModelCall } from './modelBudget.js';
@@ -666,10 +667,14 @@ async function executeAdd(db: DbClient, coach: CoachRow, classified: ClassifiedI
   // Checked again: the calendar may have changed while the question waited.
   const problem = await startProblem(db, coach.id, type.rows[0].id, starts, now, null);
   if (problem) return problem;
-  await db.query(
-    `insert into session (session_type_id, starts_at_utc, tz, location_text, status)
-     values ($1, $2, $3, $4, 'scheduled')`,
-    [type.rows[0].id, starts.toISOString(), coach.tz, classified.location],
+  // A place that is one of the type's saved locations is that location;
+  // anything else is this session's own words.
+  await writeSessionPlace(db, type.rows[0].id, classified.location, (tx, place) =>
+    tx.query(
+      `insert into session (session_type_id, starts_at_utc, tz, location_text, location_id, location_address, status)
+       values ($1, $2, $3, $4, $5, $6, 'scheduled')`,
+      [type.rows[0].id, starts.toISOString(), coach.tz, place.text, place.locationId, place.address],
+    ),
   );
   return clipSms(`Added ${type.rows[0].name} ${formatConfirmWhen(starts.toISOString(), coach.tz)}.`);
 }
@@ -695,9 +700,17 @@ async function executeMove(
   if (!row) return 'That session is gone.';
   const problem = await startProblem(db, coach.id, row.session_type_id, starts, now, row.id);
   if (problem) return problem;
-  await db.query(
-    `update session set starts_at_utc = $1, location_text = coalesce($2, location_text) where id = $3`,
-    [starts.toISOString(), location, sessionId],
+  // With no place said, the session keeps the one it has. A place said
+  // replaces it whole: its words, its saved location and that address line.
+  await writeSessionPlace(db, row.session_type_id, location, (tx, place) =>
+    tx.query(
+      `update session set starts_at_utc = $1,
+              location_text = coalesce($2, location_text),
+              location_id = case when $2::text is null then location_id else $3::int end,
+              location_address = case when $2::text is null then location_address else $4 end
+       where id = $5`,
+      [starts.toISOString(), place.text, place.locationId, place.address, sessionId],
+    ),
   );
   return clipSms(`Moved ${row.name} to ${formatConfirmWhen(starts.toISOString(), row.tz)}.`);
 }
