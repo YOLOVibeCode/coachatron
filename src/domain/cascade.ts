@@ -703,8 +703,12 @@ export async function acceptOffer(db: DbClient, offerId: number): Promise<boolea
     if (kind === 'second_group') {
       added = session.capacity_override ?? session.type_capacity;
       const created = await tx.query<{ id: number }>(
-        `insert into session (session_type_id, starts_at_utc, tz, location_text, capacity_override, assigned_roster_member_id, overflow_of, status)
-         values ($1, $2, $3, $4, $5, $6, $7, 'scheduled')
+        // The same place as the full session, with its saved location and
+        // address line, so a rename of that location reaches both.
+        `insert into session (session_type_id, starts_at_utc, tz, location_text, location_id, location_address,
+                              capacity_override, assigned_roster_member_id, overflow_of, status)
+         select $1, $2, $3, $4, full_one.location_id, full_one.location_address, $5, $6, $7, 'scheduled'
+         from session full_one where full_one.id = $7
          returning id`,
         [
           session.session_type_id,

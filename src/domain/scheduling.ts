@@ -1,4 +1,5 @@
 import type { DbClient } from '../db/client.js';
+import { resolveTypedPlace } from './locations.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const offsetFormats = new Map<string, Intl.DateTimeFormat>();
@@ -38,12 +39,22 @@ function offsetAt(instantMs: number, tz: string): number {
  * As Postgres reads them: a time that happens twice (the hour repeated in
  * the fall) is the second of the two, and a time the spring change skips
  * (2:30am) moves forward by the gap. */
-export function zonedTimeToUtc(year: number, month: number, day: number, hour: number, minute: number, tz: string): Date {
+export function zonedTimeToUtc(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  tz: string,
+  /** Which instant a time that happens twice is: the later (the default, as
+   * Postgres reads it) or the earlier (a day's first moment, for ranges). */
+  repeated: 'later' | 'earlier' = 'later',
+): Date {
   const wall = Date.UTC(year, month - 1, day, hour, minute, 0);
   const before = offsetAt(wall - DAY_MS, tz);
   const after = offsetAt(wall + DAY_MS, tz);
   const candidates = [wall - before, wall - after].filter((t, i) => offsetAt(t, tz) === (i === 0 ? before : after));
-  return new Date(candidates.length > 0 ? Math.max(...candidates) : wall - before);
+  return new Date(candidates.length > 0 ? (repeated === 'earlier' ? Math.min(...candidates) : Math.max(...candidates)) : wall - before);
 }
 
 const WEEKDAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -113,7 +124,14 @@ export interface WeeklySlot {
   weekday: number;
   /** "HH:MM" 24-hour, local to the coach's tz */
   timeLocal: string;
+  /** A place as the coach typed it. Words that match one of the type's
+   * saved locations use it, a new place is saved while the type is under
+   * its limit, and past the limit the words stay on this weekly time only
+   * (resolveTypedPlace). */
   locationText?: string | null;
+  /** One of the session type's saved locations, picked from its list. When
+   * set, locationText is not read. */
+  locationId?: number | null;
 }
 
 export interface SlotRow {
@@ -121,7 +139,45 @@ export interface SlotRow {
   session_type_id: number;
   weekday: number;
   time_local: string;
+  /** The saved location's name, or the weekly time's own words. */
   location_text: string | null;
+  /** The saved location those words came from, when there is one. */
+  location_id?: number | null;
+  /** That location's address line. */
+  location_address?: string | null;
+}
+
+const SLOT_COLUMNS = 'id, session_type_id, weekday, time_local, location_text, location_id, location_address';
+
+/** Writes a new weekly time with its place. A saved location (picked, or
+ * the one typed words belong to) is read under a lock as the row is
+ * written, so the weekly time takes its name and address line as they
+ * stand: a rename at that moment is either in them or reaches the new
+ * weekly time itself, and a removal either sees it or goes first. When the
+ * location is gone by then, a picked one leaves the weekly time with no
+ * place and typed words stay as the weekly time's own. */
+async function insertSlot(db: DbClient, sessionTypeId: number, slot: WeeklySlot): Promise<SlotRow> {
+  const typed = slot.locationId != null ? null : await resolveTypedPlace(db, sessionTypeId, slot.locationText);
+  const locationId = slot.locationId ?? typed?.locationId ?? null;
+  if (locationId !== null) {
+    const saved = await db.query<SlotRow>(
+      `insert into weekly_slot (session_type_id, weekday, time_local, location_text, location_id, location_address)
+       select $1, $2, $3, l.name, l.id, l.address
+       from session_type_location l
+       where l.id = $4 and l.session_type_id = $1 and l.removed_at is null
+       for share of l
+       returning ${SLOT_COLUMNS}`,
+      [sessionTypeId, slot.weekday, slot.timeLocal, locationId],
+    );
+    if (saved.rows[0]) return saved.rows[0];
+  }
+  const inserted = await db.query<SlotRow>(
+    `insert into weekly_slot (session_type_id, weekday, time_local, location_text)
+     values ($1, $2, $3, $4)
+     returning ${SLOT_COLUMNS}`,
+    [sessionTypeId, slot.weekday, slot.timeLocal, typed?.text ?? null],
+  );
+  return inserted.rows[0];
 }
 
 /** How far ahead a weekly slot keeps sessions on the calendar (SPEC.md §7.1). */
@@ -141,23 +197,14 @@ export async function createWeeklySlots(
   const created: SlotRow[] = [];
   for (const slot of slots) {
     const existing = await db.query<SlotRow>(
-      `select id, session_type_id, weekday, time_local, location_text
+      `select ${SLOT_COLUMNS}
        from weekly_slot
        where session_type_id = $1 and weekday = $2 and time_local = $3 and active = true
        order by id
        limit 1`,
       [sessionTypeId, slot.weekday, slot.timeLocal],
     );
-    const row =
-      existing.rows[0] ??
-      (
-        await db.query<SlotRow>(
-          `insert into weekly_slot (session_type_id, weekday, time_local, location_text)
-           values ($1, $2, $3, $4)
-           returning id, session_type_id, weekday, time_local, location_text`,
-          [sessionTypeId, slot.weekday, slot.timeLocal, slot.locationText ?? null],
-        )
-      ).rows[0];
+    const row = existing.rows[0] ?? (await insertSlot(db, sessionTypeId, slot));
     await ensureSlotSessions(db, row, tz, now);
     if (!created.some((c) => c.id === row.id)) created.push(row);
   }
@@ -168,7 +215,13 @@ export async function createWeeklySlots(
  * calendar days in the coach's tz (DST-safe via addCalendarDays). A day that
  * already has a session from this slot, at any time and in any state, is
  * left alone, so running it again never duplicates a session, and a session
- * the coach cancelled is not put back. Returns how many sessions it added. */
+ * the coach cancelled is not put back. Returns how many sessions it added.
+ *
+ * Each session takes the weekly time's place as it stands when the session
+ * is written (its words, its saved location and the address line), all read
+ * from the weekly time's own row under a lock. A rename of the location at
+ * that moment waits for the new session and then renames it too, or goes
+ * first and the session is written with the new words. */
 export async function ensureSlotSessions(
   db: DbClient,
   slot: SlotRow,
@@ -188,14 +241,16 @@ export async function ensureSlotSessions(
     const dayStart = zonedTimeToUtc(d.year, d.month, d.day, 0, 0, tz);
     const dayEnd = zonedTimeToUtc(next.year, next.month, next.day, 0, 0, tz);
     const result = await db.query<{ id: number }>(
-      `insert into session (session_type_id, starts_at_utc, tz, location_text, weekly_slot_id, status)
-       select $1, $2, $3, $4, $5, 'scheduled'
-       where not exists (
-         select 1 from session where weekly_slot_id = $5 and starts_at_utc >= $6 and starts_at_utc < $7
+      `insert into session (session_type_id, starts_at_utc, tz, location_text, location_id, location_address, weekly_slot_id, status)
+       select ws.session_type_id, $1, $2, ws.location_text, ws.location_id, ws.location_address, ws.id, 'scheduled'
+       from weekly_slot ws
+       where ws.id = $3 and not exists (
+         select 1 from session where weekly_slot_id = $3 and starts_at_utc >= $4 and starts_at_utc < $5
        )
+       for share of ws
        on conflict (weekly_slot_id, starts_at_utc) do nothing
        returning id`,
-      [slot.session_type_id, startsAtUtc.toISOString(), tz, slot.location_text, slot.id, dayStart.toISOString(), dayEnd.toISOString()],
+      [startsAtUtc.toISOString(), tz, slot.id, dayStart.toISOString(), dayEnd.toISOString()],
     );
     added += result.rows.length;
   }
@@ -205,7 +260,7 @@ export async function ensureSlotSessions(
 /** Tick step: keeps every active slot of an active session type 8 weeks ahead. */
 export async function topUpAllSlots(db: DbClient, now: Date): Promise<number> {
   const slots = await db.query<SlotRow & { tz: string }>(
-    `select ws.id, ws.session_type_id, ws.weekday, ws.time_local, ws.location_text, c.tz
+    `select ws.id, ws.session_type_id, ws.weekday, ws.time_local, ws.location_text, ws.location_id, ws.location_address, c.tz
      from weekly_slot ws
      join session_type st on st.id = ws.session_type_id
      join coach c on c.id = st.coach_id
@@ -220,7 +275,7 @@ export async function topUpAllSlots(db: DbClient, now: Date): Promise<number> {
 
 export async function listWeeklySlots(db: DbClient, sessionTypeId: number): Promise<SlotRow[]> {
   const result = await db.query<SlotRow>(
-    `select id, session_type_id, weekday, time_local, location_text
+    `select ${SLOT_COLUMNS}
      from weekly_slot
      where session_type_id = $1 and active = true
      order by weekday, time_local`,

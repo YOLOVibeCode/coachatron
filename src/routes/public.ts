@@ -15,6 +15,7 @@ import {
 } from '../domain/auth.js';
 import { html, operatorLine, page, raw, smsConsentCheckbox } from '../lib/html.js';
 import { formatLocal } from '../lib/time.js';
+import { atPlace, placeLine } from '../domain/locations.js';
 import { rowId } from '../lib/input.js';
 import {
   getPackagesForCoach,
@@ -106,6 +107,8 @@ interface SessionForBooking {
   status: string;
   /** For a second group, the full session whose waitlist it draws from. */
   overflow_of: number | null;
+  location_text: string | null;
+  location_address: string | null;
 }
 
 /** A scheduled session of this coach. `anyStatus` also finds a cancelled
@@ -118,7 +121,7 @@ async function loadSessionForCoach(
 ): Promise<SessionForBooking | null> {
   const result = await db.query<SessionForBooking>(
     `select s.id, s.starts_at_utc, s.tz, st.id as session_type_id, st.name, coalesce(s.capacity_override, st.capacity) as capacity,
-            st.price_cents, s.status, s.overflow_of
+            st.price_cents, s.status, s.overflow_of, s.location_text, s.location_address
      from session s
      join session_type st on st.id = s.session_type_id
      where s.id = $1 and st.coach_id = $2 and ($3::boolean or s.status = 'scheduled')`,
@@ -409,8 +412,11 @@ publicRouter.get('/c/:handle', async (req, res) => {
     capacity: number;
     price_cents: number;
     booked: string;
+    location_text: string | null;
+    location_address: string | null;
   }>(
     `select s.id, s.starts_at_utc, s.tz, st.name, coalesce(s.capacity_override, st.capacity) as capacity, st.price_cents,
+            s.location_text, s.location_address,
             (coalesce((select count(*) from booking b where b.session_id = s.id and ${takesSpotSql('b')}), 0)
              + coalesce((select count(*) from waitlist w where w.session_id = coalesce(s.overflow_of, s.id) and w.state = 'waiting'), 0))::text as booked
      from session s
@@ -438,6 +444,7 @@ publicRouter.get('/c/:handle', async (req, res) => {
                   <span>${s.name}</span>
                   <span>${spotsLeft > 0 ? `${spotsLeft} spot${spotsLeft === 1 ? '' : 's'} left · $${(s.price_cents / 100).toFixed(2)}` : 'Full'}</span>
                 </div>
+                ${s.location_text ? html`<div class="meta"><span>${placeLine(s.location_text, s.location_address)}</span></div>` : raw('')}
                 ${spotsLeft <= 0
                   ? open || !needsPayment(s) || creditsWork
                     ? html`<a class="action ghost" href="/c/${coach.handle}/sessions/${s.id}/book${bookQuery}">Join the waitlist</a>`
@@ -540,7 +547,7 @@ function renderWaitlistForm(
   return page(
     'Join the waitlist',
     html`<h1>${session.name}</h1>
-      <p class="muted">${formatLocal(session.starts_at_utc, session.tz)} — Full</p>
+      <p class="muted">${formatLocal(session.starts_at_utc, session.tz)}${atPlace(session)} — Full</p>
       <p>Join the waitlist. When a spot opens, we hold it for you for ${BOOKING_HOLD_MINUTES} minutes and send you a link to book it: by text if you tick the box, otherwise by email.</p>
       <form method="post" action="/c/${coach.handle}/sessions/${session.id}/waitlist">
         <label for="athlete_name">Athlete name</label>
@@ -569,7 +576,7 @@ function renderBookingForm(
   return page(
     'Book a session',
     html`<h1>${session.name}</h1>
-      <p class="muted">${formatLocal(session.starts_at_utc, session.tz)} — $${(session.price_cents / 100).toFixed(2)}</p>
+      <p class="muted">${formatLocal(session.starts_at_utc, session.tz)}${atPlace(session)} — $${(session.price_cents / 100).toFixed(2)}</p>
       ${opts.note ? html`<p>${opts.note}</p>` : raw('')}
       ${opts.creditsOnly
         ? html`<p class="muted">${coach.name} is still setting up payments, so for now you can book only with session credits. Enter the phone number your credits are under.</p>`
@@ -1053,7 +1060,7 @@ function renderCheckout(
   return page(
     'Checkout',
     html`<h1>${session.name}</h1>
-      <p class="muted">${formatLocal(session.starts_at_utc, session.tz)}</p>
+      <p class="muted">${formatLocal(session.starts_at_utc, session.tz)}${atPlace(session)}</p>
       ${children > 1 ? html`<p class="muted">For ${namesList(pass.map((b) => b.athlete_name))}: ${spotsWord(children)}.</p>` : raw('')}
       ${options.cancelLine ? html`<p class="muted cancel-terms">${options.cancelLine}</p>` : raw('')}
       ${canPay
@@ -1564,6 +1571,7 @@ interface BookingWithSession {
   starts_at_utc: string;
   tz: string;
   location_text: string | null;
+  location_address: string | null;
   session_type_name: string;
   coach_id: number;
   coach_handle: string;
@@ -1575,7 +1583,7 @@ async function loadBookingByToken(db: DbClient, token: string): Promise<BookingW
   const result = await db.query<BookingWithSession>(
     `select b.id, b.session_id, b.athlete_name, b.contact_phone, b.contact_email, b.phone_verified_at, b.status, b.credit_id,
             b.payment_source, b.gross_cents, b.late_cancel, b.waived_at, ${CREDIT_WITHDRAWN_SQL}, ${CREDIT_HELD_SQL},
-            s.starts_at_utc, s.tz, s.location_text, st.name as session_type_name, c.id as coach_id, c.handle as coach_handle,
+            s.starts_at_utc, s.tz, s.location_text, s.location_address, st.name as session_type_name, c.id as coach_id, c.handle as coach_handle,
             c.name as coach_name, c.cancel_window_hours
      from booking b
      join session s on s.id = b.session_id
@@ -1701,7 +1709,7 @@ publicRouter.get('/booking/:token', async (req, res) => {
     page(
       'Manage booking',
       html`<h1>${booking.session_type_name}</h1>
-        <p class="muted">${formatLocal(booking.starts_at_utc, booking.tz)}${booking.location_text ? ` · ${booking.location_text}` : ''}</p>
+        <p class="muted">${formatLocal(booking.starts_at_utc, booking.tz)}${atPlace(booking)}</p>
         ${moved ? html`<p class="good">Moved. This is ${booking.athlete_name}'s session now.</p>` : raw('')}
 
         <p class="card">
