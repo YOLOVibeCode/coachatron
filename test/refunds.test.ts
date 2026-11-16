@@ -168,7 +168,10 @@ test('a pack booked by the previous release during a deploy reads as a pack, on 
       assert.match(detail, /Paid \$120 · One-time pack\. 1 of the 4 sessions this payment bought was used, so it cannot be refunded in full here\./);
       assert.ok(!detail.includes(`?refund=${bookingId}#refund`), 'no Refund link, as for any used pack');
 
-      const money = await summarizeMoney(db, seed.coach.id, new Date(Date.now() + 60 * 60 * 1000));
+      // In the session's own week: an hour from now is the week before it
+      // when the test runs on a Sunday.
+      const start = (await db.query<{ starts_at_utc: string }>('select starts_at_utc from session where id = $1', [seed.sessionId])).rows[0];
+      const money = await summarizeMoney(db, seed.coach.id, new Date(start.starts_at_utc));
       assert.equal(money.bookedThisWeekCount, 1);
       assert.equal(money.bookedThisWeekCents, 3500, "valued at the session's price, as migration 0027 values older bookings");
     });
@@ -379,8 +382,15 @@ test('Money leaves a refunded booking out of booked and collected, and shows wha
   await withRelay(async () => {
     const db = await freshDb();
     const seed = await seedCoachWithSession(db, { capacity: 3, priceCents: 3500 });
-    // In this week, so the totals include it.
-    await db.query("update session set starts_at_utc = now() + interval '1 hour' where id = $1", [seed.sessionId]);
+    // In the coach's week, so the totals include it: an hour from now, but
+    // not past the end of the week (a Sunday night's hour from now is next week).
+    await db.query(
+      `update session set starts_at_utc = least(
+         now() + interval '1 hour',
+         ((date_trunc('week', now() at time zone 'America/Chicago') + interval '7 days') at time zone 'America/Chicago') - interval '1 minute'
+       ) where id = $1`,
+      [seed.sessionId],
+    );
     await withServer(async (base) => {
       const kept = await payFor(base, db, { handle: seed.coach.handle, sessionId: seed.sessionId, paymentId: 'ns_pay_kept', amountCents: 3500 });
       const gone = await payFor(base, db, {
