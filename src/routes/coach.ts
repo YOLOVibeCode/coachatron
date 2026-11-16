@@ -103,6 +103,7 @@ import {
 } from '../domain/refunds.js';
 import { handleCoachMessage, loadScheduleAssistant, resolvePendingForCoach } from '../domain/assistant.js';
 import { clearCookie, parseCookies, serializeCookie } from '../lib/cookies.js';
+import { calendarBlock, calendarRoutes } from './calendar.js';
 import {
   answerAsk,
   pendingAskForCoach,
@@ -1111,6 +1112,7 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
   );
 
   const assistant = await loadScheduleAssistant(db, coachId);
+  const calendar = await calendarBlock(db, coachId, req.query.calendar);
 
   res.status(200).send(
     page(
@@ -1147,6 +1149,7 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
                     <div class="meta"><span>${formatTimeRange(s.starts_at_utc, s.duration_min, s.tz)} · ${s.name} · ${s.booked} of ${s.capacity} spots booked${Number(s.holding) > 0 ? ` · ${s.holding} holding` : ''} · ${formatCoachDollars(s.price_cents)}</span></div>
                   </a>`,
               )}
+          ${calendar}
         </div>
         <div class="schedule-ask">
           <form method="post" action="/app/schedule/ask" onsubmit="this.querySelector('button[type=submit]').disabled=true;this.querySelector('button[type=submit]').textContent='Working…';">
@@ -1158,6 +1161,10 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
     ),
   );
 });
+
+// Screen 2's "Add to your calendar" block: its form, and the calendar file
+// the link opens (src/routes/calendar.ts).
+coachRouter.use(calendarRoutes(requireAuth));
 
 // ---- Screen 2 actions: the overflow question and adding a mobile ----
 
