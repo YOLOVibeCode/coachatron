@@ -24,6 +24,7 @@ import { appEnv, testPaymentsAllowed } from '../config.js';
 import { sendBookingConfirmation, sendPaymentCredited } from '../domain/bookingMessages.js';
 import { recordPaymentAttention, type AttentionReason } from '../domain/paymentAttention.js';
 import { applyRefundFailed, applyRefunded, recordDispute, type DisputeState, type RefundReport } from '../domain/refunds.js';
+import { recordPaidAt } from '../domain/paymentReceipt.js';
 
 export const storeWebhookRouter = Router();
 
@@ -196,6 +197,8 @@ async function handlePaid(db: DbClient, event: StoreEvent, eventId: string): Pro
   const parsed = parseBuyerRef(event.buyer?.userId);
   const paymentRef = event.refs?.paymentId || event.refs?.orderId || event.id || eventId;
   const amount = typeof event.money?.amountCents === 'number' ? event.money.amountCents : null;
+  // Kept whatever the payment turns out to be, for the payments download.
+  await recordPaidAt(db, paymentRef, paidAt(event));
   const attention = async (
     reason: AttentionReason,
     who: { coachId: number | null; booking?: BookingRow | null },
