@@ -11,6 +11,26 @@ import { buyerFromLocation, postStorePaid } from './helpers/store-event.js';
 import { cancelScheduledSession } from '../src/domain/cancelSession.js';
 import { summarizeMoney } from '../src/domain/money.js';
 
+/** Monday of the week `now` falls in on the coach's calendar (`tz`), at
+ * 18:00 UTC: the middle of that same day anywhere in the US. Money reads
+ * weeks in the coach's timezone, so these tests do too, whatever timezone
+ * the test process runs in. (Read from the machine's clock instead, the
+ * session landed in next week while UTC was already Monday and the coach's
+ * day was still Sunday.) */
+function coachMonday(now: Date, tz: string): Date {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    weekday: 'short',
+  }).formatToParts(now);
+  const get = (type: string) => parts.find((p) => p.type === type)!.value;
+  const weekday = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(get('weekday'));
+  const sinceMonday = weekday === 0 ? 6 : weekday - 1;
+  return new Date(Date.UTC(Number(get('year')), Number(get('month')) - 1, Number(get('day')) - sinceMonday, 18));
+}
+
 test('money screen shows correct summaries after various bookings', async () => {
   const db = await freshDb();
 
@@ -33,17 +53,13 @@ test('money screen shows correct summaries after various bookings', async () => 
   );
   const sessionType = typeResult.rows[0];
 
-  // Create a session this week (Monday-Sunday in America/Chicago)
-  // Set the session to start at 6pm on Wednesday of this week
+  // Create a session this week (Monday-Sunday in America/Chicago), three
+  // days after the coach's Monday.
   const now = new Date();
-  const monday = new Date(now);
-  const dayOfWeek = monday.getDay() || 7; // Sunday=0, make it 7 for calc
-  monday.setDate(monday.getDate() - (dayOfWeek - 1));
-  monday.setHours(0, 0, 0, 0);
+  const monday = coachMonday(now, coach.tz);
 
   const wednesday = new Date(monday);
-  wednesday.setDate(wednesday.getDate() + 3);
-  wednesday.setHours(18, 0, 0, 0);
+  wednesday.setUTCDate(wednesday.getUTCDate() + 3);
 
   const sessionResult = await db.query<{ id: number; starts_at_utc: string }>(
     `insert into session (session_type_id, starts_at_utc, tz, status)
@@ -87,12 +103,11 @@ test('money screen shows correct summaries after various bookings', async () => 
 
   // Create next week's sessions (projection test)
   const nextMonday = new Date(monday);
-  nextMonday.setDate(nextMonday.getDate() + 7);
+  nextMonday.setUTCDate(nextMonday.getUTCDate() + 7);
 
   for (let i = 0; i < 3; i++) {
     const dayDate = new Date(nextMonday);
-    dayDate.setDate(dayDate.getDate() + i * 2); // Mon, Wed, Fri
-    dayDate.setHours(18, 0, 0, 0);
+    dayDate.setUTCDate(dayDate.getUTCDate() + i * 2); // Mon, Wed, Fri
 
     await db.query(
       `insert into session (session_type_id, starts_at_utc, tz, status)
@@ -189,16 +204,12 @@ test('money screen correctly excludes cancelled bookings from collected this wee
   );
   const sessionType = typeResult.rows[0];
 
-  // Create a session
+  // Create a session in the coach's week
   const now = new Date();
-  const monday = new Date(now);
-  const dayOfWeek = monday.getDay() || 7;
-  monday.setDate(monday.getDate() - (dayOfWeek - 1));
-  monday.setHours(0, 0, 0, 0);
+  const monday = coachMonday(now, coach.tz);
 
   const wednesday = new Date(monday);
-  wednesday.setDate(wednesday.getDate() + 3);
-  wednesday.setHours(18, 0, 0, 0);
+  wednesday.setUTCDate(wednesday.getUTCDate() + 3);
 
   const sessionResult = await db.query<{ id: number }>(
     `insert into session (session_type_id, starts_at_utc, tz, status)
