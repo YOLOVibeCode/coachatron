@@ -56,6 +56,9 @@ test('the ask names the session and the three choices in one text', async () => 
   await withRelay(async (relay) => {
     const db = await freshDb();
     const seed = await fullSession(db);
+    // On the hour, so the time is short ("1pm", not "12:44pm") and the whole
+    // name fits whatever day and minute the test runs.
+    await db.query("update session set starts_at_utc = date_trunc('hour', starts_at_utc) + interval '1 hour' where id = $1", [seed.sessionId]);
     await seedRosterMember(db, seed.coach.id, 'Backup Bailey', 0);
     await checkOverflow(db, seed.sessionId);
     const toCoach = relay.sms.filter((m) => m.to === seed.coach.phone);
