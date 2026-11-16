@@ -382,8 +382,15 @@ test('Money leaves a refunded booking out of booked and collected, and shows wha
   await withRelay(async () => {
     const db = await freshDb();
     const seed = await seedCoachWithSession(db, { capacity: 3, priceCents: 3500 });
-    // In this week, so the totals include it.
-    await db.query("update session set starts_at_utc = now() + interval '1 hour' where id = $1", [seed.sessionId]);
+    // In the coach's week, so the totals include it: an hour from now, but
+    // not past the end of the week (a Sunday night's hour from now is next week).
+    await db.query(
+      `update session set starts_at_utc = least(
+         now() + interval '1 hour',
+         ((date_trunc('week', now() at time zone 'America/Chicago') + interval '7 days') at time zone 'America/Chicago') - interval '1 minute'
+       ) where id = $1`,
+      [seed.sessionId],
+    );
     await withServer(async (base) => {
       const kept = await payFor(base, db, { handle: seed.coach.handle, sessionId: seed.sessionId, paymentId: 'ns_pay_kept', amountCents: 3500 });
       const gone = await payFor(base, db, {
