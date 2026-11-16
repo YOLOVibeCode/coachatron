@@ -39,12 +39,22 @@ function offsetAt(instantMs: number, tz: string): number {
  * As Postgres reads them: a time that happens twice (the hour repeated in
  * the fall) is the second of the two, and a time the spring change skips
  * (2:30am) moves forward by the gap. */
-export function zonedTimeToUtc(year: number, month: number, day: number, hour: number, minute: number, tz: string): Date {
+export function zonedTimeToUtc(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  tz: string,
+  /** Which instant a time that happens twice is: the later (the default, as
+   * Postgres reads it) or the earlier (a day's first moment, for ranges). */
+  repeated: 'later' | 'earlier' = 'later',
+): Date {
   const wall = Date.UTC(year, month - 1, day, hour, minute, 0);
   const before = offsetAt(wall - DAY_MS, tz);
   const after = offsetAt(wall + DAY_MS, tz);
   const candidates = [wall - before, wall - after].filter((t, i) => offsetAt(t, tz) === (i === 0 ? before : after));
-  return new Date(candidates.length > 0 ? Math.max(...candidates) : wall - before);
+  return new Date(candidates.length > 0 ? (repeated === 'earlier' ? Math.min(...candidates) : Math.max(...candidates)) : wall - before);
 }
 
 const WEEKDAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
