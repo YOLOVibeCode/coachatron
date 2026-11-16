@@ -27,6 +27,9 @@ test('tick advances an expired offer to the next roster member, naming the sessi
     const second = await seedRosterMember(db, seed.coach.id, 'Second', 1);
     await seedBookedSession(db, seed.sessionId, 'Athlete One', '+15550000001');
     await seedWaitlistEntry(db, seed.sessionId, 'Athlete Two', '+15550000002');
+    // On the hour, so the time is short ("11pm", not "10:45pm") and the whole
+    // name fits whatever day and minute the test runs.
+    await db.query("update session set starts_at_utc = date_trunc('hour', starts_at_utc) + interval '1 hour' where id = $1", [seed.sessionId]);
 
     await checkOverflow(db, seed.sessionId);
     const ask = relay.sms.find((m) => m.to === seed.coach.phone);
