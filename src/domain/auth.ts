@@ -70,9 +70,10 @@ export function contactKey(contact: Contact): string {
 
 /** What a one-time code proves: 'signin', that a coach holds the phone or
  * email they sign in with; 'credits', that a parent at checkout holds the
- * booking's phone, to use its session credits. A code works only for its
- * own purpose. */
-export type OtpPurpose = 'signin' | 'credits';
+ * booking's phone, to use its session credits; 'sessions', that a parent
+ * holds the mobile whose sessions and credits the My sessions page shows.
+ * A code works only for its own purpose. */
+export type OtpPurpose = 'signin' | 'credits' | 'sessions';
 
 /** Stores a code for this phone or email and ends every earlier code for
  * it with the same purpose, so one code per purpose is live at a time and
