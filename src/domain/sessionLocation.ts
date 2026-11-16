@@ -2,6 +2,7 @@ import { inTransaction, type DbClient } from '../db/client.js';
 import { formatConfirmWhen } from '../lib/time.js';
 import { plain } from './bookingMessages.js';
 import { LOCATION_COLUMNS, lockType, type SavedLocation } from './locations.js';
+import { inQuietHours } from './scheduling.js';
 import { canText, fitsOneSegment, segmentRoom, sendText, shortenTo } from './outbound.js';
 import { hasActiveConsent } from './sms-consent.js';
 
@@ -80,7 +81,10 @@ export const SESSION_UPDATE_TEMPLATE = 'broadcast';
  * never the place. */
 export function placeChangeText(session: Pick<SessionPlaceContext, 'type_name' | 'starts_at_utc' | 'tz'>, place: string): string {
   const when = formatConfirmWhen(session.starts_at_utc, session.tz);
-  const text = (name: string) => `Coachatron: ${name} ${when}. Now at ${plain(place)}.`;
+  // A name with no letters a text can carry (all non-Latin, or emoji) would
+  // read "Now at ." so the text points to the booking page instead.
+  const said = plain(place) ? `Now at ${plain(place)}.` : 'Location changed, see your booking page.';
+  const text = (name: string) => `Coachatron: ${name} ${when}. ${said}`;
   const name = plain(session.type_name);
   const whole = text(name);
   if (fitsOneSegment(whole, SESSION_UPDATE_TEMPLATE)) return whole;
@@ -88,8 +92,30 @@ export function placeChangeText(session: Pick<SessionPlaceContext, 'type_name' |
   return room >= 4 ? text(shortenTo(name, room)) : whole;
 }
 
+/** A session starting within this long is told at any hour: it is urgent. */
+export const URGENT_PLACE_CHANGE_MS = 12 * 60 * 60 * 1000;
+
+/** Whether the update text may go out now. SPEC.md §10: no non-urgent text
+ * 9pm to 8am in the session's zone. A session starting within 12 hours is
+ * urgent. There is no queue to hold a text until 8am (the waitlist's retry
+ * column belongs to its own rows), so outside those cases the text is not
+ * sent: parents see the new place on their booking page and in the reminder. */
+export function placeTextAllowed(session: Pick<SessionPlaceContext, 'starts_at_utc' | 'tz'>, now: Date): boolean {
+  if (!inQuietHours(now, session.tz)) return true;
+  return new Date(session.starts_at_utc).getTime() - now.getTime() <= URGENT_PLACE_CHANGE_MS;
+}
+
 export type ChangeSessionPlaceResult =
-  | { kind: 'changed'; session: SessionPlaceContext; from: string | null; location: SavedLocation; parents: number; texted: number }
+  | {
+      kind: 'changed';
+      session: SessionPlaceContext;
+      from: string | null;
+      location: SavedLocation;
+      parents: number;
+      texted: number;
+      /** True when it was quiet hours and the session is not soon: no text was sent. */
+      late: boolean;
+    }
   /** The session is at that location already (a second tap): nothing was sent. */
   | { kind: 'same'; location: SavedLocation }
   | { kind: 'not-found' }
@@ -103,7 +129,7 @@ export type ChangeSessionPlaceResult =
  * parent's booking page and the reminder say the new place. Parents booked
  * in it who get texts are sent the session update, once per phone number,
  * through the one send path (consent, opt-outs, the coach's ceilings and
- * the log all apply); a text that fails for one parent does not stop the
+ * the log all apply, and quiet hours, placeTextAllowed); a text that fails for one parent does not stop the
  * others or undo the change. */
 export async function changeSessionLocation(
   db: DbClient,
@@ -135,14 +161,15 @@ export async function changeSessionLocation(
       location.name,
       location.address,
     ]);
-    return { kind: 'changed', session, from: session.location_text, location, parents: 0, texted: 0 };
+    return { kind: 'changed', session, from: session.location_text, location, parents: 0, texted: 0, late: false };
   });
   if (outcome.kind !== 'changed') return outcome;
 
   const phones = await bookedPhones(db, sessionId);
   const body = placeChangeText(outcome.session, outcome.location.name);
   let texted = 0;
-  for (const phone of await textablePhones(db, phones)) {
+  const late = !placeTextAllowed(outcome.session, now);
+  for (const phone of late ? [] : await textablePhones(db, phones)) {
     try {
       const sent = await sendText(db, { to: phone, body, coachId, template: SESSION_UPDATE_TEMPLATE }, now);
       if (sent === 'sent') texted += 1;
@@ -150,5 +177,5 @@ export async function changeSessionLocation(
       console.error(`locations: session update for session ${sessionId} not sent to one parent:`, err instanceof Error ? err.message : err);
     }
   }
-  return { ...outcome, parents: phones.length, texted };
+  return { ...outcome, parents: phones.length, texted, late };
 }

@@ -21,6 +21,7 @@ import {
   isUpcoming,
   loadSessionPlace,
   placeChangeText,
+  placeTextAllowed,
   previewPlaceChange,
   type PlaceChangeReach,
 } from '../domain/sessionLocation.js';
@@ -176,10 +177,10 @@ export async function placeFromForm(db: DbClient, sessionTypeId: number, body: u
     if (!location) return { ok: false, error: "Pick one of this session type's saved locations." };
     return { ok: true, locationId: location.id, text: location.name };
   }
-  if (typed.length > LOCATION_LIMITS.nameChars) {
+  const same = await findLocationByName(db, sessionTypeId, typed);
+  if (!same && typed.length > LOCATION_LIMITS.nameChars) {
     return { ok: false, error: `A place name is up to ${LOCATION_LIMITS.nameChars} characters.` };
   }
-  const same = await findLocationByName(db, sessionTypeId, typed);
   return same ? { ok: true, locationId: same.id, text: same.name } : { ok: true, locationId: null, text: typed };
 }
 
@@ -199,9 +200,12 @@ export async function ownPlacesNote(db: DbClient, coachId: number): Promise<Safe
 
 // ---- Screen 3: where one session is, and moving it ----
 
-function reachSentence(reach: PlaceChangeReach, text: string): SafeHtml {
+const LATE_NOTE = 'It is late; parents will see the new place on their booking page and in their reminder.';
+
+function reachSentence(reach: PlaceChangeReach, text: string, late: boolean): SafeHtml {
   const { parents, textable } = reach;
   if (parents === 0) return html`<p class="muted">Nobody is booked, so nobody is texted.</p>`;
+  if (late) return html`<p class="muted">${LATE_NOTE}</p>`;
   if (textable === 0) {
     return html`<p class="muted">${parents === 1 ? '1 parent is booked and does not get texts' : `${parents} parents are booked and do not get texts`}, so nothing is sent. They see the new place on their booking page.</p>`;
   }
@@ -217,11 +221,12 @@ function reachSentence(reach: PlaceChangeReach, text: string): SafeHtml {
 
 /** What Session detail says after a change, read from ?placed=texted.parents. */
 function placedNotice(state: string): string | null {
-  const match = /^(\d{1,4})\.(\d{1,4})$/.exec(state);
+  const match = /^(\d{1,4})\.(\d{1,4})(\.late)?$/.exec(state);
   if (!match) return null;
   const texted = Number(match[1]);
   const parents = Number(match[2]);
   if (parents === 0) return 'Location changed.';
+  if (match[3]) return `Location changed. ${LATE_NOTE}`;
   return `Location changed. Texted ${texted} of ${count(parents, 'parent', 'parents')}.${texted < parents ? ' The rest see the new place on their booking page.' : ''}`;
 }
 
@@ -248,7 +253,7 @@ export async function sessionPlaceSection(db: DbClient, coachId: number, session
     ${asked
       ? html`<div class="card">
           <p><strong>Move ${formatLocal(session.starts_at_utc, session.tz)} to ${asked.name}?</strong></p>
-          ${reachSentence(await previewPlaceChange(db, sessionId), placeChangeText(session, asked.name))}
+          ${reachSentence(await previewPlaceChange(db, sessionId), placeChangeText(session, asked.name), !placeTextAllowed(session, new Date()))}
           <form method="post" action="${action}">
             <input type="hidden" name="location_id" value="${asked.id}" />
             <input type="hidden" name="confirm" value="1" />
@@ -310,7 +315,8 @@ export function mountLocationRoutes(router: Router, requireAuth: RequestHandler)
   router.post('/app/session-types/:id/locations/:locationId', requireAuth, async (req, res) => {
     const coachId = res.locals.coachId as number;
     const typeId = Number(req.params.id);
-    const fields = readLocationFields(field(req.body, 'name'), field(req.body, 'address'));
+    const current = (await listLocations(getDb(), typeId)).find((l) => l.id === Number(req.params.locationId));
+    const fields = readLocationFields(field(req.body, 'name'), field(req.body, 'address'), current?.name);
     if (!fields.ok) {
       refuse(res, 422, 'Edit session type', fields.error, editHref(typeId));
       return;
@@ -385,7 +391,7 @@ export function mountLocationRoutes(router: Router, requireAuth: RequestHandler)
     const result = await changeSessionLocation(db, coachId, sessionId, location.id);
     switch (result.kind) {
       case 'changed':
-        res.redirect(303, `${back}?placed=${result.texted}.${result.parents}#where`);
+        res.redirect(303, `${back}?placed=${result.texted}.${result.parents}${result.late ? '.late' : ''}#where`);
         return;
       case 'same':
         res.redirect(303, `${back}#where`);

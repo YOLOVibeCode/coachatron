@@ -56,15 +56,19 @@ export function atPlace(session: { location_text: string | null; location_addres
   return place ? ` · ${place}` : '';
 }
 
-/** A name and address line as a form sent them, or what is wrong with them. */
+/** A name and address line as a form sent them, or what is wrong with them.
+ * `currentName` is the saved name when editing: a name longer than the limit
+ * that came from before locations were saved is let through unchanged, so
+ * its address can still be edited. */
 export function readLocationFields(
   rawName: string,
   rawAddress: string,
+  currentName?: string,
 ): { ok: true; name: string; address: string | null } | { ok: false; error: string } {
   const name = tidyPlace(rawName);
   const address = tidyPlace(rawAddress);
   if (!name) return { ok: false, error: 'Give the location a name.' };
-  if (name.length > LOCATION_LIMITS.nameChars) {
+  if (name.length > LOCATION_LIMITS.nameChars && name !== currentName) {
     return { ok: false, error: `A location name is up to ${LOCATION_LIMITS.nameChars} characters.` };
   }
   if (address.length > LOCATION_LIMITS.addressChars) {
@@ -264,7 +268,9 @@ export async function resolveTypedPlace(db: DbClient, sessionTypeId: number, typ
   const name = text.slice(0, LOCATION_LIMITS.nameChars).trimEnd();
   return inTransaction(db, async (tx) => {
     await lockType(tx, sessionTypeId);
-    const same = await findLocationByName(tx, sessionTypeId, name);
+    // A saved name from before the limit can be longer than a name takes now:
+    // the words as typed are tried first, then the cut name.
+    const same = (await findLocationByName(tx, sessionTypeId, text)) ?? (await findLocationByName(tx, sessionTypeId, name));
     if (same) return { locationId: same.id, text: same.name, overLimit: false };
     if ((await listLocations(tx, sessionTypeId)).length >= LOCATION_LIMITS.perType) {
       return { locationId: null, text, overLimit: true };
