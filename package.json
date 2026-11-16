@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=24"
+    "node": ">=26"
   },
   "scripts": {
     "dev": "tsx watch src/server.ts",
@@ -12,7 +12,7 @@
     "start": "exec node dist/server.js",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "node scripts/run-tests.mjs test/*.test.ts test/pg/*.test.ts",
+    "test": "node --import tsx --test test/*.test.ts test/pg/*.test.ts",
     "test:pg": "node --import tsx --test test/pg/*.test.ts",
     "migrate": "tsx src/db/migrate.ts",
     "eval:setup": "tsx scripts/eval-setup.ts"
@@ -26,7 +26,7 @@
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.8",
     "@types/express": "^5.0.6",
-    "@types/node": "^24.19.0",
+    "@types/node": "^26.6.6",
     "@types/pg": "^8.11.6",
     "eslint": "^10.11.0",
     "railway": "^3.12.0",
