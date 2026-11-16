@@ -75,6 +75,7 @@ import {
   type BookingPolicy,
 } from '../domain/policy.js';
 import { summarizeMoney } from '../domain/money.js';
+import { moneyDownloadRouter, renderDownloadBlock } from './moneyExport.js';
 import { namesList } from '../domain/bookingMessages.js';
 import { describeAttention, listPaymentAttention, type AttentionItem } from '../domain/paymentAttention.js';
 import {
@@ -2440,6 +2441,7 @@ async function renderMoney(
         </div>
         ${renderRecentPayments(recent, refunds, checks)}
         ${renderRefunds(refundList.filter((r) => !needsAttention(r)))}
+        ${renderDownloadBlock(coach.tz)}
         <a class="action" href="/app/schedule">Back to schedule</a>
         <form method="post" action="/signout">
           <button type="submit" class="ghost">Sign out</button>
@@ -2447,6 +2449,9 @@ async function renderMoney(
     ),
   );
 }
+
+// The payments and bookings downloads behind Money's Download block.
+coachRouter.use(moneyDownloadRouter(requireAuth));
 
 coachRouter.get('/app/money', requireAuth, async (req, res) => {
   const coach = await findCoachById(getDb(), res.locals.coachId as number);
