@@ -64,9 +64,9 @@ test('the payments and bookings files read the same on Postgres: times, amounts,
       assert.equal(payments.status, 200);
       assert.deepEqual(readCsv(await fileText(payments)), [
         [...PAYMENTS_HEADER],
-        [isoInZone(paid.two, TZ), "'+15551114444", 'two@example.com', 'Mia and Leo', 'drop-in', session, start, '70.00', '', '', 'paid', 'ns_pg_two'],
-        [isoInZone(paid.pkg, TZ), "'+15551115555", '', 'Ana', 'package: 10-pack', session, start, '300.00', '', '', 'disputed', 'ns_pg_pkg'],
-        [isoInZone(paid.refunded, TZ), "'+15551116666", '', "'=Zoë", 'drop-in', session, start, '35.00', '35.00', refundedAt, 'refunded', 'ns_pg_refunded'],
+        [isoInZone(paid.two, TZ), '+15551114444', 'two@example.com', 'Mia and Leo', 'drop-in', session, start, '70.00', '', '', 'paid', 'ns_pg_two'],
+        [isoInZone(paid.pkg, TZ), '+15551115555', '', 'Ana', 'package: 10-pack', session, start, '300.00', '', '', 'disputed', 'ns_pg_pkg'],
+        [isoInZone(paid.refunded, TZ), '+15551116666', '', "'=Zoë", 'drop-in', session, start, '35.00', '35.00', refundedAt, 'refunded', 'ns_pg_refunded'],
         [isoInZone(paid.kept, TZ), '', '', '', 'not booked', '', '', '41.00', '', '', 'paid', 'ns_pg_kept'],
       ]);
 
@@ -74,10 +74,10 @@ test('the payments and bookings files read the same on Postgres: times, amounts,
       assert.equal(bookings.status, 200);
       assert.deepEqual(readCsv(await fileText(bookings)), [
         [...BOOKINGS_HEADER],
-        [start, session, 'Field 3', 'Mia', "'+15551114444", 'two@example.com', 'booked', 'card', '35.00'],
-        [start, session, 'Field 3', 'Leo', "'+15551114444", 'two@example.com', 'booked', 'card', '35.00'],
-        [start, session, 'Field 3', 'Ana', "'+15551115555", '', 'booked', 'package credit', '35.00'],
-        [start, session, 'Field 3', "'=Zoë", "'+15551116666", '', 'refunded', 'card', '35.00'],
+        [start, session, 'Field 3', 'Mia', '+15551114444', 'two@example.com', 'booked', 'card', '35.00'],
+        [start, session, 'Field 3', 'Leo', '+15551114444', 'two@example.com', 'booked', 'card', '35.00'],
+        [start, session, 'Field 3', 'Ana', '+15551115555', '', 'booked', 'package credit', '35.00'],
+        [start, session, 'Field 3', "'=Zoë", '+15551116666', '', 'refunded', 'card', '35.00'],
       ]);
 
       // A range before any of it is the header alone.

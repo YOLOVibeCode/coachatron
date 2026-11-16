@@ -68,7 +68,7 @@ test('the payments file is a download named for its range: quoted fields, CRLF, 
         [...PAYMENTS_HEADER],
         [
           isoInZone(paidAt, TZ),
-          "'+15551112222",
+          '+15551112222',
           'parent+zoe@example.com',
           'Zoë "Zed" Núñez, Jr.',
           'drop-in',
@@ -89,7 +89,7 @@ test('the payments file is a download named for its range: quoted fields, CRLF, 
       assert.equal(bookings.headers.get('cache-control'), 'no-store');
       assert.deepEqual(readCsv(await fileText(bookings)), [
         [...BOOKINGS_HEADER],
-        [await sessionStart(db, seed.sessionId), session, '', 'Zoë "Zed" Núñez, Jr.', "'+15551112222", 'parent+zoe@example.com', 'booked', 'card', '35.00'],
+        [await sessionStart(db, seed.sessionId), session, '', 'Zoë "Zed" Núñez, Jr.', '+15551112222', 'parent+zoe@example.com', 'booked', 'card', '35.00'],
       ]);
 
       // A month's file and a year's file are named for the month and the year.
@@ -143,10 +143,10 @@ test('a name a spreadsheet would run as a formula is written as text, in both fi
         csvRecords(paymentsFile).map((r) => [r.Athletes, r['Parent phone'], r['Parent email']]),
         [
           // The apostrophe goes at the start of the field; a name after it is inside the cell's text.
-          [`'${formula} and +1 555 010 0199`, "'+15551110001", ''],
-          ["'+1 555 010 0199", "'+15551110002", ''],
-          ["'@SUM(1+1)", "'+15551110003", ''],
-          ["'-2+3", "'+15551110004", `'=HYPERLINK("http://example.com")`],
+          [`'${formula} and +1 555 010 0199`, '+15551110001', ''],
+          ["'+1 555 010 0199", '+15551110002', ''],
+          ["'@SUM(1+1)", '+15551110003', ''],
+          ["'-2+3", '+15551110004', `'=HYPERLINK("http://example.com")`],
         ],
       );
       const bookingsFile = await fileText(await download(base, cookie, 'bookings', daysAroundNow()));
@@ -155,7 +155,7 @@ test('a name a spreadsheet would run as a formula is written as text, in both fi
         [`'${formula}`, "'+1 555 010 0199", "'+1 555 010 0199", "'@SUM(1+1)", "'-2+3"],
       );
       for (const text of [paymentsFile, bookingsFile]) {
-        assert.equal(/(^|,|\n)"[=+\-@\t\r]/.test(text), false, 'no field starts with a character that starts a formula');
+        assert.equal(/(^|,|\n)"[=+\-@\t\r](?!\d{7,15}")/.test(text), false, 'no field but a bare phone number starts with a character that starts a formula');
       }
     });
   });
@@ -285,8 +285,8 @@ test('one payment for several children is one payments row and a bookings row fo
       assert.deepEqual(
         payments.map((r) => [r['Payment reference'], r.Athletes, r['Parent phone'], r['Parent email'], r.Bought, r.Session, r['Session start'], r.Amount, r.Status]),
         [
-          ['ns_pay_two', 'Mia and Leo', "'+15551114444", 'two@example.com', 'drop-in', session, start, '70.00', 'paid'],
-          ['ns_pay_pkg_two', 'Ana and Ben', "'+15551115555", '', 'package: 10-pack', session, start, '300.00', 'paid'],
+          ['ns_pay_two', 'Mia and Leo', '+15551114444', 'two@example.com', 'drop-in', session, start, '70.00', 'paid'],
+          ['ns_pay_pkg_two', 'Ana and Ben', '+15551115555', '', 'package: 10-pack', session, start, '300.00', 'paid'],
         ],
       );
 
@@ -294,10 +294,10 @@ test('one payment for several children is one payments row and a bookings row fo
       assert.deepEqual(
         bookings.map((r) => [r.Athlete, r['Parent phone'], r.Status, r['Paid with'], r.Price]),
         [
-          ['Mia', "'+15551114444", 'booked', 'card', '35.00'],
-          ['Leo', "'+15551114444", 'booked', 'card', '35.00'],
-          ['Ana', "'+15551115555", 'booked', 'package credit', '35.00'],
-          ['Ben', "'+15551115555", 'booked', 'package credit', '35.00'],
+          ['Mia', '+15551114444', 'booked', 'card', '35.00'],
+          ['Leo', '+15551114444', 'booked', 'card', '35.00'],
+          ['Ana', '+15551115555', 'booked', 'package credit', '35.00'],
+          ['Ben', '+15551115555', 'booked', 'package credit', '35.00'],
         ],
       );
     });
@@ -364,10 +364,10 @@ test('a payment that booked no session is still listed: a package whose session 
       assert.deepEqual(
         payments.map((r) => [r['Payment reference'], r.Athletes, r['Parent phone'], r.Bought, r.Session, r['Session start'], r.Amount, r.Status]),
         [
-          ['ns_pay_pack', 'Pat', "'+15551116001", 'pack: Monthly', await sessionTypeName(db, seed.sessionTypeId), await sessionStart(db, seed.sessionId), '120.00', 'paid'],
-          ['ns_pay_pkg_late', 'Cam', "'+15551116002", 'package: 10-pack', '', '', '300.00', 'paid'],
-          ['ns_pay_drop_late', 'Dee', "'+15551116003", 'drop-in', '', '', '35.00', 'paid'],
-          ['ns_pay_wrong', 'Eli', "'+15551116004", 'not booked', '', '', '20.00', 'paid'],
+          ['ns_pay_pack', 'Pat', '+15551116001', 'pack: Monthly', await sessionTypeName(db, seed.sessionTypeId), await sessionStart(db, seed.sessionId), '120.00', 'paid'],
+          ['ns_pay_pkg_late', 'Cam', '+15551116002', 'package: 10-pack', '', '', '300.00', 'paid'],
+          ['ns_pay_drop_late', 'Dee', '+15551116003', 'drop-in', '', '', '35.00', 'paid'],
+          ['ns_pay_wrong', 'Eli', '+15551116004', 'not booked', '', '', '20.00', 'paid'],
           ['ns_pay_lost_booking', '', '', 'not booked', '', '', '41.00', 'paid'],
         ],
       );
@@ -501,6 +501,10 @@ test('for the same days, the payments file adds up to what Money shows as collec
       const refunded = await pay('Ed', 'ns_w_refunded', 3500);
       const pkg = await pay('Fay', 'ns_w_package', 15000, { checkout: { mode: 'package', package_id: String(packageId) } });
       const two = await pay('Gus', 'ns_w_two', 7000, { form: { athlete_name_2: 'Hal' } });
+      // Ten dollars of a payment refunded outside Coachatron. SPEC §9.4: that
+      // changes nothing in Money, which lists it under "Payments to resolve".
+      await pay('Jon', 'ns_w_partial', 3500);
+      assert.equal((await postPaymentEvent(base, { type: 'marketplace.purchase.refunded', paymentId: 'ns_w_partial', refundId: 'ns_rfd_w_part', amountCents: 1000 })).status, 200);
       // A payment for the wrong amount reached the coach and did not book.
       n += 1;
       await postStorePaid(base, {
@@ -551,19 +555,26 @@ test('for the same days, the payments file adds up to what Money shows as collec
           ['ns_w_refunded', 'drop-in', '35.00', '35.00', 'refunded'],
           ['ns_w_package', 'package: 10-pack', '150.00', '', 'paid'],
           ['ns_w_two', 'drop-in', '70.00', '70.00', 'refunded'],
+          ['ns_w_partial', 'drop-in', '35.00', '10.00', 'partly refunded'],
           ['ns_w_wrong', 'not booked', '20.00', '', 'paid'],
         ],
       );
 
       // Collected: what was paid for bookings, less what went back.
       const forBookings = rows.filter((r) => r.Bought !== 'not booked');
-      assert.equal(summary.collectedThisWeekCents, 29000);
-      assert.equal(total(forBookings, 'Amount') - total(forBookings, 'Refunded amount'), summary.collectedThisWeekCents);
+      // Whole payments agree with Money. A part-refund made outside Coachatron
+      // is the one documented difference: the file shows its $10.00, Money's
+      // collected still counts the whole $35 and its refunded counts nothing.
+      const partRefunded = rows.filter((r) => r.Status === 'partly refunded');
+      assert.equal(summary.collectedThisWeekCents, 32500);
+      assert.equal(total(forBookings, 'Amount') - total(forBookings, 'Refunded amount'), summary.collectedThisWeekCents - 1000);
+      assert.equal(total(forBookings, 'Amount') - (total(forBookings, 'Refunded amount') - total(partRefunded, 'Refunded amount')), summary.collectedThisWeekCents);
       // Refunded: every row that reads refunded, and as many payments.
       const refundedRows = rows.filter((r) => r.Status === 'refunded');
       assert.equal(summary.refundedThisWeekCents, 10500);
       assert.equal(total(refundedRows, 'Refunded amount'), summary.refundedThisWeekCents);
       assert.equal(refundedRows.length, summary.refundedThisWeekCount);
+      assert.equal(partRefunded.length, 1, 'the part-refund is in the file and not in what Money counts as refunded');
       // The payment that did not book is under "Payments to resolve" on Money, not in collected.
       assert.deepEqual(rows.filter((r) => r.Bought === 'not booked').map((r) => r.Amount), ['20.00']);
 
@@ -571,7 +582,7 @@ test('for the same days, the payments file adds up to what Money shows as collec
       const money = await getPage(base, '/app/money', cookie);
       if (mondayUtc(new Date()).getTime() === monday.getTime()) {
         const dollars = (c: number) => `$${(c / 100).toFixed(2)}`;
-        assert.ok(money.includes(`Collected (gross): ${dollars(total(forBookings, 'Amount') - total(forBookings, 'Refunded amount'))}`), 'collected on the screen');
+        assert.ok(money.includes(`Collected (gross): ${dollars(summary.collectedThisWeekCents)}`), 'collected on the screen');
         assert.ok(money.includes(`Refunded: ${dollars(total(refundedRows, 'Refunded amount'))} (${refundedRows.length} payments)`), 'refunded on the screen');
       }
 
@@ -594,6 +605,9 @@ test('a range the product does not take gets the branded 400 page, and is not co
       'range=THIS-MONTH',
       'range[]=this-month',
       'range=this-month&range=last-month',
+      // Dates beside a named range would be ignored: refused, telling the coach to choose custom dates.
+      'range=this-month&from=2026-11-01&to=2026-11-30',
+      'range=last-year&from=2026-11-01&to=2026-11-30',
       // Custom dates need both, real, in order, and no more than 366 days.
       'range=custom',
       'range=custom&from=2026-11-01',
@@ -622,11 +636,17 @@ test('a range the product does not take gets the branded 400 page, and is not co
         const page = await res.text();
         assert.match(page, /<title>That range did not work — Coachatron<\/title>/);
         assert.match(page, /no more than 366 days apart/);
+        assert.ok(page.includes('choose &quot;Custom dates&quot;') || page.includes('choose "Custom dates"'), 'tells the coach to choose Custom dates');
+        if (/range=(this-month|last-year)&from/.test(query)) assert.ok(page.includes('Custom dates'), 'says to choose Custom dates');
         assert.ok(page.includes('href="/app/money#download"'), 'a way back to Money');
       }
     }
     const counted = await db.query<{ n: string }>('select count(*)::text as n from request_limit');
     assert.equal(counted.rows[0].n, '0', 'a range that was refused costs nothing');
+
+    // The form sends empty dates with a named range, and that is fine.
+    assert.equal((await fetch(`${base}/app/money/download/payments.csv?range=this-month&from=&to=`, { headers: { cookie } })).status, 200);
+    assert.equal((await fetch(`${base}/app/money/download/payments.csv?range=this-month&from=2026-11-01`, { headers: { cookie } })).status, 200, 'one stray date is not both');
 
     // The longest custom range is 366 days, both ends included.
     for (const query of ['range=custom&from=2024-01-01&to=2024-12-31', 'range=custom&from=2025-01-01&to=2026-01-01', 'range=custom&from=2026-11-15&to=2026-11-15']) {
@@ -662,7 +682,7 @@ test('a coach has twenty downloads an hour, of either file', async () => {
     assert.deepEqual(
       counters.rows.map((r) => [r.bucket, r.key, Number(r.hits)]),
       [
-        ['money-download-coach-hour', `coach:${A.coach.id}`, 22],
+        ['money-download-coach-hour', `coach:${A.coach.id}`, 20],
         ['money-download-coach-hour', `coach:${B.coach.id}`, 1],
       ].sort((x, y) => String(x[1]).localeCompare(String(y[1]))),
     );
@@ -721,6 +741,7 @@ test('Money has a Download block: one range, custom dates, and a button for each
     const block = money.slice(money.indexOf('<h2 id="download">Download</h2>'));
     assert.ok(block.startsWith('<h2 id="download">Download</h2>'), 'the block is on Money');
     assert.match(block, /<form method="get" action="\/app\/money\/download\/payments\.csv">/);
+    assert.ok(block.includes("A part-refund made outside Coachatron appears in the file but not in Money&#39;s totals."), 'says where a part-refund shows');
     assert.match(block, /<label for="download_range">Range<\/label>\s*<select id="download_range" name="range">/);
     assert.deepEqual(
       [...block.matchAll(/<option value="([^"]+)">/g)].map((m) => m[1]),
@@ -734,5 +755,41 @@ test('Money has a Download block: one range, custom dates, and a button for each
     assert.match(block, /<button type="submit" class="ghost">Download payments<\/button>/);
     assert.match(block, /<button type="submit" class="ghost" formaction="\/app\/money\/download\/bookings\.csv">Download bookings<\/button>/);
     assert.equal(/<script/i.test(block.slice(0, block.indexOf('</form>'))), false, 'the form needs no script');
+  });
+});
+
+test('a refused file and a HEAD request are not counted as downloads; a file that was made is', async () => {
+  const db = await freshDb();
+  const seed = await seedCoachWithSession(db);
+  await withServer(async (base) => {
+    const cookie = await coachCookie(db, seed.coach.id);
+    const hits = async () =>
+      Number((await db.query<{ n: string }>('select coalesce(sum(hits), 0)::text as n from request_limit')).rows[0].n);
+    const head = (kind: string, query: string) => fetch(`${base}/app/money/download/${kind}.csv?${query}`, { method: 'HEAD', headers: { cookie } });
+    for (let i = 0; i < 30; i += 1) {
+      const res = await head(i % 2 ? 'payments' : 'bookings', 'range=this-month');
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get('content-type'), 'text/csv; charset=utf-8');
+      assert.match(res.headers.get('content-disposition') ?? '', /^attachment; filename="coachatron-/);
+      assert.equal(res.headers.get('cache-control'), 'no-store');
+      assert.equal((await res.arrayBuffer()).byteLength, 0);
+    }
+    assert.equal(await hits(), 0, 'thirty HEAD requests count nothing');
+    assert.equal((await head('payments', 'range=nope')).status, 400, 'HEAD checks the range too');
+    assert.equal((await fetch(`${base}/app/money/download/payments.csv?range=this-month`, { method: 'HEAD', redirect: 'manual' })).status, 303, 'HEAD signed out goes to sign-in');
+
+    // A query that would run is never run by HEAD.
+    const seen: string[] = [];
+    const real = db.query.bind(db);
+    db.query = ((sql: string, params?: unknown[]) => {
+      seen.push(sql);
+      return real(sql, params);
+    }) as typeof db.query;
+    await head('payments', 'range=this-month');
+    assert.equal(seen.some((q) => /payment_attention|from paid/.test(q)), false, 'HEAD runs no export query');
+    db.query = real;
+
+    assert.equal((await fetch(`${base}/app/money/download/payments.csv?range=this-month`, { headers: { cookie } })).status, 200);
+    assert.equal(await hits(), 1, 'a file that was made counts once');
   });
 });

@@ -35,11 +35,24 @@ test('a field that starts with =, +, -, @, a tab or a carriage return gets a lea
   assert.equal(csvField('=cmd'), `"'=cmd"`);
   assert.equal(csvField(`=HYPERLINK("http://example.com","x")`), `"'=HYPERLINK(""http://example.com"",""x"")"`);
   assert.equal(csvField('+1 555 010 0199'), `"'+1 555 010 0199"`);
-  assert.equal(csvField('+15550100199'), `"'+15550100199"`);
+  assert.equal(csvField('+1 555 010 0199'), `"'+1 555 010 0199"`);
+  assert.equal(csvField('+1555'), `"'+1555"`, 'too short for a phone number');
+  assert.equal(csvField('+1555010019912345'), `"'+1555010019912345"`, 'too long for a phone number');
+  assert.equal(csvField('+15550100199;=1'), `"'+15550100199;=1"`);
+  assert.equal(csvField('+15550100199\n'), `"'+15550100199\n"`);
   assert.equal(csvField('-2+3'), `"'-2+3"`);
   assert.equal(csvField('@SUM(A1:A9)'), `"'@SUM(A1:A9)"`);
   assert.equal(csvField('\t=1+1'), `"'\t=1+1"`);
   assert.equal(csvField('\r=1+1'), `"'\r=1+1"`);
+});
+
+test('a bare phone number in E.164 is left as it is, and nothing else that starts with a plus is', () => {
+  assert.equal(csvField('+15550100199'), '"+15550100199"');
+  assert.equal(csvField('+4420791234567'), '"+4420791234567"');
+  assert.equal(csvField('+1234567'), '"+1234567"');
+  assert.equal(csvField('+12345678901234'), '"+12345678901234"');
+  assert.equal(csvField('-15550100199'), `"'-15550100199"`);
+  assert.equal(csvField('=15550100199'), `"'=15550100199"`);
 });
 
 test('a field with one of those characters anywhere but its start is left as it is', () => {

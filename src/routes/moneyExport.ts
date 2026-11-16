@@ -14,7 +14,7 @@ import {
   resolveRange,
   type RangePreset,
 } from '../domain/moneyExport.js';
-import { takeRequest } from '../domain/requestLimits.js';
+import { isOverLimit, takeRequest } from '../domain/requestLimits.js';
 import { html, page, type SafeHtml } from '../lib/html.js';
 import { DEFAULT_TZ, isValidTimeZone } from '../lib/time.js';
 
@@ -43,7 +43,7 @@ export function renderDownloadBlock(tz: string, now: Date = new Date()): SafeHtm
   const zone = coachZone(tz);
   return html`<h2 id="download">Download</h2>
     <div class="card download">
-      <p class="muted">Your payments and bookings as spreadsheet files (CSV), for your bookkeeping and taxes. Payments are listed by the day they were paid, bookings by the day of the session. Amounts are what parents paid, before fees.</p>
+      <p class="muted">Your payments and bookings as spreadsheet files (CSV), for your bookkeeping and taxes. Payments are listed by the day they were paid, bookings by the day of the session. Amounts are what parents paid, before fees. A part-refund made outside Coachatron appears in the file but not in Money's totals.</p>
       <form method="get" action="${PAYMENTS_PATH}">
         <label for="download_range">Range</label>
         <select id="download_range" name="range">
@@ -72,7 +72,14 @@ function refusal(res: Response, status: number, title: string, message: string):
   );
 }
 
+function setFileHeaders(res: Response, kind: string, label: string): void {
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="coachatron-${kind}-${label}.csv"`);
+  res.setHeader('Cache-Control', 'no-store');
+}
+
 async function sendFile(kind: 'payments' | 'bookings', req: Request, res: Response): Promise<void> {
+  const headOnly = req.method === 'HEAD';
   const db = getDb();
   const coach = await findCoachById(db, res.locals.coachId as number);
   if (!coach) {
@@ -86,13 +93,20 @@ async function sendFile(kind: 'payments' | 'bookings', req: Request, res: Respon
       res,
       400,
       'That range did not work',
-      `Choose a range, or for custom dates a from and a to date, the first no later than the last and no more than ${MAX_CUSTOM_DAYS} days apart.`,
+      `Choose a range. To use your own dates, choose "Custom dates" and give a from and a to date, the first no later than the last and no more than ${MAX_CUSTOM_DAYS} days apart. With any other range, leave the dates empty.`,
     );
     return;
   }
-  // Counted once the range is read, so a mistyped date costs nothing.
-  if (!(await takeRequest(db, DOWNLOAD_LIMITS, downloadLimitKey(coach.id)))) {
+  // Refused before the query when the hour's downloads are used up; counted
+  // only once a file was made, so a refusal or a bad range costs nothing.
+  if (await isOverLimit(db, DOWNLOAD_LIMITS, downloadLimitKey(coach.id))) {
     refusal(res, 429, 'Too many downloads', 'That is more downloads than an hour allows. Try again in an hour.');
+    return;
+  }
+  if (headOnly) {
+    // Headers only: no query, nothing counted.
+    setFileHeaders(res, kind, range.label);
+    res.status(200).end();
     return;
   }
   const made = kind === 'payments' ? await paymentsCsv(db, coach.id, tz, range) : await bookingsCsv(db, coach.id, tz, range);
@@ -105,9 +119,8 @@ async function sendFile(kind: 'payments' | 'bookings', req: Request, res: Respon
     );
     return;
   }
-  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="coachatron-${kind}-${range.label}.csv"`);
-  res.setHeader('Cache-Control', 'no-store');
+  await takeRequest(db, DOWNLOAD_LIMITS, downloadLimitKey(coach.id));
+  setFileHeaders(res, kind, range.label);
   res.status(200).send(Buffer.from(made.csv, 'utf8'));
 }
 
@@ -116,6 +129,9 @@ async function sendFile(kind: 'payments' | 'bookings', req: Request, res: Respon
  * screens' own check, handed in by the router that mounts this one. */
 export function moneyDownloadRouter(requireAuth: RequestHandler): Router {
   const router = Router();
+  // HEAD is answered by the same handler, which sends headers alone.
+  router.head(PAYMENTS_PATH, requireAuth, (req, res) => sendFile('payments', req, res));
+  router.head(BOOKINGS_PATH, requireAuth, (req, res) => sendFile('bookings', req, res));
   router.get(PAYMENTS_PATH, requireAuth, (req, res) => sendFile('payments', req, res));
   router.get(BOOKINGS_PATH, requireAuth, (req, res) => sendFile('bookings', req, res));
   return router;

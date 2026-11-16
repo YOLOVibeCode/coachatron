@@ -10,11 +10,16 @@ const CRLF = '\r\n';
 /** A spreadsheet reads a cell that starts with one of these as a formula. */
 const STARTS_A_FORMULA = /^[=+\-@\t\r]/;
 
+/** A bare E.164 phone number: no spreadsheet reads it as a formula, and a
+ * parent's phone is the one field that always starts with a plus. */
+const BARE_PHONE = /^\+\d{7,15}$/;
+
 /** One field, quoted. A value a spreadsheet would run as a formula gets a
- * leading apostrophe, so it is shown as the text it is. */
+ * leading apostrophe, so it is shown as the text it is (a bare phone number
+ * is left as it is). */
 export function csvField(value: string | null | undefined): string {
   const text = value ?? '';
-  const shown = STARTS_A_FORMULA.test(text) ? `'${text}` : text;
+  const shown = STARTS_A_FORMULA.test(text) && !BARE_PHONE.test(text) ? `'${text}` : text;
   return `"${shown.replace(/"/g, '""')}"`;
 }
 

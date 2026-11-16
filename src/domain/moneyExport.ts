@@ -57,11 +57,15 @@ const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 
 
 const two = (n: number) => String(n).padStart(2, '0');
 
+/** A day's first moment in the zone. Where midnight happens twice (the
+ * clocks go back at midnight, as in Havana), the day begins at the first. */
+const midnight = (year: number, month: number, day: number, tz: string): Date => zonedTimeToUtc(year, month, day, 0, 0, tz, 'earlier');
+
 function monthRange(year: number, month: number, tz: string): ExportRange {
   const next = month === 12 ? { year: year + 1, month: 1 } : { year, month: month + 1 };
   return {
-    from: zonedTimeToUtc(year, month, 1, 0, 0, tz),
-    until: zonedTimeToUtc(next.year, next.month, 1, 0, 0, tz),
+    from: midnight(year, month, 1, tz),
+    until: midnight(next.year, next.month, 1, tz),
     label: `${year}-${two(month)}`,
     words: `${MONTHS[month - 1]} ${year}`,
   };
@@ -69,8 +73,8 @@ function monthRange(year: number, month: number, tz: string): ExportRange {
 
 function yearRange(year: number, tz: string): ExportRange {
   return {
-    from: zonedTimeToUtc(year, 1, 1, 0, 0, tz),
-    until: zonedTimeToUtc(year + 1, 1, 1, 0, 0, tz),
+    from: midnight(year, 1, 1, tz),
+    until: midnight(year + 1, 1, 1, tz),
     label: String(year),
     words: String(year),
   };
@@ -124,18 +128,22 @@ export function customRange(fromRaw: unknown, toRaw: unknown, tz: string): Expor
   if (days < 1 || days > MAX_CUSTOM_DAYS) return null;
   const after = addCalendarDays(last.year, last.month, last.day, 1);
   return {
-    from: zonedTimeToUtc(first.year, first.month, first.day, 0, 0, tz),
-    until: zonedTimeToUtc(after.year, after.month, after.day, 0, 0, tz),
+    from: midnight(first.year, first.month, first.day, tz),
+    until: midnight(after.year, after.month, after.day, tz),
     label: `${dayText(first)}-to-${dayText(last)}`,
     words: `${dayText(first)} to ${dayText(last)}`,
   };
 }
 
+const isGiven = (v: unknown): boolean => v !== undefined && v !== '';
+
 /** The range a download's query string names, or null when it names none
- * that the product takes. The dates count only for a custom range. */
+ * that the product takes. Dates given with a named range are refused, not ignored. */
 export function resolveRange(query: { range?: unknown; from?: unknown; to?: unknown }, tz: string, now: Date): ExportRange | null {
   const { range } = query;
   if (range === CUSTOM_RANGE) return customRange(query.from, query.to, tz);
+  // Dates typed beside a named range would be ignored: refuse instead.
+  if (isGiven(query.from) && isGiven(query.to)) return null;
   const preset = RANGE_PRESETS.find((p) => p === range);
   return preset ? presetRange(preset, tz, now) : null;
 }

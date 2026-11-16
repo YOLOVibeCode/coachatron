@@ -106,6 +106,18 @@ export async function takeRequest(db: DbClient, rules: LimitRule[], key: string,
   return allowed;
 }
 
+/** Whether a request would be refused now, without counting it. */
+export async function isOverLimit(db: DbClient, rules: LimitRule[], key: string, now: Date = new Date()): Promise<boolean> {
+  for (const rule of rules) {
+    const result = await db.query<{ hits: number }>(
+      'select hits from request_limit where bucket = $1 and key = $2 and window_start = $3',
+      [rule.bucket, key, windowStart(rule, now)],
+    );
+    if (Number(result.rows[0]?.hits ?? 0) >= rule.max) return true;
+  }
+  return false;
+}
+
 /** Drops counters whose windows ended long ago. Run by the tick. */
 export async function purgeRequestLimits(db: DbClient, now: Date): Promise<void> {
   await db.query('delete from request_limit where window_start < $1', [new Date(now.getTime() - 2 * LONGEST_WINDOW_MS).toISOString()]);

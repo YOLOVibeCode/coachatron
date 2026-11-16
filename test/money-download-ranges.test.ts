@@ -70,6 +70,13 @@ test('custom dates run from the first day\'s midnight to the midnight after the 
   assert.deepEqual(edges(customRange('2026-06-01', '2026-06-30', 'Etc/UTC'))?.slice(0, 2), ['2026-06-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z']);
 });
 
+test('where the clocks go back at midnight, the day begins at the first midnight (Havana, 1 November 2026)', () => {
+  // Cuba's clocks go back from 01:00 to 00:00, so 00:00 happens at 04:00Z and again at 05:00Z.
+  assert.deepEqual(edges(customRange('2026-11-01', '2026-11-01', 'America/Havana'))?.slice(0, 2), ['2026-11-01T04:00:00.000Z', '2026-11-02T05:00:00.000Z']);
+  assert.deepEqual(edges(presetRange('this-month', 'America/Havana', new Date('2026-11-15T18:00:00Z')))?.slice(0, 2), ['2026-11-01T04:00:00.000Z', '2026-12-01T05:00:00.000Z']);
+  assert.deepEqual(edges(customRange('2026-10-31', '2026-10-31', 'America/Havana'))?.slice(0, 2), ['2026-10-31T04:00:00.000Z', '2026-11-01T04:00:00.000Z'], 'the day before ends at the first midnight');
+});
+
 test('custom dates are real days in order, no more than 366 of them', () => {
   assert.equal(MAX_CUSTOM_DAYS, 366);
   const ok = (from: unknown, to: unknown) => customRange(from, to, CHICAGO) !== null;
@@ -89,16 +96,13 @@ test('custom dates are real days in order, no more than 366 of them', () => {
   }
 });
 
-test('the query names one of the five ranges; the dates count only for custom', () => {
+test('the query names one of the five ranges; dates beside a named range are refused', () => {
   const now = new Date('2026-11-15T18:00:00Z');
   assert.deepEqual(edges(resolveRange({ range: 'this-month' }, CHICAGO, now)), edges(presetRange('this-month', CHICAGO, now)));
-  assert.deepEqual(
-    edges(resolveRange({ range: 'last-year', from: '2026-03-01', to: '2026-03-02' }, CHICAGO, now)),
-    edges(presetRange('last-year', CHICAGO, now)),
-    'dates left in the form do not change a named range',
-  );
   assert.deepEqual(edges(resolveRange({ range: 'custom', from: '2026-03-01', to: '2026-03-02' }, CHICAGO, now)), edges(customRange('2026-03-01', '2026-03-02', CHICAGO)));
   assert.equal(resolveRange({ range: 'custom' }, CHICAGO, now), null);
+  assert.equal(resolveRange({ range: 'last-year', from: '2026-03-01', to: '2026-03-02' }, CHICAGO, now), null, 'dates beside a named range are refused, not ignored');
+  assert.deepEqual(edges(resolveRange({ range: 'last-year', from: '', to: '' }, CHICAGO, now)), edges(presetRange('last-year', CHICAGO, now)), 'empty dates, as the form sends them, are fine');
   for (const range of [undefined, null, '', 'week', 'This-Month', 'this-month ', ['this-month'], { 0: 'this-month' }, 7]) {
     assert.equal(resolveRange({ range, from: '2026-03-01', to: '2026-03-02' }, CHICAGO, now), null, JSON.stringify(range));
   }
@@ -312,9 +316,9 @@ test('each state of a booking reads in plain words, with what paid for it, where
       assert.deepEqual(
         rows.filter((r) => ['Ava', 'Max', 'Ivy'].includes(r.Athlete)).map((r) => [r['Parent phone'], r['Parent email']]),
         [
-          ["'+15551130001", 'ava@example.com'],
-          ["'+15551130098", ''],
-          ["'+15551130096", 'max@example.com'],
+          ['+15551130001', 'ava@example.com'],
+          ['+15551130098', ''],
+          ['+15551130096', 'max@example.com'],
         ],
       );
     });
