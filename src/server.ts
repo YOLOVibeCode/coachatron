@@ -5,6 +5,7 @@ import { healthRouter } from './routes/health.js';
 import { landingRouter } from './routes/landing.js';
 import { coachRouter } from './routes/coach.js';
 import { publicRouter } from './routes/public.js';
+import { mySessionsRouter } from './routes/mySessions.js';
 import { smsInboundRouter, smsStatusRouter } from './routes/webhooks.js';
 import { storeWebhookRouter } from './routes/store-webhook.js';
 import { siteRouter } from './routes/site.js';
@@ -41,6 +42,7 @@ export function createApp() {
   app.use(landingRouter);
   app.use(coachRouter);
   app.use(publicRouter);
+  app.use(mySessionsRouter);
   app.use(siteRouter);
   // Last: any address no route answered, then any error on the way.
   app.use(notFoundHandler);

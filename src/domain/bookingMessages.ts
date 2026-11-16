@@ -29,6 +29,12 @@ export function manageUrl(token: string): string {
   return `${appBaseUrl()}/booking/${token}`;
 }
 
+/** Where a parent asks to see all their sessions (the My sessions page).
+ * The same address for everyone: it carries nothing of the booking. */
+export function mySessionsUrl(): string {
+  return `${appBaseUrl()}/my`;
+}
+
 /** An address the parent typed, never the stand-in a payment link uses for
  * a parent who gave none. */
 export function deliverableEmail(email: string | null): string | null {
@@ -152,10 +158,14 @@ async function emailParent(
   }
 }
 
+function emailLink(link: string, linkLabel: string): string {
+  return `<p style="font-family:system-ui,sans-serif;font-size:16px"><a href="${escapeHtml(link)}">${escapeHtml(linkLabel)}</a></p>`;
+}
+
 function emailHtml(paragraphs: string[], link: string, linkLabel: string): string {
   const p = (text: string) => `<p style="font-family:system-ui,sans-serif;font-size:16px">${escapeHtml(text)}</p>`;
   return `${paragraphs.map(p).join('\n')}
-<p style="font-family:system-ui,sans-serif;font-size:16px"><a href="${escapeHtml(link)}">${escapeHtml(linkLabel)}</a></p>`;
+${emailLink(link, linkLabel)}`;
 }
 
 /** Sent when a booking becomes booked, by any way of paying, or when the
@@ -193,8 +203,9 @@ export async function sendBookingConfirmation(
     d,
     {
       subject: `${moved ? 'Moved' : 'Booked'}: ${d.session_name}, ${when}`,
-      text: `${line}\n\nSee, move or cancel this booking: ${link}\n\nCoachatron`,
-      html: emailHtml([line, 'See, move or cancel this booking here:'], link, 'Manage this booking'),
+      text: `${line}\n\nSee, move or cancel this booking: ${link}\n\nSee all your sessions: ${mySessionsUrl()}\n\nCoachatron`,
+      html: `${emailHtml([line, 'See, move or cancel this booking here:'], link, 'Manage this booking')}
+${emailLink(mySessionsUrl(), 'See all your sessions')}`,
     },
     template,
     cap,

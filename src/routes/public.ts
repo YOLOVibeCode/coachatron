@@ -448,7 +448,8 @@ publicRouter.get('/c/:handle', async (req, res) => {
                           ? html`<p class="muted"><a href="/c/${coach.handle}/sessions/${s.id}/book${bookQuery}">Have session credits? Book with them</a></p>`
                           : raw('')}`}
               </div>`;
-            })}`,
+            })}
+        <p class="muted">Booked before? <a href="/my">See all your sessions</a></p>`,
       // A page opened with ?from= carries a booking's manage link, so it
       // names no canonical address.
       req.query.from === undefined ? { canonicalPath: `/c/${encodeURIComponent(coach.handle)}` } : {},
@@ -1719,7 +1720,8 @@ publicRouter.get('/booking/:token', async (req, res) => {
             : html`<p class="muted">Cancellations are not accepted after the session starts.</p>`}
 
         <a class="action" href="/c/${booking.coach_handle}?from=${req.params.token}">Book another session</a>
-        <a class="action ghost" href="/c/${booking.coach_handle}">Back to ${booking.coach_handle}'s page</a>`,
+        <a class="action ghost" href="/c/${booking.coach_handle}">Back to ${booking.coach_handle}'s page</a>
+        <p class="muted"><a href="/my">See all your sessions</a></p>`,
     ),
   );
 });
