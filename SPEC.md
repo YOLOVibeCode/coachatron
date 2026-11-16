@@ -319,6 +319,8 @@ what was refunded this week.)*
 ### 8.1 Slice 1 — MVP (the 12 screens)
 
 Ship nothing else until a real coach has taken real money through this.
+*(2026-11-15: the owner lifted this gate and asked for Slice 2, §8.2, before
+the first paying coach.)*
 
 **Coach-facing (7)**
 1. Sign in (email or mobile + one-time code)
@@ -345,6 +347,10 @@ session generation, cancellation policy enforcement (the coach-set window and
 credit rules in §9.5).
 
 ### 8.2 Slice 2 — after 10 paying coaches
+
+*(Started 2026-11-15 on the owner's decision, ahead of that count. The
+athlete dashboard is the product's thirteenth screen. The other five live
+inside existing screens or have no screen.)*
 
 - Coach-set refund policy (the cancellation window moved to Slice 1, §9.5)
 - Multiple locations on a session type
@@ -670,7 +676,10 @@ message_log(id, to_phone, template, body, provider_id, sent_at, status)
 `credit.contact_phone` is the join key for a buyer, by design (§9.2). Normalize
 to E.164 on write.
 
-Added since the sketch (migrations 0013–0032): `request_limit` (fixed-window
+*(Numbers 0033–0038 are reserved for Slice 2, §8.2, and are described here
+as each lands.)*
+
+Added since the sketch (migrations 0013–0038): `request_limit` (fixed-window
 counts per client address, phone, or email) and `otp_code.attempts`;
 `coach.email_verified_at`; `coach_payments` (whether the coach can take
 charges, and the payment texts owed) and `payments_link`;
