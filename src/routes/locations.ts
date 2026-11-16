@@ -391,7 +391,7 @@ export function mountLocationRoutes(router: Router, requireAuth: RequestHandler)
     const result = await changeSessionLocation(db, coachId, sessionId, location.id);
     switch (result.kind) {
       case 'changed':
-        res.redirect(303, `${back}?placed=${result.texted}.${result.parents}${result.late ? '.late' : ''}#where`);
+        res.redirect(303, `${back}?placed=${result.texted}.${result.parents}${result.late && result.parents > 0 ? '.late' : ''}#where`);
         return;
       case 'same':
         res.redirect(303, `${back}#where`);

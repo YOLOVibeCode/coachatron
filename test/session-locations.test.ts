@@ -610,7 +610,7 @@ test('Session detail moves one upcoming session to another saved location; with 
     const park = await saved(db, seed, 'Riverside Park', '120 River Rd');
     const otherType = await addLocation(db, seed.coach.id, await secondType(db, seed.coach.id, 'Privates'), 'Gym', null);
     const gym = (otherType as { location: SavedLocation }).location;
-    await db.query("update session set location_text = 'Field 3', location_id = $2 where id = $1", [seed.sessionId, field3.id]);
+    await db.query("update session set location_text = 'Field 3', location_id = $2, tz = $3 where id = $1", [seed.sessionId, field3.id, zoneAt(12)]);
     const other = await seedCoachWithSession(db);
     const cookie = await signIn(db, seed.coach.id);
     const detail = `/app/sessions/${seed.sessionId}`;
@@ -672,7 +672,8 @@ test('with parents booked the coach first sees who is texted and the words; the 
     const seed = await seedCoachWithSession(db, { capacity: 4 });
     const field3 = await saved(db, seed, 'Field 3');
     const park = await saved(db, seed, 'Riverside Park', '120 River Rd');
-    await db.query("update session set location_text = 'Field 3', location_id = $2 where id = $1", [seed.sessionId, field3.id]);
+    // The session's zone is at noon now, so quiet hours never apply here.
+    await db.query("update session set location_text = 'Field 3', location_id = $2, tz = $3 where id = $1", [seed.sessionId, field3.id, zoneAt(12)]);
     // One parent with two children who gets texts, and one who does not.
     const texts = '+15550000001';
     const noTexts = '+15550000002';
