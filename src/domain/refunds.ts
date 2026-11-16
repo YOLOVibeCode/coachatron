@@ -25,6 +25,11 @@ import { offerOpenSpots } from './waitlist.js';
  * refund that does not go through gives it back; one that goes through
  * withdraws it for good, so a booking that drew on it and is cancelled
  * later gives nothing back to it.
+ *
+ * A parent's cancel in time asks for the same refund when the coach's
+ * booking policy says so (SPEC.md §9.5, src/domain/cancelRefund.ts). It
+ * goes through `requestRefund` like a coach's tap: the same row, key, hold,
+ * relay call, events and notice. Only who started it differs.
  */
 
 export type RefundStatus = 'requested' | 'pending' | 'refunded' | 'failed' | 'partial';
@@ -98,7 +103,7 @@ function isPurchase(b: PurchaseBooking): boolean {
 }
 
 /** A booking a payment bought. */
-interface BoughtBooking {
+export interface BoughtBooking {
   id: number;
   status: string;
   credit_id: number | null;
@@ -113,7 +118,7 @@ interface BoughtBooking {
  * the coach did not give that session back. A booking that does not has
  * its session on a credit instead: a cancel in time, the coach's cancel, or
  * the coach giving it back. */
-function usesOwnSession(x: BoughtBooking): boolean {
+export function usesOwnSession(x: BoughtBooking): boolean {
   return (LIVE.has(x.status) || (x.status === 'cancelled' && x.late_cancel)) && x.waived_at === null;
 }
 
@@ -248,6 +253,11 @@ export interface RefundRow {
   requested_at: string;
   refunded_at: string | null;
   failed_at: string | null;
+  /** The booking whose cancel in time by the parent asked for this refund
+   * (SPEC.md §9.5), and when. Null when the coach asked, or a store event
+   * reported a refund made elsewhere. */
+  cancel_booking_id: number | null;
+  cancel_asked_at: string | null;
 }
 
 async function refundForPayment(db: DbClient, paymentRef: string): Promise<RefundRow | null> {
@@ -269,7 +279,9 @@ export type RefundBlock =
   | { kind: 'refunded' }
   /** Part of it was refunded outside Coachatron. */
   | { kind: 'partly_refunded' }
-  | { kind: 'no_payment_ref' };
+  | { kind: 'no_payment_ref' }
+  /** The parent's cancel that asked no longer calls for a refund. */
+  | { kind: 'cancel_changed' };
 
 export interface RefundPlan {
   coachId: number;
@@ -457,6 +469,8 @@ export function describeRefundBlock(block: RefundBlock): string {
       return 'Part of this payment was already refunded outside Coachatron. Contact Coachatron support to refund more.';
     case 'no_payment_ref':
       return 'This payment cannot be refunded from Coachatron. Contact Coachatron support.';
+    case 'cancel_changed':
+      return 'The cancel that asked for this refund no longer calls for one.';
     default:
       return 'This payment cannot be refunded here.';
   }
@@ -478,6 +492,21 @@ class ClaimStopped extends Error {
   }
 }
 
+/** A parent's cancel in time that asks for the refund itself, under the
+ * coach's booking policy (SPEC.md §9.5). */
+export interface CancelStart {
+  /** The booking being cancelled. */
+  bookingId: number;
+  /** Makes the cancel, in the claim's transaction, once every booking the
+   * payment bought is locked (`bought`, as they stand under the lock). The
+   * credit the cancel becomes is then held by the claim like any credit the
+   * payment bought, so the parent never holds a credit they can use while
+   * the refund is on its way. Returns false when the cancel does not call
+   * for a refund after all: the claim stops and nothing of it is kept, the
+   * cancel included. */
+  cancel: (tx: DbClient, bought: BoughtBooking[]) => Promise<boolean>;
+}
+
 /** Claims the payment's refund row for one call to the relay. A new row, a
  * failed refund (tried again under a new key), or a call whose answer never
  * came (tried again under the same key) can be claimed; anything else is
@@ -485,10 +514,10 @@ class ClaimStopped extends Error {
  * bought, so nothing more is booked with it while the refund is on its way;
  * a booking that drew on it since the check stops the claim. Returns the
  * attempt to send, or why not. */
-async function claimRefund(db: DbClient, plan: RefundPlan): Promise<{ attempt: number } | { block: RefundBlock }> {
+async function claimRefund(db: DbClient, plan: RefundPlan, start?: CancelStart): Promise<{ attempt: number } | { block: RefundBlock }> {
   try {
     return await inTransaction(db, async (tx) => {
-      const claimed = await upsertClaim(tx, plan);
+      const claimed = await upsertClaim(tx, plan, start);
       if (!claimed) {
         return { block: blockFromExisting(await refundForPayment(tx, plan.paymentRef)) ?? { kind: 'in_progress' } };
       }
@@ -498,12 +527,22 @@ async function claimRefund(db: DbClient, plan: RefundPlan): Promise<{ attempt: n
         // turns one into a credit either finished first (and that credit is
         // held here) or runs after and finds this refund on its way.
         const b = await lockedBooking(tx, plan.bookingId);
-        const held = b ? creditIdsOf(await bookingsBought(tx, b, true)) : [];
+        let bought = b ? await bookingsBought(tx, b, true) : [];
+        if (start) {
+          // The parent's cancel that asks for this refund is made here,
+          // under those locks, and the credit it becomes is held below.
+          if (!b || !(await start.cancel(tx, bought))) throw new ClaimStopped({ kind: 'cancel_changed' });
+          bought = await bookingsBought(tx, b);
+        }
+        const held = creditIdsOf(bought);
         if (held.length > 0) await tx.query('update credit set refund_id = $2 where id = any($1::int[])', [held, claimed.id]);
         const credits = b ? await purchaseCredits(tx, b) : null;
         if (credits && credits.usedElsewhere > 0) {
           throw new ClaimStopped({ kind: 'credits_used', used: credits.usedElsewhere, sessions: credits.sessions });
         }
+      } else if (start) {
+        // No booking to cancel under lock: a parent's cancel starts nothing.
+        throw new ClaimStopped({ kind: 'cancel_changed' });
       }
       return { attempt: claimed.attempt };
     });
@@ -513,10 +552,15 @@ async function claimRefund(db: DbClient, plan: RefundPlan): Promise<{ attempt: n
   }
 }
 
-async function upsertClaim(db: DbClient, plan: RefundPlan): Promise<{ id: number; attempt: number; refunded_at: string | null } | null> {
+async function upsertClaim(
+  db: DbClient,
+  plan: RefundPlan,
+  start?: CancelStart,
+): Promise<{ id: number; attempt: number; refunded_at: string | null } | null> {
   const result = await db.query<{ id: number; attempt: number; refunded_at: string | null }>(
-    `insert into refund (coach_id, payment_ref, booking_id, attention_id, athlete_name, contact_phone, amount_cents, status)
-     values ($1, $2, $3, $4, $5, $6, $7, 'requested')
+    `insert into refund (coach_id, payment_ref, booking_id, attention_id, athlete_name, contact_phone, amount_cents, status,
+                         cancel_booking_id, cancel_asked_at)
+     values ($1, $2, $3, $4, $5, $6, $7, 'requested', $9::int, case when $9::int is not null then now() end)
      on conflict (payment_ref) do update set
        status = 'requested',
        attempt = case when refund.status = 'failed' then refund.attempt + 1 else refund.attempt end,
@@ -524,6 +568,9 @@ async function upsertClaim(db: DbClient, plan: RefundPlan): Promise<{ id: number
        from_app = true,
        booking_id = coalesce(refund.booking_id, excluded.booking_id),
        attention_id = coalesce(refund.attention_id, excluded.attention_id),
+       cancel_booking_id = coalesce(excluded.cancel_booking_id, refund.cancel_booking_id),
+       cancel_asked_at = coalesce(excluded.cancel_asked_at, refund.cancel_asked_at),
+       silent_since = case when refund.status = 'failed' then now() else refund.silent_since end,
        requested_at = now(),
        updated_at = now()
      where refund.status = 'failed'
@@ -539,6 +586,7 @@ async function upsertClaim(db: DbClient, plan: RefundPlan): Promise<{ id: number
       plan.contactPhone,
       plan.amountCents,
       STALE_REQUEST_MINUTES,
+      start?.bookingId ?? null,
     ],
   );
   return result.rows[0] ?? null;
@@ -560,12 +608,15 @@ async function markFailed(db: DbClient, paymentRef: string, code: string, from: 
 }
 
 /** The coach confirmed: refund the whole payment through the relay. Safe to
- * tap twice: the second tap finds the first one's row and sends nothing. */
-export async function requestRefund(db: DbClient, coach: CoachRow, target: RefundTarget): Promise<RefundRequestOutcome> {
+ * tap twice: the second tap finds the first one's row and sends nothing.
+ * With `start`, a parent's cancel in time is what asks (SPEC.md §9.5): the
+ * cancel is made as the refund is claimed, and everything after is the
+ * same. */
+export async function requestRefund(db: DbClient, coach: CoachRow, target: RefundTarget, start?: CancelStart): Promise<RefundRequestOutcome> {
   const check = await checkRefund(db, coach.id, target);
   if (!check.ok) return { kind: 'blocked', block: check.block };
   const plan = check.plan;
-  const claim = await claimRefund(db, plan);
+  const claim = await claimRefund(db, plan, start);
   if ('block' in claim) return { kind: 'blocked', block: claim.block };
   const attempt = claim.attempt;
   let answer;
@@ -710,7 +761,7 @@ export async function applyRefunded(db: DbClient, report: RefundReport): Promise
             'update credit set remaining = 0, refund_id = $2, withdrawn_at = coalesce(withdrawn_at, now()) where id = any($1::int[])',
             [credits.creditIds, current.id],
           );
-          creditsWithdrawn = credits.unused;
+          creditsWithdrawn = Math.max(0, credits.unused - standInCredits(current));
         }
         creditsUsed = credits.usedElsewhere;
         ended = credits.live;
@@ -745,6 +796,17 @@ export async function applyRefunded(db: DbClient, report: RefundReport): Promise
     }
   }
   return 'refunded';
+}
+
+/** The credit a parent's cancel in time became when it asked for this refund
+ * (SPEC.md §9.5) only stood in for the money while the refund was on its
+ * way: the parent never held it, so it is not counted as withdrawn, and
+ * their notice does not name it. Once the refund has failed since that
+ * cancel, the credit was theirs to use, and it counts like any other. */
+function standInCredits(row: RefundRow): number {
+  if (row.cancel_booking_id === null || row.cancel_asked_at === null) return 0;
+  const failedSince = row.failed_at !== null && new Date(row.failed_at).getTime() >= new Date(row.cancel_asked_at).getTime();
+  return failedSince ? 0 : 1;
 }
 
 /** The parent hears once, when the refund's effects are applied: by text
@@ -903,11 +965,36 @@ const FAILURE: Record<string, string> = {
   CAPABILITY_UNSUPPORTED: 'Refunds are not available for this payment.',
 };
 
+/** Whether a parent's cancel in time asked for the refund, under the
+ * coach's booking policy (SPEC.md §9.5). */
+type AskedByCancel = Partial<Pick<RefundRow, 'cancel_booking_id'>>;
+
+function askedByCancel(item: AskedByCancel): boolean {
+  return (item.cancel_booking_id ?? null) !== null;
+}
+
+/** How Money marks a refund a parent's cancel in time asked for. */
+export const ASKED_BY_CANCEL = 'The parent cancelled in time, and your booking policy refunds that to their card.';
+
 /** One or two plain sentences for the coach about a refund. */
-export function describeRefund(item: Pick<RefundRow, 'status' | 'amount_cents' | 'credits_withdrawn' | 'credits_used' | 'spot_released' | 'parent_told' | 'error_code' | 'refunded_at' | 'from_app'>): string {
+export function describeRefund(
+  item: Pick<RefundRow, 'status' | 'amount_cents' | 'credits_withdrawn' | 'credits_used' | 'spot_released' | 'parent_told' | 'error_code' | 'refunded_at' | 'from_app'> &
+    AskedByCancel,
+): string {
+  const said = describeRefundItself(item);
+  return askedByCancel(item) ? `${ASKED_BY_CANCEL} ${said}` : said;
+}
+
+function describeRefundItself(
+  item: Pick<RefundRow, 'status' | 'amount_cents' | 'credits_withdrawn' | 'credits_used' | 'spot_released' | 'parent_told' | 'error_code' | 'refunded_at' | 'from_app'> &
+    AskedByCancel,
+): string {
   const amount = money(item.amount_cents);
   switch (item.status) {
     case 'requested':
+      if (item.error_code === 'unavailable' && askedByCancel(item)) {
+        return `The refund of ${amount} could not be confirmed yet and is still being tried. The parent's session credit stays held until it is.`;
+      }
       return item.error_code === 'unavailable'
         ? `The refund of ${amount} has not gone through yet: payments did not answer. Try again in a minute.`
         : `Refunding ${amount}…`;
@@ -920,7 +1007,10 @@ export function describeRefund(item: Pick<RefundRow, 'status' | 'amount_cents' |
       if (item.refunded_at !== null) {
         return `The refund of ${amount} did not reach the parent after all. The booking and its credits were already released, so contact the parent, and try again.`;
       }
-      return `The refund of ${amount} did not go through.${why ? ` ${why}` : ''} Nothing else changed.`;
+      // The cancel stands either way: its payment is a session credit the
+      // parent holds until a refund goes through.
+      const left = askedByCancel(item) ? 'The booking stays cancelled, and the parent holds a session credit for it instead.' : 'Nothing else changed.';
+      return `The refund of ${amount} did not go through.${why ? ` ${why}` : ''} ${left}`;
     }
     case 'refunded': {
       const parts = [`Refunded ${amount}${item.from_app ? '' : ' (outside Coachatron)'}.`];
@@ -1026,8 +1116,14 @@ export function purchaseLabel(paymentSource: string | null): string {
   return { pack: 'One-time pack', package: 'Package', 'drop-in': 'Drop-in' }[purchaseKind(paymentSource)];
 }
 
-/** A short state for a refund next to its booking or payment. */
-export function refundLabel(item: Pick<RefundRow, 'status' | 'error_code' | 'refunded_at'>): string {
+/** A short state for a refund next to its booking or payment. One a
+ * parent's cancel in time asked for says so. */
+export function refundLabel(item: Pick<RefundRow, 'status' | 'error_code' | 'refunded_at'> & AskedByCancel): string {
+  const label = refundStateLabel(item);
+  return askedByCancel(item) ? `${label} (parent cancelled in time)` : label;
+}
+
+function refundStateLabel(item: Pick<RefundRow, 'status' | 'error_code' | 'refunded_at'>): string {
   switch (item.status) {
     case 'requested':
       return item.error_code === 'unavailable' ? 'Refund not sent yet' : 'Refunding…';

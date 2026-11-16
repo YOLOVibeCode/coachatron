@@ -75,6 +75,7 @@ import {
   waiveBooking,
   type BookingPolicy,
 } from '../domain/policy.js';
+import { cancelGivesField, cancelGivesSummary, cardRefundsNote } from './cancelRefund.js';
 import { summarizeMoney } from '../domain/money.js';
 import { moneyDownloadRouter, renderDownloadBlock } from './moneyExport.js';
 import { namesList } from '../domain/bookingMessages.js';
@@ -2002,11 +2003,11 @@ function renderPolicySection(policy: BookingPolicy, error?: string) {
   return html`<h2 id="policy">Booking policy</h2>
     <div class="card policy">
       <p><strong>No-show:</strong> the booking's credit is used. You can give it back on the session's screen.</p>
-      <p><strong>Cancelling:</strong> a parent who cancels ${window} gets their credit back (a paid drop-in becomes a session credit).${hours === 0
+      <p><strong>Cancelling:</strong> a parent who cancels ${window} gets their credit back (${cancelGivesSummary(policy)}).${hours === 0
         ? ''
         : ` Inside ${hours} ${hours === 1 ? 'hour' : 'hours'} it counts as a no-show, and you can give it back.`}</p>
       <p><strong>Children:</strong> a parent can book up to ${children} ${children === 1 ? 'child' : 'children'} at once. Each takes a spot and uses a credit or a drop-in.</p>
-      <p class="muted">Card refunds are separate: they go through Coachatron support.</p>
+      <p class="muted">${cardRefundsNote(policy)}</p>
     </div>
     <details${error ? raw(' open') : raw('')}>
       <summary>Change the policy</summary>
@@ -2015,6 +2016,7 @@ function renderPolicySection(policy: BookingPolicy, error?: string) {
         <input id="cancel_window_hours" name="cancel_window_hours" type="number" min="0" max="${MAX_CANCEL_WINDOW_HOURS}" required value="${hours}" />
         <label for="children_per_booking">Children per booking</label>
         <input id="children_per_booking" name="children_per_booking" type="number" min="1" max="${MAX_CHILDREN_PER_BOOKING}" required value="${children}" />
+        ${cancelGivesField(policy)}
         <button type="submit">Save policy</button>
       </form>
       ${error ? html`<p class="error">${error}</p>` : raw('')}
@@ -2083,7 +2085,11 @@ coachRouter.get('/app/pricing', requireAuth, async (_req, res) => {
 coachRouter.post('/app/pricing/policy', requireAuth, async (req, res) => {
   const db = getDb();
   const coachId = res.locals.coachId as number;
-  const policy = parseBookingPolicy(field(req.body, 'cancel_window_hours'), field(req.body, 'children_per_booking'));
+  const policy = parseBookingPolicy(
+    field(req.body, 'cancel_window_hours'),
+    field(req.body, 'children_per_booking'),
+    field(req.body, 'cancel_gives'),
+  );
   if (!policy) {
     res.status(422).send(
       page(
