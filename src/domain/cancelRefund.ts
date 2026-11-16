@@ -283,8 +283,11 @@ export async function retryCancelRefunds(db: DbClient): Promise<{ retried: numbe
       }
       const coach = await findCoachById(db, row.coach_id);
       if (!coach) continue;
-      await requestRefund(db, coach, { bookingId: row.booking_id });
+      const outcome = await requestRefund(db, coach, { bookingId: row.booking_id });
       retried += 1;
+      // Payments still do not answer: the rest wait for the next tick
+      // rather than each waiting out the same silence.
+      if (outcome.kind === 'unavailable') break;
     } catch (err) {
       console.error('cancel refund: sending it again failed:', err instanceof Error ? err.message : err);
     }

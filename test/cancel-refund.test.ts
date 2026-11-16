@@ -402,6 +402,17 @@ test('payments not answering keeps the credit held; the tick sends the same requ
       const money = await getPage(base, '/app/money', third.cookie);
       assert.match(money, /Payments did not answer for a day\./);
       assert.ok(money.includes(`/app/money?refund=b${third.bookingId}#refund`));
+
+      // While payments still do not answer, a tick asks once and leaves the
+      // other waiting refunds for the next tick.
+      const fourth = await paidDropIn(base, db, { gives: 'refund', paymentId: 'ns_pay_wait_a' });
+      const fifth = await paidDropIn(base, db, { gives: 'refund', paymentId: 'ns_pay_wait_b' });
+      assert.equal(await cancelBooking(base, fourth.token), 303);
+      assert.equal(await cancelBooking(base, fifth.token), 303);
+      await db.query("update refund set requested_at = now() - interval '11 minutes' where payment_ref in ('ns_pay_wait_a', 'ns_pay_wait_b')");
+      const asked = relay.refundCalls;
+      assert.deepEqual(await runTick(db, new Date()), []);
+      assert.equal(relay.refundCalls, asked + 1);
     });
   });
 });
