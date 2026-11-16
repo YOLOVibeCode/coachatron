@@ -8,6 +8,7 @@ import { hasActiveConsent } from './sms-consent.js';
 import { plain, textWithLink } from './bookingMessages.js';
 import { newBookingToken } from './pricing.js';
 import { holdSpotsForWaitlist, offerOpenSpots, sendHeldSpots, spotOffersWaitForMorning, type SpotOffers } from './waitlist.js';
+import { recordAcceptedPay } from './assistantPay.js';
 
 /** The overflow cascade (SPEC.md §7.3). A full session with someone
  * waiting asks the coach one question: open a second group, add a backup
@@ -497,11 +498,14 @@ async function offerToNextMember(db: DbClient, info: SessionOverflowInfo, ask: R
         const asked = await tx.query<{ id: number }>("select id from offer where ask_id = $1 and state <> 'unsent' limit 1", [ask.id]);
         return { kind: 'exhausted', anyoneAsked: asked.rows.length > 0 };
       }
+      // pay_cents keeps the pay this offer's text shows (the same `info`),
+      // for the pay record its acceptance writes. 0 is "no pay shown"; only
+      // an offer from before the column has null.
       const inserted = await tx.query<{ id: number }>(
-        `insert into offer (session_id, roster_member_id, expires_at, state, token, kind, ask_id)
-         values ($1, $2, now() + make_interval(mins => $3::int), 'sent', $4, $5, $6)
+        `insert into offer (session_id, roster_member_id, expires_at, state, token, kind, ask_id, pay_cents)
+         values ($1, $2, now() + make_interval(mins => $3::int), 'sent', $4, $5, $6, $7)
          returning id`,
-        [info.sessionId, member.id, OVERFLOW_OFFER_TTL_MINUTES, randomBytes(16).toString('hex'), ask.kind, ask.id],
+        [info.sessionId, member.id, OVERFLOW_OFFER_TTL_MINUTES, randomBytes(16).toString('hex'), ask.kind, ask.id, info.backupPayCents ?? 0],
       );
       return { kind: 'offered', offerId: inserted.rows[0].id, phone: member.phone };
     });
@@ -728,6 +732,8 @@ export async function acceptOffer(db: DbClient, offerId: number): Promise<boolea
         [offer.session_id, offer.roster_member_id, session.type_capacity],
       );
     }
+    // What the coach now owes for this job, kept with the acceptance.
+    await recordAcceptedPay(tx, { offerId, sessionId: target, kind });
     for (const ask of asks.rows) {
       await tx.query(
         `update overflow_ask set closed_at = now(), outcome = 'accepted', resolved_at = coalesce(resolved_at, now()),

@@ -115,6 +115,7 @@ import {
   type PendingAsk,
   type RunningCascade,
 } from '../domain/cascade.js';
+import { assistantPayRouter, renderAssistantPay, renderOwedToAssistants } from './assistantPay.js';
 import { readStartText, START_COOKIE } from '../lib/startCookie.js';
 import {
   coachHasSchedule,
@@ -2162,6 +2163,7 @@ coachRouter.post('/app/pricing/plan', requireAuth, async (req, res) => {
 coachRouter.get('/app/roster', requireAuth, async (_req, res) => {
   const db = getDb();
   const coachId = res.locals.coachId as number;
+  const assistantPay = await renderAssistantPay(db, coachId, _req.query.pay);
   const members = await listRosterMembers(db, coachId);
   const consented = new Set<string>();
   const optInLinks = new Map<number, string>();
@@ -2193,6 +2195,7 @@ coachRouter.get('/app/roster', requireAuth, async (_req, res) => {
                   </li>`,
               )}
             </ul>`}
+        ${assistantPay}
         <h2>Add member</h2>
         <form method="post" action="/app/roster">
           <label for="name">Name</label>
@@ -2249,6 +2252,9 @@ coachRouter.post('/app/roster/:id/priority', requireAuth, async (req, res) => {
 
   res.redirect(303, '/app/roster');
 });
+
+// Assistant pay: the roster's record of what each assistant is owed.
+coachRouter.use('/app/roster', requireAuth, assistantPayRouter);
 
 // ---- Screen 7: money (read-only summary + connecting payments) ----
 
@@ -2455,6 +2461,7 @@ async function renderMoney(
         <div class="card">
           <p><strong>${summary.outstandingCreditCount} credits outstanding</strong></p>
         </div>
+        ${await renderOwedToAssistants(db, coach.id)}
         <h2>Next week</h2>
         <div class="card">
           <p><strong>${summary.nextWeekCount} sessions projected</strong></p>
