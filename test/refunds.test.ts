@@ -168,7 +168,10 @@ test('a pack booked by the previous release during a deploy reads as a pack, on 
       assert.match(detail, /Paid \$120 · One-time pack\. 1 of the 4 sessions this payment bought was used, so it cannot be refunded in full here\./);
       assert.ok(!detail.includes(`?refund=${bookingId}#refund`), 'no Refund link, as for any used pack');
 
-      const money = await summarizeMoney(db, seed.coach.id, new Date(Date.now() + 60 * 60 * 1000));
+      // In the session's own week: an hour from now is the week before it
+      // when the test runs on a Sunday.
+      const start = (await db.query<{ starts_at_utc: string }>('select starts_at_utc from session where id = $1', [seed.sessionId])).rows[0];
+      const money = await summarizeMoney(db, seed.coach.id, new Date(start.starts_at_utc));
       assert.equal(money.bookedThisWeekCount, 1);
       assert.equal(money.bookedThisWeekCents, 3500, "valued at the session's price, as migration 0027 values older bookings");
     });
