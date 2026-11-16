@@ -1,5 +1,5 @@
 import type { DbClient } from '../db/client.js';
-import type { Range } from '../lib/input.js';
+import { LIMITS, type Range } from '../lib/input.js';
 
 /** Assistant coach pay (SPEC.md §8.2): what the coach owes the people on
  * their roster for the jobs they accepted. It is the coach's record and
@@ -15,8 +15,10 @@ import type { Range } from '../lib/input.js';
  *   - owed: the session has started;
  *   - upcoming: it has not. */
 
-/** What the coach can set a session's amount to, in cents: $0 to $10,000. */
-export const PAY_AMOUNT_CENTS: Range = { min: 0, max: 1_000_000 };
+/** What the coach can set a session's amount to, in cents: $0 to $25,000,
+ * the most a session type's pay can be, so a recorded amount can always be
+ * saved again. */
+export const PAY_AMOUNT_CENTS: Range = { min: 0, max: LIMITS.backupPayCents.max };
 
 /** The longest note kept with a payment, in characters. */
 export const PAID_NOTE_MAX = 80;
@@ -47,13 +49,17 @@ function owedSql(n: number): string {
  * `sessionId` is the session the assistant coaches: the new second group,
  * or the session a backup coach joins. The amount is the pay the offer was
  * made with; an offer that carries none (one made before offers kept it)
- * takes the session type's pay as it is now. No pay, or a pay of 0, is
- * recorded as no amount set. An offer is recorded once. */
+ * takes the session type's pay as it is now. An offer made with no pay
+ * shown has 0, and is recorded as no amount set. An offer is recorded once.
+ * A problem writing the row is logged and never fails the acceptance: the
+ * write runs under a savepoint. */
 export async function recordAcceptedPay(
   tx: DbClient,
   accepted: { offerId: number; sessionId: number; kind: AssistantJob },
 ): Promise<void> {
-  await tx.query(
+  await tx.query('savepoint assistant_pay_record');
+  try {
+    await tx.query(
     `insert into assistant_pay (coach_id, roster_member_id, offer_id, session_id, kind, amount_cents)
      select st.coach_id, o.roster_member_id, o.id, $2::int, $3::text, nullif(coalesce(o.pay_cents, st.backup_pay_cents), 0)
      from offer o
@@ -62,7 +68,12 @@ export async function recordAcceptedPay(
      where o.id = $1
      on conflict (offer_id) do nothing`,
     [accepted.offerId, accepted.sessionId, accepted.kind],
-  );
+    );
+    await tx.query('release savepoint assistant_pay_record');
+  } catch (err) {
+    await tx.query('rollback to savepoint assistant_pay_record');
+    console.error('assistant pay: the pay record was not written:', err instanceof Error ? err.message : err);
+  }
 }
 
 export interface AssistantPaySummary {

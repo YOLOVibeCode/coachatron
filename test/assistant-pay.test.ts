@@ -460,7 +460,7 @@ test('an owed session with no amount is listed as owed, stays out of the totals,
   });
 });
 
-test('amounts outside $0 to $10,000 and notes over 80 characters get the form message and change nothing', async () => {
+test('amounts outside $0 to $25,000 and notes over 80 characters get the form message and change nothing', async () => {
   await withRelay(async () => {
     const db = await freshDb();
     const seed = await coachWithPay(db, 8000);
@@ -471,17 +471,17 @@ test('amounts outside $0 to $10,000 and notes over 80 characters get the form me
 
     await withServer(async (base) => {
       const cookie = await signIn(db, seed.coach.id);
-      for (const amount of ['', '-1', '-0.01', '10000.01', '10001', '1e3', '12.345', 'abc', '99999999999', '$']) {
+      for (const amount of ['', '-1', '-0.01', '25000.01', '25001', '1e3', '12.345', 'abc', '99999999999', '$']) {
         const res = await post(base, `/app/roster/pay/${row.id}/amount`, cookie, { amount_dollars: amount });
         assert.equal(res.status, 422, `amount "${amount}" answered ${res.status}`);
         const message = await res.text();
-        assert.match(message, /Enter an amount from \$0 to \$10,000\./);
+        assert.match(message, /Enter an amount from \$0 to \$25,000\./);
         assert.ok(message.includes(`href="/app/roster?pay=${sam.id}#pay-${sam.id}"`), "the way back is to the assistant's sessions");
       }
       assert.equal((await payRows(db, seed.coach.id))[0].amount_cents, 8000);
       for (const [amount, cents] of [
         ['0', 0],
-        ['10000', 1_000_000],
+        ['25000', 2_500_000],
         ['$82.50', 8250],
       ] as Array<[string, number]>) {
         assert.equal((await post(base, `/app/roster/pay/${row.id}/amount`, cookie, { amount_dollars: amount })).status, 303, amount);
@@ -576,7 +576,7 @@ test('Money shows one line for what assistants are owed, only above zero, and it
 
       await happened(db, seed.sessionId);
       const owed = await money();
-      assert.match(owed, /<a href="\/app\/roster#pay">You owe assistants \$80\.00<\/a>/);
+      assert.match(owed, /<a href="\/app\/roster#pay">You owe assistants \$80<\/a>/);
       assert.equal((owed.match(/You owe assistants/g) ?? []).length, 1);
       assert.deepEqual(figures(owed), before, 'collected and booked are as they were');
 
@@ -606,7 +606,7 @@ test('an assistant taken off the roster keeps their history, and what they are o
       assert.match(section, /Sam Lee/);
       assert.match(section, /No longer on your roster/);
       assert.match(section, /Owed \$80/);
-      assert.match((await (await fetch(`${base}/app/money`, { headers: { cookie } })).text()), /You owe assistants \$80\.00/);
+      assert.match((await (await fetch(`${base}/app/money`, { headers: { cookie } })).text()), /You owe assistants \$80/);
 
       const [row] = await payRows(db, seed.coach.id);
       assert.equal((await post(base, `/app/roster/pay/${row.id}/paid`, cookie, { note: 'Final' })).status, 303);
@@ -789,5 +789,56 @@ test("an assistant with more sessions than the list shows gets the first hundred
       assert.match(open, /Showing 100 of 105 sessions\. The totals count them all\./);
     });
     assert.equal(await markAllPaid(db, seed.coach.id, sam.id, 'Year end'), 105, 'marking all reaches the ones not shown too');
+  });
+});
+
+test('an offer made while the type had no pay records no amount, even if the type is given a pay before the accept', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await coachWithPay(db, null);
+    await seedRosterMember(db, seed.coach.id, 'Sam Lee', 0);
+    await startCascade(db, seed.sessionId, 'backup');
+    await db.query('update session_type set backup_pay_cents = 7000 where id = $1', [seed.sessionTypeId]);
+    const offer = await db.query<{ id: number }>("select id from offer where session_id = $1 and state = 'sent'", [seed.sessionId]);
+    assert.equal(await acceptOffer(db, offer.rows[0].id), true);
+    assert.equal((await payRows(db, seed.coach.id))[0].amount_cents, null, 'the assistant never saw $70');
+  });
+});
+
+test('a problem writing the pay record never fails the acceptance', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await coachWithPay(db, 8000);
+    const sam = await seedRosterMember(db, seed.coach.id, 'Sam Lee', 0);
+    await db.query(`create function assistant_pay_refuses() returns trigger as $$ begin raise exception 'refused'; end; $$ language plpgsql`);
+    await db.query('create trigger assistant_pay_refuses before insert on assistant_pay for each row execute function assistant_pay_refuses()');
+    await startCascade(db, seed.sessionId, 'backup');
+    const offer = await db.query<{ id: number }>("select id from offer where session_id = $1 and state = 'sent'", [seed.sessionId]);
+    assert.equal(await acceptOffer(db, offer.rows[0].id), true, 'the job was taken');
+    assert.equal((await payRows(db, seed.coach.id)).length, 0);
+    const session = await db.query<{ assigned_roster_member_id: number }>('select assigned_roster_member_id from session where id = $1', [seed.sessionId]);
+    assert.equal(session.rows[0].assigned_roster_member_id, sam.id, 'the assistant is assigned');
+    const state = await db.query<{ state: string }>('select state from offer where id = $1', [offer.rows[0].id]);
+    assert.equal(state.rows[0].state, 'accepted');
+  });
+});
+
+test('Money writes the owed total as the roster does, and an amount above $10,000 can be saved again', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await coachWithPay(db, 1_200_000);
+    await seedRosterMember(db, seed.coach.id, 'Sam Lee', 0);
+    await acceptedJob(db, seed.sessionId, 'backup');
+    await happened(db, seed.sessionId);
+    const [row] = await payRows(db, seed.coach.id);
+    assert.equal(row.amount_cents, 1_200_000);
+    await withServer(async (base) => {
+      const cookie = await signIn(db, seed.coach.id);
+      const money = await (await fetch(`${base}/app/money`, { headers: { cookie } })).text();
+      assert.match(money, /You owe assistants \$12000<\/a>/);
+      assert.doesNotMatch(money, /\$12000\.00/);
+      assert.equal((await post(base, `/app/roster/pay/${row.id}/amount`, cookie, { amount_dollars: '12000' })).status, 303);
+      assert.equal((await payRows(db, seed.coach.id))[0].amount_cents, 1_200_000);
+    });
   });
 });

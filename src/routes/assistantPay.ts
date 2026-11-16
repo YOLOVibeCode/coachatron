@@ -192,7 +192,7 @@ export async function renderAssistantPay(db: DbClient, coachId: number, open: un
 export async function renderOwedToAssistants(db: DbClient, coachId: number): Promise<SafeHtml> {
   const cents = await owedToAssistantsCents(db, coachId, new Date());
   if (cents <= 0) return raw('');
-  return html`<p class="muted"><a href="/app/roster#pay">You owe assistants $${(cents / 100).toFixed(2)}</a></p>`;
+  return html`<p class="muted"><a href="/app/roster#pay">You owe assistants ${formatCoachDollars(cents)}</a></p>`;
 }
 
 /** The note typed with a payment: one line, or null when empty or too long. */

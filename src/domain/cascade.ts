@@ -499,12 +499,13 @@ async function offerToNextMember(db: DbClient, info: SessionOverflowInfo, ask: R
         return { kind: 'exhausted', anyoneAsked: asked.rows.length > 0 };
       }
       // pay_cents keeps the pay this offer's text shows (the same `info`),
-      // for the pay record its acceptance writes.
+      // for the pay record its acceptance writes. 0 is "no pay shown"; only
+      // an offer from before the column has null.
       const inserted = await tx.query<{ id: number }>(
         `insert into offer (session_id, roster_member_id, expires_at, state, token, kind, ask_id, pay_cents)
          values ($1, $2, now() + make_interval(mins => $3::int), 'sent', $4, $5, $6, $7)
          returning id`,
-        [info.sessionId, member.id, OVERFLOW_OFFER_TTL_MINUTES, randomBytes(16).toString('hex'), ask.kind, ask.id, info.backupPayCents],
+        [info.sessionId, member.id, OVERFLOW_OFFER_TTL_MINUTES, randomBytes(16).toString('hex'), ask.kind, ask.id, info.backupPayCents ?? 0],
       );
       return { kind: 'offered', offerId: inserted.rows[0].id, phone: member.phone };
     });
