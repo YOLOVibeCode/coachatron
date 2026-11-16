@@ -5,7 +5,7 @@
 replaced `railway.json`, which Railway stops reading on 2026-12-01.
 
 Railway does not read this folder on deploy. Changes take effect only when
-someone applies them, one environment at a time, from the repo root on Node 24:
+someone applies them, one environment at a time, from the repo root on the Node that `.nvmrc` names:
 
 ```bash
 railway environment development   # then uat, then production
