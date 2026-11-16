@@ -39,7 +39,7 @@ test('running the overflow-choice migration again closes only asks from before i
   assert.equal(closed.outcome, 'ended');
 });
 
-test('every migration from 0013 on has a number of its own, and SPEC.md §11.1 ends its range at the last one', () => {
+test('every migration from 0013 on has a number of its own, and SPEC.md §11.1 names a range that covers the last one', () => {
   // 0006 was used twice early on; both files have run everywhere under
   // those names (the runner keys on the whole file name), so they stay.
   const numbers = readdirSync(new URL('../src/db/migrations/', import.meta.url))
@@ -52,6 +52,10 @@ test('every migration from 0013 on has a number of its own, and SPEC.md §11.1 e
     [],
     'a number two migrations share',
   );
+  // The range may run ahead of the files: Slice 2's features were built side
+  // by side, each with a number reserved for it, and merged one at a time.
   const spec = readFileSync(new URL('../SPEC.md', import.meta.url), 'utf8');
-  assert.ok(spec.includes(`(migrations 0013–${numbers[numbers.length - 1]})`), 'SPEC.md §11.1 names the last migration');
+  const range = /\(migrations 0013–(\d{4})\)/.exec(spec);
+  assert.ok(range, 'SPEC.md §11.1 names its migration range');
+  assert.ok(range[1] >= numbers[numbers.length - 1], `SPEC.md §11.1 stops at ${range[1]}, before migration ${numbers[numbers.length - 1]}`);
 });
