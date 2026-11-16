@@ -19,7 +19,7 @@ function major(v: string): number {
 test('.nvmrc, package.json engines, and CI name the same Node line', () => {
   const nvmrc = read('.nvmrc').trim();
   const engines = (JSON.parse(read('package.json')) as { engines: { node: string } }).engines.node;
-  assert.match(engines, /^>=\d+$/, 'engines.node is a floor like ">=24"; Railpack deploys that major');
+  assert.match(engines, /^>=\d+$/, 'engines.node is a floor like ">=26"; Railpack deploys that major');
   assert.equal(major(engines), major(nvmrc), `engines ${engines} and .nvmrc ${nvmrc} disagree`);
   assert.equal(major(nvmrc) % 2, 0, 'production runs an even (LTS) Node line');
   assert.match(read('.github/workflows/ci.yml'), /node-version-file: \.nvmrc/);
