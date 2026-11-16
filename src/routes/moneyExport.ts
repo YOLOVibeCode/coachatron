@@ -37,7 +37,8 @@ function coachZone(tz: string): string {
 }
 
 /** The block on Money: one range and two buttons. A plain GET form, so each
- * button is a link to a file and works without scripts. */
+ * button asks for a file and works without scripts. Both buttons are
+ * outlined: the screen keeps its one filled action. */
 export function renderDownloadBlock(tz: string, now: Date = new Date()): SafeHtml {
   const zone = coachZone(tz);
   return html`<h2 id="download">Download</h2>
@@ -53,7 +54,7 @@ export function renderDownloadBlock(tz: string, now: Date = new Date()): SafeHtm
         <input id="download_from" name="from" type="date" />
         <label for="download_to">To (for custom dates, up to ${MAX_CUSTOM_DAYS} days)</label>
         <input id="download_to" name="to" type="date" />
-        <button type="submit">Download payments</button>
+        <button type="submit" class="ghost">Download payments</button>
         <button type="submit" class="ghost" formaction="${BOOKINGS_PATH}">Download bookings</button>
       </form>
     </div>`;

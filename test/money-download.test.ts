@@ -731,7 +731,7 @@ test('Money has a Download block: one range, custom dates, and a button for each
     assert.ok(words.some((w) => block.includes(w)), 'last month is named');
     assert.match(block, /<label for="download_from">[^<]+<\/label>\s*<input id="download_from" name="from" type="date" \/>/);
     assert.match(block, /<label for="download_to">[^<]+<\/label>\s*<input id="download_to" name="to" type="date" \/>/);
-    assert.match(block, /<button type="submit">Download payments<\/button>/);
+    assert.match(block, /<button type="submit" class="ghost">Download payments<\/button>/);
     assert.match(block, /<button type="submit" class="ghost" formaction="\/app\/money\/download\/bookings\.csv">Download bookings<\/button>/);
     assert.equal(/<script/i.test(block.slice(0, block.indexOf('</form>'))), false, 'the form needs no script');
   });
