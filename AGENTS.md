@@ -42,7 +42,7 @@ product's number: the relay would forward Coachatron's reply into that product.
 ## Never
 
 - Do not hold funds, store card data, or make Coachatron the merchant of record.
-- Do not add a thirteenth screen. Slice 1 is the twelve in SPEC.md §8.1.
+- Do not add a fourteenth screen. The product has thirteen: Slice 1's twelve (SPEC.md §8.1) and the parent "My sessions" page that Slice 2 adds (§8.2).
 - Do not push to `main` or `develop`. Open a PR into `develop`.
 - Do not deploy. Do not call live Stripe, Square, Twilio, or a model provider. The one exception is the text test below, run by the operator from their Mac.
 - Do not put goalkeeper-specific words in the product name, schema, or URL structure.
