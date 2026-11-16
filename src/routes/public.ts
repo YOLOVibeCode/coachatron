@@ -65,7 +65,6 @@ import { offerOpenSpots } from '../domain/waitlist.js';
 import {
   CREDIT_HELD_SQL,
   CREDIT_WITHDRAWN_SQL,
-  cancelByParent,
   cancelCutoff,
   cancelTerms,
   getBookingPolicy,
@@ -73,6 +72,8 @@ import {
 } from '../domain/policy.js';
 import { hasPaymentHeldForCoach } from '../domain/paymentAttention.js';
 import { moveByParent, moveChoice, type MoveChoice, type MoveState } from '../domain/moveBooking.js';
+import { cancelRefundState, cancelUnderPolicy, inTimeCancel, type CancelRefundState, type InTimeCancel } from '../domain/cancelRefund.js';
+import { cancelRefundNote, checkoutCancelLine, inTimeCancelNote } from './cancelRefund.js';
 import {
   BOOKING_HOLD_MINUTES,
   OTP_DAILY_MAX_PER_CONTACT,
@@ -849,6 +850,8 @@ type CheckoutOptions = {
   credit: CreditState;
   /** False while the coach cannot take payments: only credits and free sessions are offered. */
   canPay: boolean;
+  /** What cancelling in time gives back, by the choice the booking was made under (SPEC.md §9.5). */
+  cancelLine: string | null;
 };
 
 function maskPhone(phone: string): string {
@@ -881,7 +884,8 @@ async function loadCheckoutOptions(
     // not this number's, so offering a code gives nothing away.
     credit = opts.codeSent ? { kind: 'code-sent', masked: maskPhone(phone) } : { kind: 'offer-code', masked: maskPhone(phone) };
   }
-  return { packages, plans, credit, canPay: await paymentsOpen(db, coach) };
+  const canPay = await paymentsOpen(db, coach);
+  return { packages, plans, credit, canPay, cancelLine: await checkoutCancelLine(db, booking.id, { children: needed, canPay }) };
 }
 
 publicRouter.get('/c/:handle/checkout/:token', async (req, res) => {
@@ -1051,6 +1055,7 @@ function renderCheckout(
     html`<h1>${session.name}</h1>
       <p class="muted">${formatLocal(session.starts_at_utc, session.tz)}</p>
       ${children > 1 ? html`<p class="muted">For ${namesList(pass.map((b) => b.athlete_name))}: ${spotsWord(children)}.</p>` : raw('')}
+      ${options.cancelLine ? html`<p class="muted cancel-terms">${options.cancelLine}</p>` : raw('')}
       ${canPay
         ? html`<p class="muted">Pay on the Noctusoft hosted page. Apple Pay and cards are there — this app never sees a card.</p>`
         : html`<p class="muted">${coach.name} is still setting up payments, so paying here opens soon.</p>`}
@@ -1593,7 +1598,7 @@ function hoursWord(hours: number): string {
 }
 
 /** What cancelling now does, said before the parent confirms (SPEC.md §9.5). */
-function cancelTermsNote(booking: BookingWithSession) {
+function cancelTermsNote(booking: BookingWithSession, inTime: InTimeCancel | null = null) {
   const terms = cancelTerms(booking, booking.cancel_window_hours);
   const cutoff = formatLocal(cancelCutoff(booking.starts_at_utc, booking.cancel_window_hours).toISOString(), booking.tz);
   const until = booking.cancel_window_hours === 0 ? 'before it starts' : `by ${cutoff}`;
@@ -1601,7 +1606,10 @@ function cancelTermsNote(booking: BookingWithSession) {
     case 'returns-credit':
       return html`<p class="muted cancel-terms">Cancel ${until} and your session credit comes back.</p>`;
     case 'becomes-credit':
-      return html`<p class="muted cancel-terms">Cancel ${until} and your payment becomes a session credit with ${booking.coach_name}, for another session.</p>`;
+      return (
+        inTimeCancelNote(booking, inTime) ??
+        html`<p class="muted cancel-terms">Cancel ${until} and your payment becomes a session credit with ${booking.coach_name}, for another session.</p>`
+      );
     case 'uses-credit':
       return html`<p class="error cancel-terms">It's less than ${hoursWord(booking.cancel_window_hours)} before the session, so cancelling now uses this booking's ${
         booking.credit_id !== null ? 'session credit' : 'payment'
@@ -1614,10 +1622,11 @@ function cancelTermsNote(booking: BookingWithSession) {
 /** After a cancel: whether the credit came back. A credit held while a
  * refund of its payment is on its way is not offered; the refund's own
  * notice follows. */
-function cancelledNote(booking: BookingWithSession) {
+function cancelledNote(booking: BookingWithSession, refund: CancelRefundState | null = null) {
   if (booking.late_cancel && !booking.waived_at) {
     return html`<p class="muted">Cancelled inside ${booking.coach_name}'s ${hoursWord(booking.cancel_window_hours)} window, so the credit was used.</p>`;
   }
+  if (refund) return cancelRefundNote(booking.coach_name, refund);
   if (booking.credit_id !== null && !booking.credit_withdrawn && !booking.credit_held) {
     return html`<p class="muted">Your session credit with ${booking.coach_name} is back.</p>`;
   }
@@ -1683,6 +1692,10 @@ publicRouter.get('/booking/:token', async (req, res) => {
   const held = booking.status === 'pending' && (await hasPaymentHeldForCoach(db, booking.id));
   const move = booking.status === 'booked' && cancellationAllowed(booking) ? await moveChoice(db, req.params.token) : null;
   const moved = req.query.moved === '1' && booking.status === 'booked';
+  // The coach-set refund policy (SPEC.md §9.5): what a cancel in time gives
+  // back, said before the parent confirms, and a cancel's refund after.
+  const inTime = booking.status === 'booked' && cancellationAllowed(booking) ? await inTimeCancel(db, req.params.token) : null;
+  const refund = booking.status === 'cancelled' ? await cancelRefundState(db, booking.id) : null;
 
   res.status(200).send(
     page(
@@ -1697,7 +1710,7 @@ publicRouter.get('/booking/:token', async (req, res) => {
           ${booking.status === 'booked'
             ? html`<span class="good">Confirmed</span>`
             : booking.status === 'cancelled'
-              ? html`<span class="muted">Cancelled</span>${cancelledNote(booking)}`
+              ? html`<span class="muted">Cancelled</span>${cancelledNote(booking, refund)}`
               : booking.status === 'refunded'
                 ? html`<span class="muted">Refunded. The payment went back to your card.</span>`
                 : held
@@ -1710,7 +1723,7 @@ publicRouter.get('/booking/:token', async (req, res) => {
         <h2>Action</h2>
         ${moveSection(req.params.token, booking, move)}
         ${booking.status === 'booked' && cancellationAllowed(booking)
-          ? html`${cancelTermsNote(booking)}
+          ? html`${cancelTermsNote(booking, inTime)}
             <form method="post" action="/booking/${req.params.token}/cancel">
               <button type="submit" class="action">Cancel this booking</button>
             </form>`
@@ -1734,8 +1747,9 @@ publicRouter.post('/booking/:token/cancel', async (req, res) => {
 
   // Idempotent: cancelling an already-cancelled booking succeeds without
   // giving a credit back a second time. Whether the credit comes back is
-  // decided now, by the coach's window (SPEC.md §9.5).
-  const result = await cancelByParent(db, req.params.token);
+  // decided now, by the coach's window (SPEC.md §9.5), and a cancel in time
+  // of a booking promised a refund asks for it (src/domain/cancelRefund.ts).
+  const { result } = await cancelUnderPolicy(db, req.params.token);
   if (result.kind === 'started') {
     res.status(409).send(
       page('Cannot cancel', html`<h1>Session already started</h1>

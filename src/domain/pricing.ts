@@ -88,13 +88,24 @@ const NOT_HELD_FOR_REFUND = 'refund_id is null';
  * refund from the start, like the credit the payment bought: it cannot be
  * used until the refund goes through (and withdraws it) or fails (and gives
  * it back). Run in the same transaction that creates the credit. Returns
- * whether it was held. */
+ * whether it was held.
+ *
+ * The refund's row is taken without waiting for it. This runs with the
+ * booking's row held, and a refund being applied at this very moment holds
+ * its own row while it waits for that booking: waiting for it here would
+ * leave each holding the row the other needs. Such a refund is passed over
+ * instead. Nothing is lost by it: once this transaction ends, that refund
+ * withdraws every credit its bookings hold, this one included. */
 export async function holdCreditForRefund(db: DbClient, creditId: number, paymentRef: string | null): Promise<boolean> {
   if (paymentRef === null) return false;
   const result = await db.query<{ id: number }>(
     `update credit set refund_id = r.id
-     from refund r
-     where credit.id = $1 and r.payment_ref = $2 and r.status in ('requested', 'pending') and r.refunded_at is null
+     from (
+       select id from refund
+       where payment_ref = $2 and status in ('requested', 'pending') and refunded_at is null
+       for key share skip locked
+     ) r
+     where credit.id = $1
      returning credit.id`,
     [creditId, paymentRef],
   );
@@ -260,6 +271,17 @@ export async function lockSession(tx: DbClient, sessionId: number): Promise<stri
   return result.rows[0]?.status ?? null;
 }
 
+/** SQL for what a parent's cancel in time gives back under the coach's
+ * booking policy now (SPEC.md §9.5), for a new booking in the session
+ * `param` names. A booking is written with it, so it keeps the choice in
+ * force when it was made, the one its checkout page then states. */
+export function cancelGivesSql(param: string): string {
+  return `coalesce((select c.cancel_gives from session s
+                    join session_type st on st.id = s.session_type_id
+                    join coach c on c.id = st.coach_id
+                    where s.id = ${param}), 'credit')`;
+}
+
 /** Creates the booking in `pending` status, holding one spot for
  * BOOKING_HOLD_MINUTES while the parent chooses how to pay. The checkout
  * step (screen 10) fills in payment_source, charge_id, gross_cents, and
@@ -311,8 +333,9 @@ export async function createPendingBooking(
       const manageToken = newBookingToken();
       const result = await tx.query<{ id: number }>(
         `insert into booking (session_id, athlete_name, contact_phone, contact_email, manage_token, checkout_token,
-                              hold_expires_at, phone_verified_at, status, pass_id)
-         values ($1, $2, $3, $4, $5, $6, now() + make_interval(mins => $7::int), case when $8::boolean then now() end, 'pending', $9)
+                              hold_expires_at, phone_verified_at, status, pass_id, cancel_gives)
+         values ($1, $2, $3, $4, $5, $6, now() + make_interval(mins => $7::int), case when $8::boolean then now() end, 'pending', $9,
+                 ${cancelGivesSql('$1')})
          returning id`,
         [
           args.sessionId,

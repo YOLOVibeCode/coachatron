@@ -6,6 +6,7 @@ import { sendText, type SendOutcome } from '../domain/outbound.js';
 import { purgeRequestLimits } from '../domain/requestLimits.js';
 import { pollPaymentAccounts, sendDueReadyTexts, sendPaymentReminders } from '../domain/payments.js';
 import { moveWaitlists } from '../domain/waitlist.js';
+import { retryCancelRefunds } from '../domain/cancelRefund.js';
 
 export { inQuietHours };
 
@@ -117,6 +118,7 @@ const STEPS: Array<[string, TickStep]> = [
   ['check payment accounts', pollPaymentAccounts],
   ['text coaches whose payments are ready', sendDueReadyTexts],
   ['remind coaches to set up payments', sendPaymentReminders],
+  ["send again the refunds parents' cancels are waiting for", (db) => retryCancelRefunds(db)],
   ['purge old request limits', purgeRequestLimits],
 ];
 
