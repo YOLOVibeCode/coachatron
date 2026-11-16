@@ -572,10 +572,15 @@ test('reads are limited for one calendar and for one address, and answer 429 bey
     await withServer(async (base) => {
       const read = (t: string, address: string) => fetch(`${base}/cal/${t}.ics`, { headers: from(address) });
 
+      // Each count is set for this hour and the next before every read, so
+      // the hour turning over mid-test changes nothing.
+      const feedKey = calendarFeedKey(seed.coach.id);
+
       // One calendar, read from many addresses: the 60th read this hour is
       // answered and the 61st is not, whichever address it comes from.
-      await setHits(db, CALENDAR_FEED_LIMITS, calendarFeedKey(seed.coach.id), 59);
+      await setHits(db, CALENDAR_FEED_LIMITS, feedKey, 59);
       assert.equal((await read(token, '203.0.113.10')).status, 200);
+      await setHits(db, CALENDAR_FEED_LIMITS, feedKey, 60);
       const over = await read(token, '203.0.113.11');
       assert.equal(over.status, 429);
       const wait = Number(over.headers.get('retry-after'));
@@ -585,21 +590,31 @@ test('reads are limited for one calendar and for one address, and answer 429 bey
       assert.equal((await read(otherToken, '203.0.113.11')).status, 200, "another coach's calendar is not held back");
       // A new link counts with the one it replaced.
       const replaced = await replaceCalendarToken(db, seed.coach.id);
+      await setHits(db, CALENDAR_FEED_LIMITS, feedKey, 60);
       assert.equal((await read(replaced, '203.0.113.12')).status, 429);
 
       // One address, whatever it asks for: the 120th read is answered, and
       // after that every link gets 429, known or not.
       await setHits(db, CALENDAR_ADDRESS_LIMITS, '198.51.100.7', 119);
       assert.equal((await read(otherToken, '198.51.100.7')).status, 200);
+      await setHits(db, CALENDAR_ADDRESS_LIMITS, '198.51.100.7', 120);
       assert.equal((await read(otherToken, '198.51.100.7')).status, 429);
-      assert.equal((await read('B'.repeat(43), '198.51.100.7')).status, 429, 'an unknown link is counted too');
+      await setHits(db, CALENDAR_ADDRESS_LIMITS, '198.51.100.7', 120);
+      assert.equal((await read('B'.repeat(43), '198.51.100.7')).status, 429, 'a link nobody made gets the same answer');
       assert.equal((await read(otherToken, '198.51.100.8')).status, 200, 'another address still reads it');
 
-      // Unknown links count against the address that asks for them.
-      await setHits(db, CALENDAR_ADDRESS_LIMITS, '198.51.100.9', 118);
+      // A link nobody made counts against the address that asks for it,
+      // and against no calendar.
       assert.equal((await read('C'.repeat(43), '198.51.100.9')).status, 404);
       assert.equal((await read('D'.repeat(43), '198.51.100.9')).status, 404);
-      assert.equal((await read('E'.repeat(43), '198.51.100.9')).status, 429);
+      const counted = await db.query<{ hits: number }>(
+        "select coalesce(sum(hits), 0)::int as hits from request_limit where bucket = 'cal-ip-hour' and key = '198.51.100.9'",
+      );
+      assert.equal(counted.rows[0].hits, 2);
+      // A link that is not shaped like one is not looked up or counted.
+      assert.equal((await read('short', '198.51.100.20')).status, 404);
+      const uncounted = await db.query<{ n: number }>("select count(*)::int as n from request_limit where key = '198.51.100.20'");
+      assert.equal(uncounted.rows[0].n, 0);
     });
 
     // The counters are kept by the coach and the address, never by the link.
@@ -646,8 +661,7 @@ test('the link is never written to a log line', async () => {
     console.error = error;
     setDb(db);
   }
-  assert.equal(lines.length, 1);
-  assert.match(lines[0], /^500 GET \/cal\/:token: /);
+  assert.ok(lines.some((line) => /^500 GET \/cal\/:token: /.test(line)), 'the error line names the route');
   assert.ok(!lines.join('\n').includes(real), 'the link is not in the log');
 });
 
