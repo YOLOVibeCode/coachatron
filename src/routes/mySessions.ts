@@ -1,4 +1,4 @@
-import { Router, type Request, type Response } from 'express';
+import { Router, type NextFunction, type Request, type Response } from 'express';
 import { getDb } from '../db/client.js';
 import { checkOtp, consumeOtp, contactKey, hasLiveOtp, parseContact, type Contact } from '../domain/auth.js';
 import {
@@ -45,14 +45,15 @@ import { formatClockLocal, NOT_A_TIME } from '../lib/time.js';
 
 export const mySessionsRouter = Router();
 
-// Everything under /my is one person's: never cached, never passed on as a
-// Referer, never indexed.
-mySessionsRouter.use('/my', (_req, res, next) => {
+/** Everything under /my is one person's: never cached, never passed on as
+ * a Referer, never indexed. Mounted in server.ts before the body parsers,
+ * so a body they refuse gets these headers on its error page too. */
+export function mySessionsHeaders(_req: Request, res: Response, next: NextFunction): void {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('X-Robots-Tag', 'noindex');
   next();
-});
+}
 
 /** The longest contact the form reads: an email address's limit. */
 const CONTACT_MAX_LENGTH = 254;

@@ -761,3 +761,20 @@ test('the cookie is signed with SESSION_SECRET when it is long enough, and never
   assert.equal(readMySessions(signMySessions({ kind: 'phone', phone: 'coach:1' })), null);
   assert.equal(readMySessions(undefined), null);
 });
+
+test('a body the parser refuses gets the same private headers on its error page', async () => {
+  await withRelay(async () => {
+    await freshDb();
+    await withServer(async (base) => {
+      const bad = await fetch(`${base}/my`, { method: 'POST', headers: json, body: '{bad' });
+      const big = await fetch(`${base}/my`, { method: 'POST', headers: json, body: JSON.stringify({ contact: 'x'.repeat(300_000) }) });
+      assert.equal(bad.status, 400);
+      assert.equal(big.status, 413);
+      for (const res of [bad, big]) {
+        assert.equal(res.headers.get('cache-control'), 'no-store');
+        assert.equal(res.headers.get('referrer-policy'), 'no-referrer');
+        assert.equal(res.headers.get('x-robots-tag'), 'noindex');
+      }
+    });
+  });
+});
