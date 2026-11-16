@@ -33,9 +33,15 @@ export function mySessionsLinkUrl(token: string): string {
   return `${appBaseUrl()}/my/link?t=${token}`;
 }
 
+/** How long a link's row is kept after it runs out. */
+const LINK_ROW_KEPT_MS = 24 * 60 * 60 * 1000;
+
 /** Stores a new link for this email and ends every earlier one for it, so
- * one link per address is live at a time. Only the token's hash is kept. */
+ * one link per address is live at a time. Only the token's hash is kept,
+ * and rows that ran out more than a day ago are dropped here, so the table
+ * holds no address for longer than that. */
 export async function createMySessionsLink(db: DbClient, email: string, token: string, now: Date = new Date()): Promise<void> {
+  await db.query('delete from my_sessions_link where expires_at < $1', [new Date(now.getTime() - LINK_ROW_KEPT_MS).toISOString()]);
   await db.query('update my_sessions_link set expires_at = $2 where email = $1 and used_at is null and expires_at > $2', [
     email,
     now.toISOString(),

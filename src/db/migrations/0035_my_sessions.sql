@@ -4,7 +4,8 @@
 --
 -- A mobile is proved by a texted code (otp_code, purpose 'sessions'). An
 -- email is proved by a link: one use, 20 minutes, and a new link ends the
--- earlier ones for that address. Only the token's hash is kept.
+-- earlier ones for that address. Only the token's hash is kept, and a row
+-- is dropped a day after its link ran out, the next time a link is made.
 create table if not exists my_sessions_link (
   id serial primary key,
   token_hash text not null unique,

@@ -358,6 +358,17 @@ test('an emailed link opens the page once, for 20 minutes, and a look at it does
       assert.notEqual(newest, first);
       assert.equal((await useLink(base, first)).status, 410, 'the earlier link ended when a new one was sent');
       assert.equal((await useLink(base, newest)).status, 303);
+
+      // A row is dropped a day after its link ran out, the next time a link is made.
+      const rows = async () => (await db.query<{ id: number }>('select id from my_sessions_link order by id')).rows.map((r) => r.id);
+      const kept = await rows();
+      assert.equal(kept.length, 4);
+      await db.query("update my_sessions_link set expires_at = now() - interval '25 hours' where id = any($1::int[])", [kept.slice(0, 2)]);
+      await db.query("update my_sessions_link set expires_at = now() - interval '23 hours' where id = $1", [kept[2]]);
+      await ask(base, 'pat@example.com');
+      const after = await rows();
+      assert.deepEqual(after.slice(0, 2), kept.slice(2), 'the two that ran out over a day ago are gone');
+      assert.equal(after.length, 3, 'and the new link has its row');
     });
   });
 });
