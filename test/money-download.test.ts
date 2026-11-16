@@ -741,7 +741,7 @@ test('Money has a Download block: one range, custom dates, and a button for each
     const block = money.slice(money.indexOf('<h2 id="download">Download</h2>'));
     assert.ok(block.startsWith('<h2 id="download">Download</h2>'), 'the block is on Money');
     assert.match(block, /<form method="get" action="\/app\/money\/download\/payments\.csv">/);
-    assert.ok(block.includes("A part-refund made outside Coachatron appears in the file but not in Money&#39;s totals."), 'says where a part-refund shows');
+    assert.ok(block.includes("A part-refund made outside Coachatron appears in the file but not in Money's totals."), 'says where a part-refund shows');
     assert.match(block, /<label for="download_range">Range<\/label>\s*<select id="download_range" name="range">/);
     assert.deepEqual(
       [...block.matchAll(/<option value="([^"]+)">/g)].map((m) => m[1]),
