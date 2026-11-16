@@ -121,6 +121,10 @@ export function inTimeCancelNote(
  * theirs, and this is where they are told. */
 export function cancelRefundNote(coachName: string, refund: CancelRefundState | null): SafeHtml {
   if (!refund) return raw('');
+  if (refund.state === 'sending') {
+    const amount = refund.amountCents === null ? 'your payment' : formatCoachDollars(refund.amountCents);
+    return html`<p class="muted">We are sending your refund of ${amount} to the card you paid with.</p>`;
+  }
   if (refund.state === 'on-its-way') {
     const amount = refund.amountCents === null ? 'your payment' : formatCoachDollars(refund.amountCents);
     return html`<p class="muted">A refund of ${amount} to the card you paid with is on its way.</p>`;

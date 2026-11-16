@@ -22,3 +22,8 @@ alter table booking add constraint booking_cancel_gives_known check (cancel_give
 --   cancel_asked_at: when that cancel asked.
 alter table refund add column if not exists cancel_booking_id integer references booking(id);
 alter table refund add column if not exists cancel_asked_at timestamptz;
+-- silent_since: when the current try of a refund first went out. It starts
+-- again whenever a failed refund is tried again, and a resend of an
+-- unanswered request keeps it. A parent's cancel whose request has had no
+-- answer for a day is sent more slowly, never given up on.
+alter table refund add column if not exists silent_since timestamptz not null default now();

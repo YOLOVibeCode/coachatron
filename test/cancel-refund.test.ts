@@ -338,7 +338,7 @@ test('a relay refusal leaves the cancel standing as a session credit and lists t
   });
 });
 
-test('payments not answering keeps the credit held; the tick sends the same request again, and gives up after a day', async (t) => {
+test('payments not answering keeps the credit held; the tick sends the same request again, and never gives up', async (t) => {
   quiet(t);
   await withRelay(async (relay) => {
     const db = await freshDb();
@@ -353,7 +353,8 @@ test('payments not answering keeps the credit held; the tick sends the same requ
         { status: (await refundOf(db, 'ns_pay_no_answer'))?.status, code: (await refundOf(db, 'ns_pay_no_answer'))?.error_code },
         { status: 'requested', code: 'unavailable' },
       );
-      assert.match(await getPage(base, '/app/money', first.cookie), /has not gone through yet: payments did not answer/);
+      assert.match(await managePage(base, first.token), /We are sending your refund of \$35/);
+      assert.match(await getPage(base, '/app/money', first.cookie), /could not be confirmed yet and is still being tried/);
 
       // Too soon: the tick leaves it. Ten minutes on, it sends it again.
       assert.deepEqual(await runTick(db, new Date()), []);
@@ -383,30 +384,41 @@ test('payments not answering keeps the credit held; the tick sends the same requ
       assert.equal(relay.refunds.at(-1)?.idempotencyKey, refundIdempotencyKey('ns_pay_lost', 1));
       assert.equal(await bookingStatus(db, second.bookingId), 'refunded');
 
-      // No answer for a day: the refund reads as failed, and the parent holds the credit.
-      const third = await paidDropIn(base, db, { gives: 'refund', paymentId: 'ns_pay_gave_up' });
+      // No answer for a day: the credit stays held and the refund is never
+      // marked failed. The tick sends it every hour under the same key.
+      const third = await paidDropIn(base, db, { gives: 'refund', paymentId: 'ns_pay_slow' });
       relay.refundError = { status: 503, code: 'UNAVAILABLE' };
       assert.equal(await cancelBooking(base, third.token), 303);
-      const calls = relay.refundCalls;
+      assert.match(await managePage(base, third.token), /We are sending your refund of \$35 to the card you paid with\./);
+      assert.doesNotMatch(await managePage(base, third.token), /on its way/);
       await db.query(
-        "update refund set requested_at = now() - interval '11 minutes', cancel_asked_at = now() - interval '25 hours' where payment_ref = 'ns_pay_gave_up'",
+        "update refund set requested_at = now() - interval '11 minutes', silent_since = now() - interval '25 hours' where payment_ref = 'ns_pay_slow'",
       );
+      const calls = relay.refundCalls;
       await runTick(db, new Date());
-      assert.equal(relay.refundCalls, calls, 'not asked again');
-      assert.deepEqual(
-        { status: (await refundOf(db, 'ns_pay_gave_up'))?.status, code: (await refundOf(db, 'ns_pay_gave_up'))?.error_code },
-        { status: 'failed', code: 'no_answer' },
-      );
-      assert.deepEqual(await creditOf(db, third.bookingId), { remaining: 1, held: false, withdrawn: false });
-      assert.match(await managePage(base, third.token), /The refund to your card did not go through, so you hold a session credit/);
+      assert.equal(relay.refundCalls, calls, 'after a day it is sent hourly, not every ten minutes');
+      await db.query("update refund set requested_at = now() - interval '61 minutes' where payment_ref = 'ns_pay_slow'");
+      await runTick(db, new Date());
+      assert.equal(relay.refundCalls, calls + 1, 'sent again within the hour');
+      assert.equal((await refundOf(db, 'ns_pay_slow'))?.status, 'requested', 'never marked failed');
+      assert.deepEqual(await creditOf(db, third.bookingId), { remaining: 1, held: true, withdrawn: false }, 'the credit stays held');
+      assert.match(await managePage(base, third.token), /We are sending your refund/);
       const money = await getPage(base, '/app/money', third.cookie);
-      assert.match(money, /Payments did not answer for a day\./);
-      assert.ok(money.includes(`/app/money?refund=b${third.bookingId}#refund`));
+      assert.match(money, /Payments to resolve/);
+      assert.match(money, /could not be confirmed yet and is still being tried\. The parent's session credit stays held until it is\./);
+      // The relay answers at last, with the original result: one refund.
+      relay.refundError = null;
+      await db.query("update refund set requested_at = now() - interval '61 minutes' where payment_ref = 'ns_pay_slow'");
+      await runTick(db, new Date());
+      assert.equal(relay.refunds.filter((r) => r.paymentRef === 'ns_pay_slow').length, 1);
+      assert.equal(await bookingStatus(db, third.bookingId), 'refunded');
+      assert.deepEqual(await creditOf(db, third.bookingId), { remaining: 0, held: true, withdrawn: true });
 
       // While payments still do not answer, a tick asks once and leaves the
       // other waiting refunds for the next tick.
       const fourth = await paidDropIn(base, db, { gives: 'refund', paymentId: 'ns_pay_wait_a' });
       const fifth = await paidDropIn(base, db, { gives: 'refund', paymentId: 'ns_pay_wait_b' });
+      relay.refundError = { status: 503, code: 'UNAVAILABLE' };
       assert.equal(await cancelBooking(base, fourth.token), 303);
       assert.equal(await cancelBooking(base, fifth.token), 303);
       await db.query("update refund set requested_at = now() - interval '11 minutes' where payment_ref in ('ns_pay_wait_a', 'ns_pay_wait_b')");
@@ -549,6 +561,32 @@ test('a payment partly refunded elsewhere cannot go back whole, so the cancel gi
       assert.deepEqual(await creditOf(db, bookingId), { remaining: 1, held: false, withdrawn: false });
       assert.equal((await getCreditBalance(db, seed.coach.id, PHONE))?.remaining, 1);
       assert.equal((await refundOf(db, 'ns_pay_part'))?.cancel_booking_id, null);
+    });
+  });
+});
+
+test("a coach's retry of a failed refund starts its no-answer time again, so the tick does not slow it", async (t) => {
+  quiet(t);
+  await withRelay(async (relay) => {
+    const db = await freshDb();
+    await withServer(async (base) => {
+      const { bookingId, token, cookie } = await paidDropIn(base, db, { gives: 'refund', paymentId: 'ns_pay_retry_clock' });
+      relay.refundError = { status: 404, code: 'NOT_FOUND' };
+      assert.equal(await cancelBooking(base, token), 303);
+      assert.equal((await refundOf(db, 'ns_pay_retry_clock'))?.status, 'failed');
+      // The failure is more than a day old when the coach tries again.
+      await db.query("update refund set silent_since = now() - interval '30 hours' where payment_ref = 'ns_pay_retry_clock'");
+      relay.refundError = { status: 503, code: 'UNAVAILABLE' };
+      await postForm(base, '/app/money/refund', cookie, { target: `b${bookingId}` });
+      const since = await db.query<{ fresh: boolean }>(
+        "select silent_since > now() - interval '1 minute' as fresh from refund where payment_ref = 'ns_pay_retry_clock'",
+      );
+      assert.equal(since.rows[0].fresh, true, 'the day is counted from this try');
+      await db.query("update refund set requested_at = now() - interval '11 minutes' where payment_ref = 'ns_pay_retry_clock'");
+      const calls = relay.refundCalls;
+      await runTick(db, new Date());
+      assert.equal(relay.refundCalls, calls + 1, 'resent at the ten-minute rate');
+      assert.deepEqual(await creditOf(db, bookingId), { remaining: 1, held: true, withdrawn: false });
     });
   });
 });

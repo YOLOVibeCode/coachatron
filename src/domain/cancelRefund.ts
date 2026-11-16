@@ -1,7 +1,7 @@
 import type { DbClient } from '../db/client.js';
 import { findCoachById } from './auth.js';
 import { cancelByParent, cancelTerms, CREDIT_WITHDRAWN_SQL, type CancelGives, type ParentCancel } from './policy.js';
-import { checkRefund, giveUpOnRefund, requestRefund, usesOwnSession, type BoughtBooking, type RefundBlock, type RefundRequestOutcome } from './refunds.js';
+import { checkRefund, requestRefund, usesOwnSession, type BoughtBooking, type RefundBlock, type RefundRequestOutcome } from './refunds.js';
 
 /**
  * The coach-set refund policy (SPEC.md §9.5). A coach chooses what a
@@ -181,7 +181,7 @@ export async function cancelUnderPolicy(db: DbClient, manageToken: string, now: 
  * credit the cancel became is held and not offered), or failed after the
  * parent's cancel asked for it (the credit is theirs now). */
 export interface CancelRefundState {
-  state: 'on-its-way' | 'failed';
+  state: 'on-its-way' | 'sending' | 'failed';
   amountCents: number | null;
   /** The credit the booking became can still be used. */
   creditLeft: boolean;
@@ -209,7 +209,8 @@ export async function cancelRefundState(db: DbClient, bookingId: number): Promis
   if (!row || row.refunded_at !== null || row.credit_withdrawn_at !== null) return null;
   const held = row.credit_refund_id !== null;
   if (held && (row.status === 'requested' || row.status === 'pending')) {
-    return { state: 'on-its-way', amountCents: row.amount_cents, creditLeft: false };
+    // 'requested' is a request the relay has not accepted yet.
+    return { state: row.status === 'pending' ? 'on-its-way' : 'sending', amountCents: row.amount_cents, creditLeft: false };
   }
   if (!held && row.status === 'failed' && row.cancel_booking_id !== null) {
     return { state: 'failed', amountCents: row.amount_cents, creditLeft: (row.credit_remaining ?? 0) > 0 };
@@ -249,38 +250,37 @@ export async function cancelPromise(db: DbClient, bookingId: number): Promise<Ca
  * has nobody waiting, so the tick sends its request again, under the same
  * key, once it has gone this long without an answer. */
 export const CANCEL_REFUND_RETRY_MINUTES = 10;
-/** After this long without an answer the refund reads as failed: the parent
- * holds their session credit, and the coach sees it on Money. */
-export const CANCEL_REFUND_GIVE_UP_HOURS = 24;
+/** After this long without an answer the request is sent more slowly, every
+ * CANCEL_REFUND_SLOW_MINUTES. It is never given up on: Stripe may have made
+ * the refund, so the parent's credit stays held until the relay gives a
+ * definite answer (made, refused or failed), and the same key makes the
+ * relay return the original result. */
+export const CANCEL_REFUND_SLOW_AFTER_HOURS = 24;
+export const CANCEL_REFUND_SLOW_MINUTES = 60;
 const RETRY_BATCH = 20;
 
 /** The tick's step for refunds a parent's cancel asked for whose request
  * never got an answer (the relay was down or busy, or the app stopped
  * between the cancel and the call). Each is asked for again through
  * `requestRefund`, which sends the same idempotency key, so the relay makes
- * the refund at most once. One that has had no answer for a day is given
- * up on instead: it fails, which releases the credit to the parent. */
-export async function retryCancelRefunds(db: DbClient): Promise<{ retried: number; givenUp: number }> {
-  const due = await db.query<{ payment_ref: string; booking_id: number; coach_id: number; give_up: boolean }>(
-    `select payment_ref, booking_id, coach_id, cancel_asked_at < now() - make_interval(hours => $2::int) as give_up
+ * the refund at most once. After a day without an answer it is sent every
+ * hour instead, and the credit stays held: only a definite answer ends it. */
+export async function retryCancelRefunds(db: DbClient): Promise<{ retried: number }> {
+  const due = await db.query<{ payment_ref: string; booking_id: number; coach_id: number }>(
+    `select payment_ref, booking_id, coach_id
      from refund
      where cancel_booking_id is not null and status = 'requested' and refunded_at is null
        and booking_id is not null and coach_id is not null
-       and requested_at < now() - make_interval(mins => $1::int)
+       and requested_at < now() - make_interval(mins => case
+             when silent_since < now() - make_interval(hours => $2::int) then $3::int else $1::int end)
      order by requested_at, id
-     limit $3`,
-    [CANCEL_REFUND_RETRY_MINUTES, CANCEL_REFUND_GIVE_UP_HOURS, RETRY_BATCH],
+     limit $4`,
+    [CANCEL_REFUND_RETRY_MINUTES, CANCEL_REFUND_SLOW_AFTER_HOURS, CANCEL_REFUND_SLOW_MINUTES, RETRY_BATCH],
   );
   let retried = 0;
-  let givenUp = 0;
   for (const row of due.rows) {
     // One refund that cannot be sent never stops the next.
     try {
-      if (row.give_up) {
-        await giveUpOnRefund(db, row.payment_ref);
-        givenUp += 1;
-        continue;
-      }
       const coach = await findCoachById(db, row.coach_id);
       if (!coach) continue;
       const outcome = await requestRefund(db, coach, { bookingId: row.booking_id });
@@ -292,5 +292,5 @@ export async function retryCancelRefunds(db: DbClient): Promise<{ retried: numbe
       console.error('cancel refund: sending it again failed:', err instanceof Error ? err.message : err);
     }
   }
-  return { retried, givenUp };
+  return { retried };
 }

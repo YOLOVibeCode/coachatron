@@ -570,6 +570,7 @@ async function upsertClaim(
        attention_id = coalesce(refund.attention_id, excluded.attention_id),
        cancel_booking_id = coalesce(excluded.cancel_booking_id, refund.cancel_booking_id),
        cancel_asked_at = coalesce(excluded.cancel_asked_at, refund.cancel_asked_at),
+       silent_since = case when refund.status = 'failed' then now() else refund.silent_since end,
        requested_at = now(),
        updated_at = now()
      where refund.status = 'failed'
@@ -604,13 +605,6 @@ async function markFailed(db: DbClient, paymentRef: string, code: string, from: 
   if (row && row.refunded_at === null) {
     await db.query('update credit set refund_id = null where refund_id = $1 and withdrawn_at is null', [row.id]);
   }
-}
-
-/** A refund whose call never got an answer is given up on: it reads as
- * failed, the credit it held goes back to the parent, and the coach sees it
- * under "Payments to resolve" with a way to try again. */
-export async function giveUpOnRefund(db: DbClient, paymentRef: string): Promise<void> {
-  await markFailed(db, paymentRef, 'no_answer', ['requested']);
 }
 
 /** The coach confirmed: refund the whole payment through the relay. Safe to
@@ -969,7 +963,6 @@ const FAILURE: Record<string, string> = {
   NOT_FOUND: 'Stripe has no record of this payment for your account.',
   REFUND_EXCEEDS_PAYMENT: 'Stripe says this payment was already refunded.',
   CAPABILITY_UNSUPPORTED: 'Refunds are not available for this payment.',
-  no_answer: 'Payments did not answer for a day.',
 };
 
 /** Whether a parent's cancel in time asked for the refund, under the
@@ -999,6 +992,9 @@ function describeRefundItself(
   const amount = money(item.amount_cents);
   switch (item.status) {
     case 'requested':
+      if (item.error_code === 'unavailable' && askedByCancel(item)) {
+        return `The refund of ${amount} could not be confirmed yet and is still being tried. The parent's session credit stays held until it is.`;
+      }
       return item.error_code === 'unavailable'
         ? `The refund of ${amount} has not gone through yet: payments did not answer. Try again in a minute.`
         : `Refunding ${amount}…`;
