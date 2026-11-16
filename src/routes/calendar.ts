@@ -139,21 +139,21 @@ export function calendarRoutes(requireAuth: RequestHandler): Router {
   // logged as /cal/:token (pathForLog in lib/headers.ts), never the link.
   router.get('/cal/:file', async (req, res, next) => {
     const match = FEED_FILE.exec(String(req.params.file));
-    if (!match || !isFeedToken(match[1])) {
-      next();
-      return;
-    }
     const db = getDb();
     const now = new Date();
-    if (!(await takeRequest(db, CALENDAR_ADDRESS_LIMITS, clientKey(req), now))) {
-      tooManyReads(res, now);
-      return;
-    }
-    const coach = await findFeedCoach(db, match[1]);
+    const coach = match && isFeedToken(match[1]) ? await findFeedCoach(db, match[1]) : null;
     if (!coach) {
+      // Only a link that does not work counts against the address: that is
+      // guessing. The same 404 as any address nothing answers.
+      if (!(await takeRequest(db, CALENDAR_ADDRESS_LIMITS, clientKey(req), now))) {
+        tooManyReads(res, now);
+        return;
+      }
       next();
       return;
     }
+    // A link that works is limited only per calendar, so an outsider cannot
+    // spend it without the link.
     if (!(await takeRequest(db, CALENDAR_FEED_LIMITS, calendarFeedKey(coach.id), now))) {
       tooManyReads(res, now);
       return;
@@ -177,9 +177,11 @@ export function calendarRoutes(requireAuth: RequestHandler): Router {
     if (action === 'on') {
       await turnOnCalendarFeed(db, coachId);
     } else if (action === 'new') {
-      await replaceCalendarToken(db, coachId);
-      res.redirect(303, '/app/schedule?calendar=replaced#calendar');
-      return;
+      // A form left open after the link was turned off makes nothing.
+      if ((await replaceCalendarToken(db, coachId)) !== null) {
+        res.redirect(303, '/app/schedule?calendar=replaced#calendar');
+        return;
+      }
     } else if (action === 'off') {
       await turnOffCalendarFeed(db, coachId);
       res.redirect(303, '/app/schedule?calendar=turned-off#calendar');

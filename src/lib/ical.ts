@@ -75,11 +75,13 @@ export function foldLine(line: string): string {
   return lines.join(CRLF);
 }
 
-function eventLines(event: IcalEvent, stamp: string): string[] {
+function eventLines(event: IcalEvent, stamp: string, sequence: number): string[] {
   return [
     'BEGIN:VEVENT',
     `UID:${icalText(event.uid)}`,
     `DTSTAMP:${stamp}`,
+    `LAST-MODIFIED:${stamp}`,
+    `SEQUENCE:${sequence}`,
     `DTSTART:${icalUtc(event.start)}`,
     `DTEND:${icalUtc(event.end)}`,
     `SUMMARY:${icalText(event.summary)}`,
@@ -94,6 +96,10 @@ function eventLines(event: IcalEvent, stamp: string): string[] {
 /** The whole file: CRLF after every line, the last one included. */
 export function writeCalendar(calendar: IcalCalendar): string {
   const stamp = icalUtc(calendar.stamp);
+  // The schema keeps no change time for a session, so a change is dated by
+  // the file that first shows it: LAST-MODIFIED is the time written and
+  // SEQUENCE the minutes since 1970 then, which never decreases.
+  const sequence = Math.floor(calendar.stamp.getTime() / 60_000);
   const lines = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
@@ -103,7 +109,7 @@ export function writeCalendar(calendar: IcalCalendar): string {
     `X-WR-CALNAME:${icalText(calendar.name)}`,
     `REFRESH-INTERVAL;VALUE=DURATION:${calendar.refresh}`,
     `X-PUBLISHED-TTL:${calendar.refresh}`,
-    ...calendar.events.flatMap((event) => eventLines(event, stamp)),
+    ...calendar.events.flatMap((event) => eventLines(event, stamp, sequence)),
     'END:VCALENDAR',
   ];
   return lines.map((line) => foldLine(line) + CRLF).join('');

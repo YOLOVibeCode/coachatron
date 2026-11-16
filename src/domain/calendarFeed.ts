@@ -53,15 +53,15 @@ export async function turnOnCalendarFeed(db: DbClient, coachId: number): Promise
   return result.rows[0].token;
 }
 
-/** "Get a new link": the address before stops working with this statement. */
-export async function replaceCalendarToken(db: DbClient, coachId: number): Promise<string> {
+/** "Get a new link": the address before stops working with this statement.
+ * Only a link that exists is replaced; with none (turned off, or a form
+ * left open from before) nothing is made and this answers null. */
+export async function replaceCalendarToken(db: DbClient, coachId: number): Promise<string | null> {
   const result = await db.query<{ token: string }>(
-    `insert into calendar_feed (coach_id, token) values ($1, $2)
-     on conflict (coach_id) do update set token = excluded.token, created_at = now()
-     returning token`,
+    'update calendar_feed set token = $2, created_at = now() where coach_id = $1 returning token',
     [coachId, newFeedToken()],
   );
-  return result.rows[0].token;
+  return result.rows[0]?.token ?? null;
 }
 
 /** "Turn off": the address stops working, and no link is left. */
@@ -97,9 +97,10 @@ const HOUR_MS = 60 * 60 * 1000;
  * tick's purge of old counters already covers. */
 export const CALENDAR_FEED_LIMITS: LimitRule[] = [{ bucket: 'cal-feed-hour', windowMs: HOUR_MS, max: 60 }];
 
-/** Reads from one address, whatever link each names, known or not. Twice a
- * single calendar's, because a calendar provider reads many coaches'
- * calendars from the same few addresses. */
+/** Reads from one address of a link nobody made (or one not shaped like a
+ * link): the guessing case. A read of a link that works is never counted
+ * here, because a calendar provider reads many coaches' calendars from the
+ * same few addresses. */
 export const CALENDAR_ADDRESS_LIMITS: LimitRule[] = [{ bucket: 'cal-ip-hour', windowMs: HOUR_MS, max: 120 }];
 
 /** The counter key for one coach's calendar: the coach's id, never the

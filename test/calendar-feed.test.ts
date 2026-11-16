@@ -170,7 +170,7 @@ test('the link answers a calendar file with what a calendar app needs, with no s
       assert.equal(calendar.props.get('X-PUBLISHED-TTL'), 'PT1H');
       assert.equal(calendar.events.length, 1);
       const event = eventFor(calendar, seed.sessionId);
-      assert.deepEqual([...event.keys()], ['UID', 'DTSTAMP', 'DTSTART', 'DTEND', 'SUMMARY', 'LOCATION', 'DESCRIPTION', 'URL', 'STATUS']);
+      assert.deepEqual([...event.keys()], ['UID', 'DTSTAMP', 'LAST-MODIFIED', 'SEQUENCE', 'DTSTART', 'DTEND', 'SUMMARY', 'LOCATION', 'DESCRIPTION', 'URL', 'STATUS']);
       const stamp = utcInstant(event.get('DTSTAMP')).getTime();
       assert.ok(stamp >= earlier.getTime() && stamp <= Date.now(), 'stamped when it was written');
       assert.equal(utcInstant(event.get('DTSTART')).getTime(), start.getTime());
@@ -213,6 +213,11 @@ test('times are UTC instants on both sides of a daylight-saving change', async (
     for (const name of ['DTSTAMP', 'DTSTART', 'DTEND']) assert.match(event.get(name) ?? '', /^\d{8}T\d{6}Z$/, name);
   }
   assert.equal(eventFor(calendar, beforeFall).get('DTSTAMP'), '20261020T120000Z');
+  assert.equal(eventFor(calendar, beforeFall).get('LAST-MODIFIED'), '20261020T120000Z');
+  // SEQUENCE never decreases from one file to a later one.
+  const later = parseCalendar((await buildCalendarFeed(db, seed.coach, new Date('2026-10-20T12:01:00Z'))).body);
+  const seq = (c: typeof calendar) => Number(eventFor(c, beforeFall).get('SEQUENCE'));
+  assert.ok(seq(later) > seq(calendar), 'a later file has a higher SEQUENCE');
 });
 
 test('a long name in another script is folded whole, and commas, semicolons, backslashes and line breaks are escaped', async () => {
@@ -452,6 +457,23 @@ test('a new link replaces the old one at once, and turning it off leaves none: e
   });
 });
 
+test('a "Get a new link" form left open after Turn off makes no link', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db);
+    const cookie = await coachCookie(db, seed.coach.id);
+    await withServer(async (base) => {
+      await turnOnFromSchedule(base, cookie);
+      await postForm(base, '/app/schedule/calendar', cookie, { action: 'off' });
+      const res = await postForm(base, '/app/schedule/calendar', cookie, { action: 'new' });
+      assert.equal(res.status, 303);
+      assert.equal(res.headers.get('location'), '/app/schedule#calendar');
+      assert.equal(await getCalendarToken(db, seed.coach.id), null);
+      assert.equal(await replaceCalendarToken(db, seed.coach.id), null);
+    });
+  });
+});
+
 test('only the signed-in coach changes their own link', async () => {
   await withRelay(async () => {
     const db = await freshDb();
@@ -593,28 +615,32 @@ test('reads are limited for one calendar and for one address, and answer 429 bey
       await setHits(db, CALENDAR_FEED_LIMITS, feedKey, 60);
       assert.equal((await read(replaced, '203.0.113.12')).status, 429);
 
-      // One address, whatever it asks for: the 120th read is answered, and
-      // after that every link gets 429, known or not.
-      await setHits(db, CALENDAR_ADDRESS_LIMITS, '198.51.100.7', 119);
-      assert.equal((await read(otherToken, '198.51.100.7')).status, 200);
+      // An address that has used up its budget for links nobody made is
+      // refused for more of them, and still reads a link that works.
       await setHits(db, CALENDAR_ADDRESS_LIMITS, '198.51.100.7', 120);
-      assert.equal((await read(otherToken, '198.51.100.7')).status, 429);
-      await setHits(db, CALENDAR_ADDRESS_LIMITS, '198.51.100.7', 120);
-      assert.equal((await read('B'.repeat(43), '198.51.100.7')).status, 429, 'a link nobody made gets the same answer');
-      assert.equal((await read(otherToken, '198.51.100.8')).status, 200, 'another address still reads it');
+      assert.equal((await read('B'.repeat(43), '198.51.100.7')).status, 429);
+      assert.equal((await read(otherToken, '198.51.100.7')).status, 200, 'a working link is not held back by the address');
+      // And an outsider cannot spend a calendar's budget without its link.
+      await setHits(db, CALENDAR_FEED_LIMITS, calendarFeedKey(other.coach.id), 0);
+      for (let i = 0; i < 5; i += 1) await read('F'.repeat(43), '198.51.100.30');
+      const spent = await db.query<{ n: number }>("select coalesce(sum(hits), 0)::int as n from request_limit where key = $1", [calendarFeedKey(other.coach.id)]);
+      assert.equal(spent.rows[0].n, 0, 'unknown links touch no calendar counter');
 
-      // A link nobody made counts against the address that asks for it,
-      // and against no calendar.
+      // A link nobody made counts against the address that asks for it.
       assert.equal((await read('C'.repeat(43), '198.51.100.9')).status, 404);
       assert.equal((await read('D'.repeat(43), '198.51.100.9')).status, 404);
       const counted = await db.query<{ hits: number }>(
         "select coalesce(sum(hits), 0)::int as hits from request_limit where bucket = 'cal-ip-hour' and key = '198.51.100.9'",
       );
       assert.equal(counted.rows[0].hits, 2);
-      // A link that is not shaped like one is not looked up or counted.
+      // A working link from that address is read and not counted against it.
+      assert.equal((await read(otherToken, '198.51.100.9')).status, 200);
+      const after = await db.query<{ hits: number }>(
+        "select coalesce(sum(hits), 0)::int as hits from request_limit where bucket = 'cal-ip-hour' and key = '198.51.100.9'",
+      );
+      assert.equal(after.rows[0].hits, 2);
+      // A link not shaped like one is the same 404, counted as guessing.
       assert.equal((await read('short', '198.51.100.20')).status, 404);
-      const uncounted = await db.query<{ n: number }>("select count(*)::int as n from request_limit where key = '198.51.100.20'");
-      assert.equal(uncounted.rows[0].n, 0);
     });
 
     // The counters are kept by the coach and the address, never by the link.

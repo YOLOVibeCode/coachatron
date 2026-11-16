@@ -92,6 +92,8 @@ test('the file has the calendar properties an app needs, CRLF line ends, and one
   assert.deepEqual(Object.fromEntries(first), {
     UID: 'session-7@coachatron.com',
     DTSTAMP: '20261020T120005Z',
+    'LAST-MODIFIED': '20261020T120005Z',
+    SEQUENCE: String(Math.floor(new Date('2026-10-20T12:00:05.123Z').getTime() / 60_000)),
     DTSTART: '20261027T230000Z',
     DTEND: '20261028T000000Z',
     SUMMARY: 'Skills Group (6 of 8)',

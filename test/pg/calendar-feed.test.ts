@@ -43,18 +43,16 @@ test('two first uses at once end with one link, and both are told the same one',
   assert.equal(rows.rows[0].n, 1);
 });
 
-test('a first use and a new link at once leave exactly one working link', RACE, async () => {
+test('a new link asked for while the first use is still pending replaces nothing', RACE, async () => {
   const seed = await seedCoachWithSession(db());
   const first = pauseAfter(db(), writesLink);
   const a = settle(first.db.transaction!((tx) => turnOnCalendarFeed(tx, seed.coach.id)));
   await first.reached;
-  const b = settle(replaceCalendarToken(db(), seed.coach.id));
-  const second = await untilWaitingOrDone(db(), b).finally(first.release);
-  const [ra, rb] = await Promise.all([a, b]);
-  assert.equal(second, 'waiting');
-  assert.ok(ra.ok && rb.ok, 'neither failed');
-  assert.notEqual(rb.value, ra.value);
-  assert.equal(await getCalendarToken(db(), seed.coach.id), rb.value, 'the new link, asked for last, is the one that stands');
-  assert.equal(await findFeedCoach(db(), ra.value), null, 'the first link stopped working');
-  assert.equal((await findFeedCoach(db(), rb.value))?.id, seed.coach.id);
+  const b = await settle(replaceCalendarToken(db(), seed.coach.id));
+  first.release();
+  const ra = await a;
+  assert.ok(ra.ok && b.ok, 'neither failed');
+  assert.equal(b.value, null, 'there was no link yet to replace');
+  assert.equal(await getCalendarToken(db(), seed.coach.id), ra.value);
+  assert.equal((await findFeedCoach(db(), ra.value))?.id, seed.coach.id);
 });
