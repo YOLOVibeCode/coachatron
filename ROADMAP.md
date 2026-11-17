@@ -31,7 +31,7 @@ running database, Stripe, Square, Twilio, SendGrid, or a model provider.
 
 ## Stack (decided once, in M1, not reopened)
 
-- **Language:** TypeScript 5, Node.js ≥ 20.11, ESM (`"type": "module"`). *(Now TypeScript 6 and Node 24; see M11.)*
+- **Language:** TypeScript 5, Node.js ≥ 20.11, ESM (`"type": "module"`). *(Now TypeScript 6 and Node 26; see M11.)*
 - **Web:** Express 4. Server-rendered HTML via hand-written template
   functions (tagged-template `html` helper with escaping) — **no templating
   engine dependency, no SPA framework.**
@@ -1183,6 +1183,14 @@ Notes:
   Express 4 such a request never got a response.
 - The server logs its Node version at boot, so `railway logs` shows what a
   deploy actually runs.
+- 2026-11-15: moved from Node 24 to Node 26, the current LTS line (`.nvmrc`
+  `26`, `engines.node` `>=26`, `@types/node` 26). Node 24's V8 13.6 could
+  abort a test file inside PGlite's WebAssembly (nodejs/node#66366), and no
+  Node 24 release had the fix. `npm test` is the bare test runner again;
+  the flag, the crash-only rerun and the failure recorder that worked around
+  it are gone. `railway config apply` sets `RAILPACK_NODE_VERSION` to 26 in
+  each environment before that environment's branch takes the new
+  `engines`, because `engine-strict` refuses an install on an older Node.
 - To move to the next LTS: change `.nvmrc` and `engines` together (the
   toolchain test enforces it), after the `Next Node (lts/*)` job is green.
 

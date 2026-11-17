@@ -15,6 +15,7 @@ import {
 } from '../domain/auth.js';
 import { html, operatorLine, page, raw, smsConsentCheckbox } from '../lib/html.js';
 import { formatLocal } from '../lib/time.js';
+import { atPlace, placeLine } from '../domain/locations.js';
 import { rowId } from '../lib/input.js';
 import {
   getPackagesForCoach,
@@ -65,7 +66,6 @@ import { offerOpenSpots } from '../domain/waitlist.js';
 import {
   CREDIT_HELD_SQL,
   CREDIT_WITHDRAWN_SQL,
-  cancelByParent,
   cancelCutoff,
   cancelTerms,
   getBookingPolicy,
@@ -73,6 +73,8 @@ import {
 } from '../domain/policy.js';
 import { hasPaymentHeldForCoach } from '../domain/paymentAttention.js';
 import { moveByParent, moveChoice, type MoveChoice, type MoveState } from '../domain/moveBooking.js';
+import { cancelRefundState, cancelUnderPolicy, inTimeCancel, type CancelRefundState, type InTimeCancel } from '../domain/cancelRefund.js';
+import { cancelRefundNote, checkoutCancelLine, inTimeCancelNote } from './cancelRefund.js';
 import {
   BOOKING_HOLD_MINUTES,
   OTP_DAILY_MAX_PER_CONTACT,
@@ -105,6 +107,8 @@ interface SessionForBooking {
   status: string;
   /** For a second group, the full session whose waitlist it draws from. */
   overflow_of: number | null;
+  location_text: string | null;
+  location_address: string | null;
 }
 
 /** A scheduled session of this coach. `anyStatus` also finds a cancelled
@@ -117,7 +121,7 @@ async function loadSessionForCoach(
 ): Promise<SessionForBooking | null> {
   const result = await db.query<SessionForBooking>(
     `select s.id, s.starts_at_utc, s.tz, st.id as session_type_id, st.name, coalesce(s.capacity_override, st.capacity) as capacity,
-            st.price_cents, s.status, s.overflow_of
+            st.price_cents, s.status, s.overflow_of, s.location_text, s.location_address
      from session s
      join session_type st on st.id = s.session_type_id
      where s.id = $1 and st.coach_id = $2 and ($3::boolean or s.status = 'scheduled')`,
@@ -408,8 +412,11 @@ publicRouter.get('/c/:handle', async (req, res) => {
     capacity: number;
     price_cents: number;
     booked: string;
+    location_text: string | null;
+    location_address: string | null;
   }>(
     `select s.id, s.starts_at_utc, s.tz, st.name, coalesce(s.capacity_override, st.capacity) as capacity, st.price_cents,
+            s.location_text, s.location_address,
             (coalesce((select count(*) from booking b where b.session_id = s.id and ${takesSpotSql('b')}), 0)
              + coalesce((select count(*) from waitlist w where w.session_id = coalesce(s.overflow_of, s.id) and w.state = 'waiting'), 0))::text as booked
      from session s
@@ -437,6 +444,7 @@ publicRouter.get('/c/:handle', async (req, res) => {
                   <span>${s.name}</span>
                   <span>${spotsLeft > 0 ? `${spotsLeft} spot${spotsLeft === 1 ? '' : 's'} left · $${(s.price_cents / 100).toFixed(2)}` : 'Full'}</span>
                 </div>
+                ${s.location_text ? html`<div class="meta"><span>${placeLine(s.location_text, s.location_address)}</span></div>` : raw('')}
                 ${spotsLeft <= 0
                   ? open || !needsPayment(s) || creditsWork
                     ? html`<a class="action ghost" href="/c/${coach.handle}/sessions/${s.id}/book${bookQuery}">Join the waitlist</a>`
@@ -448,7 +456,8 @@ publicRouter.get('/c/:handle', async (req, res) => {
                           ? html`<p class="muted"><a href="/c/${coach.handle}/sessions/${s.id}/book${bookQuery}">Have session credits? Book with them</a></p>`
                           : raw('')}`}
               </div>`;
-            })}`,
+            })}
+        <p class="muted">Booked before? <a href="/my">See all your sessions</a></p>`,
       // A page opened with ?from= carries a booking's manage link, so it
       // names no canonical address.
       req.query.from === undefined ? { canonicalPath: `/c/${encodeURIComponent(coach.handle)}` } : {},
@@ -539,7 +548,7 @@ function renderWaitlistForm(
   return page(
     'Join the waitlist',
     html`<h1>${session.name}</h1>
-      <p class="muted">${formatLocal(session.starts_at_utc, session.tz)} — Full</p>
+      <p class="muted">${formatLocal(session.starts_at_utc, session.tz)}${atPlace(session)} — Full</p>
       <p>Join the waitlist. When a spot opens, we hold it for you for ${BOOKING_HOLD_MINUTES} minutes and send you a link to book it: by text if you tick the box, otherwise by email.</p>
       <form method="post" action="/c/${coach.handle}/sessions/${session.id}/waitlist">
         <label for="athlete_name">Athlete name</label>
@@ -568,7 +577,7 @@ function renderBookingForm(
   return page(
     'Book a session',
     html`<h1>${session.name}</h1>
-      <p class="muted">${formatLocal(session.starts_at_utc, session.tz)} — $${(session.price_cents / 100).toFixed(2)}</p>
+      <p class="muted">${formatLocal(session.starts_at_utc, session.tz)}${atPlace(session)} — $${(session.price_cents / 100).toFixed(2)}</p>
       ${opts.note ? html`<p>${opts.note}</p>` : raw('')}
       ${opts.creditsOnly
         ? html`<p class="muted">${coach.name} is still setting up payments, so for now you can book only with session credits. Enter the phone number your credits are under.</p>`
@@ -849,6 +858,8 @@ type CheckoutOptions = {
   credit: CreditState;
   /** False while the coach cannot take payments: only credits and free sessions are offered. */
   canPay: boolean;
+  /** What cancelling in time gives back, by the choice the booking was made under (SPEC.md §9.5). */
+  cancelLine: string | null;
 };
 
 function maskPhone(phone: string): string {
@@ -881,7 +892,8 @@ async function loadCheckoutOptions(
     // not this number's, so offering a code gives nothing away.
     credit = opts.codeSent ? { kind: 'code-sent', masked: maskPhone(phone) } : { kind: 'offer-code', masked: maskPhone(phone) };
   }
-  return { packages, plans, credit, canPay: await paymentsOpen(db, coach) };
+  const canPay = await paymentsOpen(db, coach);
+  return { packages, plans, credit, canPay, cancelLine: await checkoutCancelLine(db, booking.id, { children: needed, canPay }) };
 }
 
 publicRouter.get('/c/:handle/checkout/:token', async (req, res) => {
@@ -1049,8 +1061,9 @@ function renderCheckout(
   return page(
     'Checkout',
     html`<h1>${session.name}</h1>
-      <p class="muted">${formatLocal(session.starts_at_utc, session.tz)}</p>
+      <p class="muted">${formatLocal(session.starts_at_utc, session.tz)}${atPlace(session)}</p>
       ${children > 1 ? html`<p class="muted">For ${namesList(pass.map((b) => b.athlete_name))}: ${spotsWord(children)}.</p>` : raw('')}
+      ${options.cancelLine ? html`<p class="muted cancel-terms">${options.cancelLine}</p>` : raw('')}
       ${canPay
         ? html`<p class="muted">Pay on the Noctusoft hosted page. Apple Pay and cards are there — this app never sees a card.</p>`
         : html`<p class="muted">${coach.name} is still setting up payments, so paying here opens soon.</p>`}
@@ -1559,6 +1572,7 @@ interface BookingWithSession {
   starts_at_utc: string;
   tz: string;
   location_text: string | null;
+  location_address: string | null;
   session_type_name: string;
   coach_id: number;
   coach_handle: string;
@@ -1570,7 +1584,7 @@ async function loadBookingByToken(db: DbClient, token: string): Promise<BookingW
   const result = await db.query<BookingWithSession>(
     `select b.id, b.session_id, b.athlete_name, b.contact_phone, b.contact_email, b.phone_verified_at, b.status, b.credit_id,
             b.payment_source, b.gross_cents, b.late_cancel, b.waived_at, ${CREDIT_WITHDRAWN_SQL}, ${CREDIT_HELD_SQL},
-            s.starts_at_utc, s.tz, s.location_text, st.name as session_type_name, c.id as coach_id, c.handle as coach_handle,
+            s.starts_at_utc, s.tz, s.location_text, s.location_address, st.name as session_type_name, c.id as coach_id, c.handle as coach_handle,
             c.name as coach_name, c.cancel_window_hours
      from booking b
      join session s on s.id = b.session_id
@@ -1593,7 +1607,7 @@ function hoursWord(hours: number): string {
 }
 
 /** What cancelling now does, said before the parent confirms (SPEC.md §9.5). */
-function cancelTermsNote(booking: BookingWithSession) {
+function cancelTermsNote(booking: BookingWithSession, inTime: InTimeCancel | null = null) {
   const terms = cancelTerms(booking, booking.cancel_window_hours);
   const cutoff = formatLocal(cancelCutoff(booking.starts_at_utc, booking.cancel_window_hours).toISOString(), booking.tz);
   const until = booking.cancel_window_hours === 0 ? 'before it starts' : `by ${cutoff}`;
@@ -1601,7 +1615,10 @@ function cancelTermsNote(booking: BookingWithSession) {
     case 'returns-credit':
       return html`<p class="muted cancel-terms">Cancel ${until} and your session credit comes back.</p>`;
     case 'becomes-credit':
-      return html`<p class="muted cancel-terms">Cancel ${until} and your payment becomes a session credit with ${booking.coach_name}, for another session.</p>`;
+      return (
+        inTimeCancelNote(booking, inTime) ??
+        html`<p class="muted cancel-terms">Cancel ${until} and your payment becomes a session credit with ${booking.coach_name}, for another session.</p>`
+      );
     case 'uses-credit':
       return html`<p class="error cancel-terms">It's less than ${hoursWord(booking.cancel_window_hours)} before the session, so cancelling now uses this booking's ${
         booking.credit_id !== null ? 'session credit' : 'payment'
@@ -1614,10 +1631,11 @@ function cancelTermsNote(booking: BookingWithSession) {
 /** After a cancel: whether the credit came back. A credit held while a
  * refund of its payment is on its way is not offered; the refund's own
  * notice follows. */
-function cancelledNote(booking: BookingWithSession) {
+function cancelledNote(booking: BookingWithSession, refund: CancelRefundState | null = null) {
   if (booking.late_cancel && !booking.waived_at) {
     return html`<p class="muted">Cancelled inside ${booking.coach_name}'s ${hoursWord(booking.cancel_window_hours)} window, so the credit was used.</p>`;
   }
+  if (refund) return cancelRefundNote(booking.coach_name, refund);
   if (booking.credit_id !== null && !booking.credit_withdrawn && !booking.credit_held) {
     return html`<p class="muted">Your session credit with ${booking.coach_name} is back.</p>`;
   }
@@ -1683,12 +1701,16 @@ publicRouter.get('/booking/:token', async (req, res) => {
   const held = booking.status === 'pending' && (await hasPaymentHeldForCoach(db, booking.id));
   const move = booking.status === 'booked' && cancellationAllowed(booking) ? await moveChoice(db, req.params.token) : null;
   const moved = req.query.moved === '1' && booking.status === 'booked';
+  // The coach-set refund policy (SPEC.md §9.5): what a cancel in time gives
+  // back, said before the parent confirms, and a cancel's refund after.
+  const inTime = booking.status === 'booked' && cancellationAllowed(booking) ? await inTimeCancel(db, req.params.token) : null;
+  const refund = booking.status === 'cancelled' ? await cancelRefundState(db, booking.id) : null;
 
   res.status(200).send(
     page(
       'Manage booking',
       html`<h1>${booking.session_type_name}</h1>
-        <p class="muted">${formatLocal(booking.starts_at_utc, booking.tz)}${booking.location_text ? ` · ${booking.location_text}` : ''}</p>
+        <p class="muted">${formatLocal(booking.starts_at_utc, booking.tz)}${atPlace(booking)}</p>
         ${moved ? html`<p class="good">Moved. This is ${booking.athlete_name}'s session now.</p>` : raw('')}
 
         <p class="card">
@@ -1697,7 +1719,7 @@ publicRouter.get('/booking/:token', async (req, res) => {
           ${booking.status === 'booked'
             ? html`<span class="good">Confirmed</span>`
             : booking.status === 'cancelled'
-              ? html`<span class="muted">Cancelled</span>${cancelledNote(booking)}`
+              ? html`<span class="muted">Cancelled</span>${cancelledNote(booking, refund)}`
               : booking.status === 'refunded'
                 ? html`<span class="muted">Refunded. The payment went back to your card.</span>`
                 : held
@@ -1710,7 +1732,7 @@ publicRouter.get('/booking/:token', async (req, res) => {
         <h2>Action</h2>
         ${moveSection(req.params.token, booking, move)}
         ${booking.status === 'booked' && cancellationAllowed(booking)
-          ? html`${cancelTermsNote(booking)}
+          ? html`${cancelTermsNote(booking, inTime)}
             <form method="post" action="/booking/${req.params.token}/cancel">
               <button type="submit" class="action">Cancel this booking</button>
             </form>`
@@ -1719,7 +1741,8 @@ publicRouter.get('/booking/:token', async (req, res) => {
             : html`<p class="muted">Cancellations are not accepted after the session starts.</p>`}
 
         <a class="action" href="/c/${booking.coach_handle}?from=${req.params.token}">Book another session</a>
-        <a class="action ghost" href="/c/${booking.coach_handle}">Back to ${booking.coach_handle}'s page</a>`,
+        <a class="action ghost" href="/c/${booking.coach_handle}">Back to ${booking.coach_handle}'s page</a>
+        <p class="muted"><a href="/my">See all your sessions</a></p>`,
     ),
   );
 });
@@ -1734,8 +1757,9 @@ publicRouter.post('/booking/:token/cancel', async (req, res) => {
 
   // Idempotent: cancelling an already-cancelled booking succeeds without
   // giving a credit back a second time. Whether the credit comes back is
-  // decided now, by the coach's window (SPEC.md §9.5).
-  const result = await cancelByParent(db, req.params.token);
+  // decided now, by the coach's window (SPEC.md §9.5), and a cancel in time
+  // of a booking promised a refund asks for it (src/domain/cancelRefund.ts).
+  const { result } = await cancelUnderPolicy(db, req.params.token);
   if (result.kind === 'started') {
     res.status(409).send(
       page('Cannot cancel', html`<h1>Session already started</h1>

@@ -2,7 +2,7 @@ import { inTransaction, type DbClient } from '../db/client.js';
 import { APP_BASE_URL, BOOKING_HOLD_MINUTES } from '../config.js';
 import { formatConfirmWhen } from '../lib/time.js';
 import { escapeHtml } from '../lib/html.js';
-import { lockSession, newBookingToken, takesSpotSql } from './pricing.js';
+import { cancelGivesSql, lockSession, newBookingToken, takesSpotSql } from './pricing.js';
 import { canText, sendEmailMessage, sendText } from './outbound.js';
 import { hasActiveConsent } from './sms-consent.js';
 import { deliverableEmail, plain, textWithLink } from './bookingMessages.js';
@@ -85,8 +85,9 @@ export async function holdSpotsForWaitlist(tx: DbClient, sessionId: number): Pro
     }
     const checkoutToken = newBookingToken();
     const booking = await tx.query<{ id: number }>(
-      `insert into booking (session_id, athlete_name, contact_phone, contact_email, manage_token, checkout_token, hold_expires_at, status)
-       values ($1, $2, $3, $4, $5, $6, now() + make_interval(mins => $7::int), 'pending')
+      `insert into booking (session_id, athlete_name, contact_phone, contact_email, manage_token, checkout_token, hold_expires_at, status,
+                            cancel_gives)
+       values ($1, $2, $3, $4, $5, $6, now() + make_interval(mins => $7::int), 'pending', ${cancelGivesSql('$1')})
        returning id`,
       [sessionId, w.athlete_name, w.contact_phone, w.contact_email, newBookingToken(), checkoutToken, BOOKING_HOLD_MINUTES],
     );
