@@ -5,7 +5,9 @@ export const siteRouter = Router();
 
 /** Production lets crawlers read the public pages (the landing page, a
  * coach's page and booking form, the legal and texting pages, sign-in) and
- * keeps them off every page a link's key opens, and off the coach's screens.
+ * keeps them off every page a link's key opens, off the coach's screens,
+ * and off a parent's My sessions pages (the form at /my stays readable and
+ * answers noindex).
  * A Disallow line is a prefix, so each private link keeps its slash: "/p"
  * alone would also hide /privacy. "*" matches any run of characters. */
 export const PRODUCTION_ROBOTS = `User-agent: *
@@ -17,6 +19,7 @@ Disallow: /start/
 Disallow: /p/
 Disallow: /c/*/checkout/
 Disallow: /signin/verify
+Disallow: /my/
 Disallow: /*?from=
 Disallow: /*&from=
 `;

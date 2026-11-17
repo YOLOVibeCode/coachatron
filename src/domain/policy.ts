@@ -4,48 +4,67 @@ import { createCredit, holdCreditForRefund, restoreCredit } from './pricing.js';
 /** The booking policy (SPEC.md §9.5). Every rule has a default, so a coach
  * who changes nothing still has a working policy. The coach changes the
  * defaults on the Pricing screen and gives a credit back on Session detail.
- * These rules move session credits only; card refunds follow §9.4. */
+ * These rules move session credits only; card refunds follow §9.4, and a
+ * coach who chose a card refund for a parent's cancel in time has it asked
+ * for in src/domain/cancelRefund.ts. */
 
 export const DEFAULT_CANCEL_WINDOW_HOURS = 24;
 export const DEFAULT_CHILDREN_PER_BOOKING = 2;
 export const MAX_CANCEL_WINDOW_HOURS = 168;
 export const MAX_CHILDREN_PER_BOOKING = 10;
 
+/** What a parent's cancel before the window gives back for a card payment:
+ * one session credit with the coach, or the payment back to their card
+ * (src/domain/cancelRefund.ts). */
+export type CancelGives = 'credit' | 'refund';
+export const DEFAULT_CANCEL_GIVES: CancelGives = 'credit';
+
 export interface BookingPolicy {
   /** Hours before a session inside which a parent's cancel uses the credit. */
   cancelWindowHours: number;
   /** Children one booking pass can add. */
   childrenPerBooking: number;
+  /** What a parent's cancel before the window gives back for a paid drop-in. */
+  cancelGives: CancelGives;
 }
 
+/** What the policy form sends: the two numbers, and the cancel choice when
+ * the form had one. Without it the coach's choice stays as it is. */
+export type BookingPolicyChange = Omit<BookingPolicy, 'cancelGives'> & { cancelGives?: CancelGives };
+
 export async function getBookingPolicy(db: DbClient, coachId: number): Promise<BookingPolicy> {
-  const result = await db.query<{ cancel_window_hours: number; children_per_booking: number }>(
-    'select cancel_window_hours, children_per_booking from coach where id = $1',
+  const result = await db.query<{ cancel_window_hours: number; children_per_booking: number; cancel_gives: string }>(
+    'select cancel_window_hours, children_per_booking, cancel_gives from coach where id = $1',
     [coachId],
   );
   const row = result.rows[0];
   return {
     cancelWindowHours: row?.cancel_window_hours ?? DEFAULT_CANCEL_WINDOW_HOURS,
     childrenPerBooking: row?.children_per_booking ?? DEFAULT_CHILDREN_PER_BOOKING,
+    cancelGives: row?.cancel_gives === 'refund' ? 'refund' : DEFAULT_CANCEL_GIVES,
   };
 }
 
-/** Whole numbers inside the allowed ranges, or null. */
-export function parseBookingPolicy(windowRaw: string, childrenRaw: string): BookingPolicy | null {
+/** Whole numbers inside the allowed ranges and one of the two cancel
+ * choices (or none sent), or null. */
+export function parseBookingPolicy(windowRaw: string, childrenRaw: string, givesRaw = ''): BookingPolicyChange | null {
   if (!/^\d{1,3}$/.test(windowRaw) || !/^\d{1,2}$/.test(childrenRaw)) return null;
   const cancelWindowHours = Number(windowRaw);
   const childrenPerBooking = Number(childrenRaw);
   if (cancelWindowHours > MAX_CANCEL_WINDOW_HOURS) return null;
   if (childrenPerBooking < 1 || childrenPerBooking > MAX_CHILDREN_PER_BOOKING) return null;
-  return { cancelWindowHours, childrenPerBooking };
+  if (givesRaw === '') return { cancelWindowHours, childrenPerBooking };
+  if (givesRaw !== 'credit' && givesRaw !== 'refund') return null;
+  return { cancelWindowHours, childrenPerBooking, cancelGives: givesRaw };
 }
 
-export async function setBookingPolicy(db: DbClient, coachId: number, policy: BookingPolicy): Promise<void> {
-  await db.query('update coach set cancel_window_hours = $2, children_per_booking = $3 where id = $1', [
-    coachId,
-    policy.cancelWindowHours,
-    policy.childrenPerBooking,
-  ]);
+/** Saves the policy. The cancel choice changes only what bookings made from
+ * now on are promised: each booking keeps the choice it was made under. */
+export async function setBookingPolicy(db: DbClient, coachId: number, policy: BookingPolicyChange): Promise<void> {
+  await db.query(
+    'update coach set cancel_window_hours = $2, children_per_booking = $3, cancel_gives = coalesce($4, cancel_gives) where id = $1',
+    [coachId, policy.cancelWindowHours, policy.childrenPerBooking, policy.cancelGives ?? null],
+  );
 }
 
 /** The moment a parent's cancel stops giving the credit back. */

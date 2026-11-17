@@ -34,10 +34,12 @@ function secureFlag(): string[] {
   return base.startsWith('https://') ? ['Secure'] : [];
 }
 
-export function serializeCookie(name: string, value: string, maxAgeSeconds: number): string {
+/** `path` narrows where the browser sends the cookie; a cookie set with a
+ * path is cleared with the same one. */
+export function serializeCookie(name: string, value: string, maxAgeSeconds: number, path = '/'): string {
   const parts = [
     `${name}=${encodeURIComponent(value)}`,
-    'Path=/',
+    `Path=${path}`,
     'HttpOnly',
     ...secureFlag(),
     'SameSite=Lax',
@@ -46,6 +48,6 @@ export function serializeCookie(name: string, value: string, maxAgeSeconds: numb
   return parts.join('; ');
 }
 
-export function clearCookie(name: string): string {
-  return [`${name}=`, 'Path=/', 'HttpOnly', ...secureFlag(), 'SameSite=Lax', 'Max-Age=0'].join('; ');
+export function clearCookie(name: string, path = '/'): string {
+  return [`${name}=`, `Path=${path}`, 'HttpOnly', ...secureFlag(), 'SameSite=Lax', 'Max-Age=0'].join('; ');
 }
