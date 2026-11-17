@@ -135,6 +135,8 @@ instead of the credit, and say so here.]
 - Cancel **before the window** (earlier than [COACH'S WINDOW] before the
   start): the credit you used comes back, and a session you paid for by card
   becomes one session credit with that coach, which does not expire.
+  [Attorney: a coach can now choose to refund a card-paid drop-in cancelled
+  in time instead (SPEC §8.2). Update this line when the review resumes.]
 - Cancel **inside the window**: it counts as a no-show (section 5), and the
   credit is used. The coach may choose to give it back.
 - The manage page tells you, before you confirm, whether cancelling now will
