@@ -145,7 +145,7 @@ The spec enforces these; they're the reason the product exists.
 
 ## Screens
 
-The twelve screens of Coachatron (Slice 1):
+The thirteen screens of Coachatron (Slice 1's twelve, plus the parent "My sessions" page from Slice 2):
 
 | # | Screen | Route(s) | Who |
 |---|--------|----------|-----|
@@ -161,6 +161,7 @@ The twelve screens of Coachatron (Slice 1):
 | 10 | Checkout | `/c/:handle/checkout/:token` | Athlete |
 | 11 | Manage booking (and moving a booking) | `/booking/:token`, `/booking/:token/move`, `/booking/:token/cancel` | Athlete |
 | 12 | Offer response (and a roster member's opt-in link) | `/offer/:token` | Assistant coach |
+| 13 | My sessions | `/my`, `/my/sessions` | Athlete |
 
 All routes are server-rendered HTML. No SPA.
 
@@ -177,6 +178,7 @@ To exercise real Connect Hub, SMS, and email against Noctusoft `ns` (not used in
 | `STORE_BASE_URL` | Optional. Host for signed buy links (`/buy/connect/…`); defaults to `RELAY_BASE_URL`, then the relay's store host `https://store.noctusoft.com` |
 | `STORE_WEBHOOK_URL` | Optional. The URL store events are signed for, checked on `/webhooks/store`; defaults to `APP_BASE_URL` + `/webhooks/store` |
 | `RELAY_APP_ENV` | Set to `dev` so relay email is captured (smtp4dev) instead of delivered |
+| `SESSION_SECRET` | Signs the parent "My sessions" cookie (`cx_my`). Set a long random value in every environment |
 | `APP_ENV` | `development`, `uat` or `production`; Railway's environment name when unset. Shown on `/health` |
 | `ALLOW_TEST_PAYMENTS` | Production only, default off. Off: a test-mode payment, refund or dispute event is not applied (no booking, no credit), and a coach whose payment account is a test one cannot take bookings. `1` or `true` lets production take test payments. Other environments always take them |
 | `SMS_VISITOR_HOURLY_CAP` | Texts set off by people who are not signed in, across the app, per hour (default 30), for each of two budgets counted apart: web forms, and start links that answer a text: see [Texting ceilings](#texting-ceilings) |
@@ -388,3 +390,10 @@ covered by `test/journeys.test.ts`.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Slice 2 features
+
+Coach-set refund policy, saved locations per session type, the parent "My
+sessions" page, assistant pay tracking (a record, not payroll), a private
+iCal feed of the schedule (`/cal/<token>.ics`) and CSV downloads on Money.
+SPEC.md §8.2 describes each as built.

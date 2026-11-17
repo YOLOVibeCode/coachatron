@@ -359,6 +359,43 @@ inside existing screens or have no screen.)*
 - iCal feed of a coach's schedule
 - Basic reporting export (CSV)
 
+**As built (all six are in `develop`):**
+
+- **Refund policy (migration 0033).** The coach chooses whether a card-paid
+  drop-in cancelled in time is refunded or becomes a credit
+  (`coach.cancel_gives`, copied to `booking.cancel_gives` when booked). A
+  refund goes through the relay; it is sent again with the same key at 10
+  minutes and then hourly while the relay is silent, and is never failed or
+  released on silence. The manage page says "We are sending your refund"
+  until the relay accepts it.
+- **Locations (0034).** Up to 5 saved locations per session type
+  (`session_type_location`); weekly times and sessions link to one.
+  `session.location_text` stays the display value everywhere. Renaming
+  changes sessions that have not started; removing a location in use is
+  refused. Moving one session's place texts its parents "Now at <place>",
+  except between 9pm and 8am in the session's timezone, when the text is
+  skipped with a notice unless the session starts within 12 hours.
+- **My sessions (0035).** Screen 13: `/my` and `/my/sessions`. A parent
+  proves an email (one-time link, 20 minutes) or mobile (6-digit text code,
+  purpose `sessions`, 10 minutes); a signed httpOnly cookie `cx_my`
+  (signed with `SESSION_SECRET`) holds the proven contact for 30 minutes.
+  Credits show only after a mobile proof. The answer is the same whether or
+  not the contact has bookings. One new text: the code the person asked for.
+- **Assistant pay (0036).** The pay an offer showed is stored at acceptance
+  (`assistant_pay`; an offer with no pay records "no amount set"). A session
+  is owed once it has started and was not cancelled. The coach marks paid
+  (with an optional 80-character note) or undoes it, and can set an amount
+  from $0 to $25,000 before it is paid. Money shows one line, "You owe
+  assistants $X". Coachatron moves no money for it.
+- **iCal feed (0037).** `GET /cal/<token>.ics`, a private link from the
+  Schedule screen that can be replaced or turned off. It holds sessions from
+  30 days back, at most 500 events, and no names, phones or emails.
+- **CSV export (0038).** Payments and bookings downloads on Money
+  (`/app/money/download/payments.csv`, `.../bookings.csv`), RFC 4180 with a
+  byte-order mark and a formula guard, at most 50,000 rows and 20 downloads
+  an hour per coach. Totals match Money for the same range. Coachatron's fee
+  appears only where the app holds the actual fee.
+
 ### 8.3 Slice 3 — only if pulled
 
 - ~~Stripe as an alternative to Square~~ Stripe is the processor today (§9.1).
@@ -676,8 +713,9 @@ message_log(id, to_phone, template, body, provider_id, sent_at, status)
 `credit.contact_phone` is the join key for a buyer, by design (§9.2). Normalize
 to E.164 on write.
 
-*(Numbers 0033–0038 are reserved for Slice 2, §8.2, and are described here
-as each lands.)*
+*(Numbers 0033–0038 are Slice 2, §8.2: 0033 refund policy, 0034 locations,
+0035 my-sessions link, 0036 assistant pay, 0037 calendar feed, 0038 payment
+receipt.)*
 
 Added since the sketch (migrations 0013–0038): `request_limit` (fixed-window
 counts per client address, phone, or email) and `otp_code.attempts`;
