@@ -137,6 +137,15 @@ test("landing header, hero, sections, voice control, and footer sign-in", async 
     assert.match(body, /Voice isn't available here/);
     assert.match(body, /Already set up\? <a href="\/signin">Sign in<\/a>/);
     assert.doesNotMatch(body, /Tap the mic on your keyboard/);
+    assert.match(body, /class="landing-close"/);
+    assert.match(body, /Ready\? Say your week\./);
+    assert.match(body, /landing-close[\s\S]*href="#week">Set it up</);
+    assert.match(body, /id="week-cta"/);
+    assert.match(body, /id="landing-mobile-cta"/);
+    assert.match(body, /IntersectionObserver/);
+    assert.match(body, /visualViewport/);
+    assert.match(body, /landing-mobile-cta[\s\S]*min-height:\s*54px/);
+    assert.match(body, /mailto:support@coachatron\.com">Contact</);
   });
 });
 

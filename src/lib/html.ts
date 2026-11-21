@@ -2,7 +2,7 @@
  * template that escapes interpolated values by default, plus a `raw()`
  * escape hatch for pre-built markup. */
 
-import { SMS_BRAND, SMS_PURPOSE } from '../config.js';
+import { SMS_BRAND, SMS_PURPOSE, SUPPORT_EMAIL } from '../config.js';
 import { canonicalUrl } from './siteHost.js';
 
 export function escapeHtml(value: unknown): string {
@@ -327,6 +327,8 @@ export function siteFooter(): SafeHtml {
     <a href="/terms">Terms</a>
     <span aria-hidden="true"> · </span>
     <a href="/sms">Text messages</a>
+    <span aria-hidden="true"> · </span>
+    <a href="mailto:${SUPPORT_EMAIL}">Contact</a>
   </footer>`;
 }
 
@@ -741,6 +743,51 @@ export const LANDING_CSS = `
   }
   .faq dd:last-child { border-bottom: 0; margin-bottom: 0; padding-bottom: 0; }
   .price p { color: var(--muted); margin: 0; }
+  .landing-close {
+    margin-top: 36px;
+    max-width: 36rem;
+    text-align: center;
+  }
+  .landing-close p {
+    margin: 0 0 12px;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--ink);
+  }
+  .landing-close .action { margin-top: 0; }
+  .landing-mobile-cta {
+    display: none;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 25;
+    padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px));
+    background: var(--page);
+    border-top: 1px solid var(--line);
+    box-shadow: 0 -4px 16px rgba(44, 33, 28, 0.08);
+  }
+  .landing-mobile-cta.is-visible { display: block; }
+  .landing-mobile-cta a {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    min-height: 54px;
+    margin: 0;
+    background: var(--teal);
+    color: var(--teal-ink);
+    border-radius: 999px;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 1rem;
+    font-weight: 700;
+    text-decoration: none;
+    line-height: 1.2;
+  }
+  body.landing-mobile-cta-on {
+    padding-bottom: calc(74px + env(safe-area-inset-bottom, 0px));
+  }
   .stage {
     display: flex;
     flex-direction: column;
@@ -834,6 +881,8 @@ export const LANDING_CSS = `
   footer.colophon p { margin: 0 0 8px; }
   footer.colophon a { color: var(--teal); }
   @media (min-width: 900px) {
+    .landing-mobile-cta { display: none !important; }
+    body.landing-mobile-cta-on { padding-bottom: 0; }
     .site-nav { display: flex; }
     .site-header .header-cta { display: inline-flex; }
     .site-header-actions { margin-left: 0; }
