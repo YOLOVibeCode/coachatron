@@ -116,7 +116,7 @@ import {
   type RunningCascade,
 } from '../domain/cascade.js';
 import { assistantPayRouter, renderAssistantPay, renderOwedToAssistants } from './assistantPay.js';
-import { readStartText, START_COOKIE } from '../lib/startCookie.js';
+import { readStartText, serializeStartCookieAfterSetup } from '../lib/startCookie.js';
 import {
   coachHasSchedule,
   discardDraft,
@@ -496,9 +496,7 @@ coachRouter.post('/signin/verify', async (req, res) => {
   const startText = readStartText(req.headers.cookie);
   if (startText) {
     const result = await handleSetupMessage(db, coach, startText, 'web');
-    if (result.kind === 'draft') {
-      cookies.push(clearCookie(START_COOKIE));
-    }
+    cookies.push(serializeStartCookieAfterSetup(startText, result.kind));
     res.setHeader('Set-Cookie', cookies);
     const error = result.kind === 'cap' ? '&e=cap' : result.kind === 'error' ? '&e=read' : '';
     res.redirect(303, `/app/schedule?setup=1${error}`);
@@ -952,7 +950,7 @@ mountLocationRoutes(coachRouter, requireAuth);
 // screen: a coach with nothing on the calendar sees "Tell me your week".
 
 const SETUP_NOTICES: Record<string, string> = {
-  read: "I couldn't read that. Try again, or set up with a form instead.",
+  read: "I couldn't read that. Fix or add detail in the box below and tap Set it up again, or set up with a form instead.",
   cap: "That's all the reading I can do today. Set up with a form instead for now.",
   stale: 'That setup already went live or was cleared.',
 };
@@ -1457,6 +1455,7 @@ coachRouter.post('/app/setup', requireAuth, async (req, res) => {
     return;
   }
   const result = await handleSetupMessage(db, coach, text, 'web');
+  res.setHeader('Set-Cookie', serializeStartCookieAfterSetup(text, result.kind));
   const error = result.kind === 'cap' ? '&e=cap' : result.kind === 'error' ? '&e=read' : '';
   res.redirect(303, `/app/schedule?setup=1${error}`);
 });

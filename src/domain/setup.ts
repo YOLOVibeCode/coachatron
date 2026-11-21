@@ -215,6 +215,9 @@ export function setupSystemPrompt(
   const lines = [
     "Extract a coach's weekly schedule into the JSON schema. JSON only.",
     'Only what the coach said. Use null for anything not said. Never invent a price or a capacity.',
+    'The profession or label they give (tutor, teacher, swim instructor, and similar) can be the session type name when they do not name a separate offering.',
+    'A weekday range (Monday to Friday, weekdays) becomes one weekly row per day in the range at the times they said.',
+    '"$15 per hour" with a stated session length is price_cents for that length, not an hourly rate unless they only said hourly with no length.',
     'Prices and pay are integer cents: "$35" is 3500.',
     'Durations are minutes: "an hour" is 60, "an hour and a half" is 90.',
     'weekday: 0 Sunday, 1 Monday, 2 Tuesday, 3 Wednesday, 4 Thursday, 5 Friday, 6 Saturday.',

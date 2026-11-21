@@ -232,20 +232,37 @@ test("the start cookie survives a model error and prefills the setup box", async
           verify.headers.get("location"),
           "/app/schedule?setup=1&e=read",
         );
-        assert.equal(
-          cookieNamed(verify, "cx_start"),
-          null,
-          "failed setup leaves the existing cookie alone",
-        );
+        const refreshed = cookieNamed(verify, "cx_start");
+        assert.ok(refreshed, "failed setup keeps the week in cx_start");
 
         const session = cookieNamed(verify, "cx_session")!;
         const page = await (
           await fetch(`${base}/app/schedule?setup=1&e=read`, {
-            headers: { cookie: joinCookies(session, startCookie) },
+            headers: { cookie: joinCookies(session, refreshed ?? startCookie) },
           })
         ).text();
         assert.match(page, /couldn&#39;t read that/);
         assert.ok(page.includes(`>${WEEK_TEXT}<`));
+
+        const edited = `${WEEK_TEXT} Privates Saturday at 9am, 45 minutes, $70.`;
+        const retry = await fetch(`${base}/app/setup`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            cookie: joinCookies(session, refreshed ?? startCookie),
+          },
+          body: JSON.stringify({ text: edited }),
+          redirect: "manual",
+        });
+        assert.equal(retry.headers.get("location"), "/app/schedule?setup=1&e=read");
+        const afterEdit = cookieNamed(retry, "cx_start");
+        assert.ok(afterEdit, "a failed retry refreshes cx_start from the box");
+        const page2 = await (
+          await fetch(`${base}/app/schedule?setup=1&e=read`, {
+            headers: { cookie: joinCookies(session, afterEdit!) },
+          })
+        ).text();
+        assert.ok(page2.includes(`>${edited}<`), "the edited week stays in the box");
       });
     } finally {
       resetComplete();
