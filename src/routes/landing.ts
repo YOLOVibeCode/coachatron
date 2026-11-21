@@ -14,7 +14,13 @@ import {
 import { consumeStartLink, getOpenStartLink, reopenStartLink } from '../domain/startLink.js';
 import { clientKey, START_BOX_LIMITS, takeRequest } from '../domain/requestLimits.js';
 import { handleSetupMessage } from '../domain/setup.js';
-import { html, landingPage, page, raw, smsConsentCheckbox } from '../lib/html.js';
+import { html, landingPage, landingSmsDisclosure, page, raw, smsConsentCheckbox } from '../lib/html.js';
+import {
+  COPY_SMS_NUMBER_SCRIPT,
+  LANDING_PREVIEW_SCRIPT,
+  LANDING_WEEK_EXAMPLE,
+  renderLandingPhonePreview,
+} from '../lib/landingPreview.js';
 import { recordConsent } from '../domain/sms-consent.js';
 import { clearCookie, serializeCookie } from '../lib/cookies.js';
 import {
@@ -33,22 +39,21 @@ const DESCRIPTION =
   'Tell us your week in plain words. You get a link parents can book and pay on, in about five minutes, on your phone.';
 // Every time says am or pm: a bare hour is read as pm (src/domain/setup.ts),
 // so "Saturday at 9" would mean 9pm.
-const WEEK_EXAMPLE =
-  'Tuesdays and Thursdays at 6pm, an hour, 8 athletes, $35. Privates Saturday at 9am, 45 minutes, $70. 10-pack for $300.';
+const WEEK_EXAMPLE = LANDING_WEEK_EXAMPLE;
 
 function field(body: unknown, key: string): string {
   const value = (body as Record<string, unknown> | undefined)?.[key];
   return typeof value === 'string' ? value.trim() : '';
 }
 
-function displaySmsNumber(raw: string): { href: string; label: string } | null {
+function displaySmsNumber(raw: string): { href: string; label: string; e164: string } | null {
   const phone = normalizePhone(raw);
   if (!phone) return null;
   const label =
     phone.startsWith('+1') && phone.length === 12
       ? `(${phone.slice(2, 5)}) ${phone.slice(5, 8)}-${phone.slice(8)}`
       : phone;
-  return { href: `sms:${phone}`, label };
+  return { href: `sms:${phone}`, label, e164: phone };
 }
 
 const VOICE_SCRIPT = raw(`<script>(function(){
@@ -102,25 +107,20 @@ function renderLanding(): string {
             </div>
             <button type="submit">Set it up</button>
           </form>
+          <p class="form-alt">Prefer forms? <a href="/signin">Set up with a form instead</a></p>
           ${sms
-            ? html`<p class="sms">Or text it to <a href="${sms.href}">${sms.label}</a>.</p>`
+            ? html`<div class="sms-card">
+                <strong>Or just text it</strong>
+                <a class="sms-number" href="${sms.href}">${sms.label}</a>
+                <input class="sms-number-digits" id="landing-sms-number" type="text" readonly tabindex="-1" value="${sms.e164}" aria-hidden="true" />
+                <button type="button" class="sms-copy" onclick="${COPY_SMS_NUMBER_SCRIPT}">Copy number</button>
+                ${landingSmsDisclosure()}
+              </div>`
             : raw('')}
         </div>
-        <div class="stage" aria-hidden="true">
-          <div class="phone"><div class="screen">
-            <div class="status"><span>9:14</span><span>LTE</span></div>
-            <div class="body">
-              <p class="eyebrow">coachatron.com/c/northfield</p>
-              <h2>Evening sessions</h2>
-              <p class="sub">Tap a time. Pay before you arrive.</p>
-              <div class="card"><strong>Tue 7 Oct · 6:00pm</strong><div class="meta"><span>60 min · Field 3</span><span class="spots">2 spots · $35</span></div></div>
-              <div class="card"><strong>Thu 9 Oct · 6:00pm</strong><div class="meta"><span>60 min · Field 3</span><span class="spots">5 spots · $35</span></div></div>
-              <div class="card"><strong>Sat 11 Oct · 9:00am</strong><div class="meta"><span>60 min · Field 1</span><span class="spots">5 spots · $35</span></div></div>
-              <div class="btn">Book Tue 6:00pm</div>
-            </div>
-          </div></div>
-        </div>
+        ${renderLandingPhonePreview()}
       </div>
+      ${LANDING_PREVIEW_SCRIPT}
       <section class="steps" id="how-it-works">
         <h2>How it works</h2>
         <ol>

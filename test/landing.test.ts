@@ -99,6 +99,20 @@ test("GET / returns 200 with no database, and the box posts to /start", async ()
     assert.doesNotMatch(body, /sms:/);
     assert.match(body, /href="\/privacy"/);
     assert.match(body, /href="\/terms"/);
+    assert.equal((body.match(/Prefer forms\?/g) ?? []).length, 2);
+    assert.match(body, /form-alt/);
+    assert.match(body, /What parents see, built from your words/);
+    assert.match(body, /45 min · Private/);
+    assert.match(body, /\$70/);
+    assert.match(body, /10-pack/);
+    assert.match(body, /\$300/);
+    assert.doesNotMatch(body, /60 min · Field 1/);
+    assert.match(body, /data-landing-slot/);
+    assert.match(body, /landing-book-btn/);
+    assert.match(body, /data-book-label="Book Tue 6:00pm"/);
+    assert.match(body, /landing-pack/);
+    assert.match(body, /2 of 8 spots left/);
+    assert.match(body, /\[data-landing-slot\]/);
   });
 });
 
@@ -134,6 +148,15 @@ test("the text line is hidden until COACHATRON_SMS_NUMBER is set", async () => {
       const body = await (await fetch(`${base}/`)).text();
       assert.match(body, /sms:\+15551230000/);
       assert.match(body, /\(555\) 123-0000/);
+      assert.match(body, /Or just text it/);
+      assert.match(body, /sms-card/);
+      assert.match(body, /sms-number/);
+      assert.match(body, /href="\/sms"/);
+      assert.match(body, /href="\/terms#sms"/);
+      assert.match(body, /Message frequency varies/);
+      assert.match(body, /Copy number/);
+      assert.match(body, /landing-sms-number/);
+      assert.doesNotMatch(body, /Or text it to/);
     });
   } finally {
     if (prev === undefined) delete process.env.COACHATRON_SMS_NUMBER;
