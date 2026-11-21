@@ -2,6 +2,7 @@
  * template that escapes interpolated values by default, plus a `raw()`
  * escape hatch for pre-built markup. */
 
+import { SMS_BRAND, SMS_PURPOSE } from '../config.js';
 import { canonicalUrl } from './siteHost.js';
 
 export function escapeHtml(value: unknown): string {
@@ -294,6 +295,18 @@ export function smsConsentCheckbox(): SafeHtml {
   </label>`;
 }
 
+/** Short disclosure beside the landing-page text option (approved program copy). */
+export function landingSmsDisclosure(): SafeHtml {
+  return html`<p class="sms-disclosure">
+    ${SMS_BRAND} sends SMS for ${SMS_PURPOSE}. Message frequency varies. Message and data rates may apply. Reply STOP to opt out or HELP for help.
+    <a href="/terms#sms">SMS Terms</a>
+    <span aria-hidden="true"> · </span>
+    <a href="/sms">Text messages</a>
+    <span aria-hidden="true"> · </span>
+    <a href="/privacy">Privacy</a>.
+  </p>`;
+}
+
 /** Shown by a phone field that sends a code the person asks for. That one
  * text needs no box; the box is only for the texts that keep coming. */
 export function oneTimeCodeNote(): SafeHtml {
@@ -451,12 +464,108 @@ export const LANDING_CSS = `
     text-decoration: none;
     line-height: 1.2;
   }
-  .hint, .sms, .fine, .skip p, .price p, footer a {
+  .hint, .fine, .skip p, .price p, footer a, .form-alt, .sms-card, .preview-label {
     font-family: ui-sans-serif, system-ui, sans-serif;
   }
   .hint { margin: 8px 0 0; color: var(--muted); font-size: 0.9rem; }
-  .sms { margin: 14px 0 0; font-size: 1rem; }
-  .sms a { color: var(--teal); font-weight: 600; }
+  .form-alt {
+    margin: 14px 0 0;
+    font-size: 1rem;
+    text-align: center;
+  }
+  .form-alt a {
+    display: inline-block;
+    min-height: var(--touch-min);
+    line-height: var(--touch-min);
+    color: var(--teal);
+    font-weight: 600;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .sms-card {
+    margin-top: 16px;
+    padding: 14px 16px;
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    background: var(--card);
+  }
+  .sms-card strong {
+    display: block;
+    font-size: 1.05rem;
+    margin-bottom: 10px;
+  }
+  .sms-number {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: var(--touch-min);
+    width: 100%;
+    border-radius: 999px;
+    background: var(--teal);
+    color: var(--teal-ink);
+    font-size: 1.1rem;
+    font-weight: 700;
+    text-decoration: none;
+  }
+  .sms-number:hover { filter: brightness(1.05); }
+  .sms-copy {
+    display: none;
+    margin-top: 10px;
+    width: 100%;
+    min-height: var(--touch-min);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--ink);
+    font: inherit;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .sms-disclosure {
+    margin: 12px 0 0;
+    font-size: 0.78rem;
+    line-height: 1.35;
+    color: var(--muted);
+  }
+  .sms-disclosure a { color: var(--teal); }
+  .sms-number-digits {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0,0,0,0);
+    border: 0;
+  }
+  .preview-label {
+    margin: 0 0 12px;
+    font-size: 0.9rem;
+    color: var(--muted);
+    text-align: center;
+  }
+  .landing-slots {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-height: 11.5rem;
+    overflow: hidden;
+  }
+  button.landing-slot {
+    display: block;
+    width: 100%;
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+  }
+  button.landing-slot.on {
+    border-color: var(--teal);
+    box-shadow: inset 0 0 0 1px var(--teal);
+  }
+  .landing-pack { margin-top: 4px; }
+  .landing-book { pointer-events: none; }
   .steps, .skip, .price { margin-top: 36px; max-width: 36rem; }
   .steps h2, .skip h2, .price h2 {
     font-weight: 500;
@@ -507,9 +616,14 @@ export const LANDING_CSS = `
   }
   .skip li:last-child { border-bottom: 0; }
   .price p, .skip p { color: var(--muted); margin: 0; }
-  .stage { display: none; }
+  .stage {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin-top: 28px;
+  }
   .phone {
-    width: 320px;
+    width: min(320px, 100%);
     height: 660px;
     background: var(--clay);
     border: 1px solid var(--clay-line);
@@ -596,8 +710,11 @@ export const LANDING_CSS = `
   footer.colophon a { color: var(--teal); }
   @media (min-width: 900px) {
     .wrap { padding: 40px 28px 80px; }
-    .hero { grid-template-columns: 1fr 320px; gap: 48px; }
-    .stage { display: flex; justify-content: center; }
+    .hero { grid-template-columns: 1fr 320px; gap: 48px; align-items: start; }
+    .stage { margin-top: 0; justify-content: center; }
+    .preview-label { text-align: left; }
+    .sms-copy { display: block; }
+    .landing-slots { max-height: none; overflow: visible; }
   }
 `;
 
