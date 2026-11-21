@@ -36,7 +36,7 @@ export const landingRouter = Router();
 
 const TITLE = 'Say your week. Start taking bookings.';
 const DESCRIPTION =
-  'Type it or talk it — what you coach, how long, how many, the price, your days. Get a link parents book and pay on. About five minutes, on your phone.';
+  'Tell us your week in plain words. You get a link parents can book and pay on, in about five minutes, on your phone.';
 // Every time says am or pm: a bare hour is read as pm (src/domain/setup.ts),
 // so "Saturday at 9" would mean 9pm.
 const WEEK_EXAMPLE = LANDING_WEEK_EXAMPLE;
@@ -56,21 +56,55 @@ function displaySmsNumber(raw: string): { href: string; label: string; e164: str
   return { href: `sms:${phone}`, label, e164: phone };
 }
 
+const VOICE_SCRIPT = raw(`<script>(function(){
+var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+var btn=document.getElementById("week-voice");
+var ta=document.getElementById("week");
+var status=document.getElementById("week-voice-status");
+if(!btn||!ta)return;
+if(!SR){btn.hidden=true;if(status)status.textContent="Voice isn't available here. You can type it instead.";return;}
+var rec=new SR();rec.continuous=true;rec.interimResults=true;var listening=false;
+btn.addEventListener("click",function(){if(listening){rec.stop();return;}try{rec.start();}catch(e){btn.hidden=true;if(status)status.textContent="Voice isn't available here. You can type it instead.";}});
+rec.onstart=function(){listening=true;btn.setAttribute("aria-pressed","true");if(status)status.textContent="Listening… tap to stop";};
+rec.onend=function(){listening=false;btn.setAttribute("aria-pressed","false");if(status&&status.textContent==="Listening… tap to stop")status.textContent="";};
+rec.onerror=function(){listening=false;btn.setAttribute("aria-pressed","false");btn.hidden=true;if(status)status.textContent="Voice isn't available here. You can type it instead.";};
+rec.onresult=function(ev){var chunk="";for(var i=ev.resultIndex;i<ev.results.length;i++)chunk+=ev.results[i][0].transcript;if(chunk){var base=ta.value;ta.value=base+(base&&!/\\s$/.test(base)?" ":"")+chunk;}};
+})();</script>`);
+
 function renderLanding(): string {
   const sms = displaySmsNumber(coachatronSmsNumber());
   return landingPage(
     `${TITLE} — Coachatron`,
     DESCRIPTION,
-    html`<div class="wrap">
+    html`<header class="site-header">
+      <div class="site-header-inner">
+        <a class="site-brand" href="/">Coachatron</a>
+        <nav class="site-nav" aria-label="On this page">
+          <a href="#how-it-works">How it works</a>
+          <a href="#pricing">Pricing</a>
+          <a href="#faq">FAQ</a>
+        </nav>
+        <div class="site-header-actions">
+          <a class="header-cta" href="#week">Set it up</a>
+          <a class="btn-outline" href="/signin">Sign in</a>
+        </div>
+      </div>
+    </header>
+    <div class="wrap">
       <div class="hero">
         <div>
-          <div class="kicker">Coachatron</div>
+          <div class="kicker">For coaches and trainers</div>
           <h1>Say your week. Start taking bookings.</h1>
           <p class="lede">${DESCRIPTION}</p>
           <form class="box" method="post" action="/start">
             <label for="week">Your week</label>
-            <textarea id="week" name="text" rows="6" placeholder="${WEEK_EXAMPLE}"></textarea>
-            <p class="hint">Tap the mic on your keyboard and just talk.</p>
+            <div class="week-field">
+              <div class="week-input-row">
+                <textarea id="week" name="text" rows="5" placeholder="${WEEK_EXAMPLE}"></textarea>
+                <button type="button" id="week-voice" class="week-voice" aria-label="Talk instead of typing">🎙</button>
+              </div>
+              <p id="week-voice-status" class="voice-status" aria-live="polite"></p>
+            </div>
             <button type="submit">Set it up</button>
           </form>
           <p class="form-alt">Prefer forms? <a href="/signin">Set up with a form instead</a></p>
@@ -87,31 +121,36 @@ function renderLanding(): string {
         ${renderLandingPhonePreview()}
       </div>
       ${LANDING_PREVIEW_SCRIPT}
-      <section class="steps">
-        <h2>Three steps. Then you're live.</h2>
+      <section class="steps" id="how-it-works">
+        <h2>How it works</h2>
         <ol>
           <li><strong>Say it</strong><span>One box, or one text. What you coach, how long, how many, the price, your days.</span></li>
           <li><strong>Check it</strong><span>We show what we understood and ask about anything missing. We never guess a price. Nothing goes live until you tap Publish.</span></li>
           <li><strong>Share it</strong><span>Parents pick a time and pay. No app. No account.</span></li>
         </ol>
       </section>
-      <section class="skip">
-        <h2>What you skip</h2>
-        <ul>
-          <li>No setup wizard.</li>
-          <li>No passwords. Your email or phone is the sign-in.</li>
-          <li>No app to download.</li>
-        </ul>
+      <section class="faq" id="faq">
+        <h2>Questions</h2>
+        <dl>
+          <dt>Is there a setup wizard?</dt>
+          <dd>No. One box, or one text, and you're started.</dd>
+          <dt>Do I need a password?</dt>
+          <dd>No. Your email or phone is the sign-in.</dd>
+          <dt>Do parents need an app?</dt>
+          <dd>No. They pick a time and pay on your link.</dd>
+        </dl>
       </section>
-      <section class="price">
-        <h2>Free to start. 5% when they pay.</h2>
+      <section class="price" id="pricing">
+        <h2>Pricing</h2>
+        <p class="price-lede">Free to start. 5% when they pay.</p>
         <p>Money goes straight to your own account. We never hold it. Card processing is extra, on top.</p>
       </section>
       <footer class="colophon">
         <p>Already set up? <a href="/signin">Sign in</a></p>
         <p>Prefer forms? <a href="/signin">Set up with a form instead</a></p>
       </footer>
-    </div>`,
+    </div>
+    ${VOICE_SCRIPT}`,
     { canonicalPath: '/' },
   );
 }
