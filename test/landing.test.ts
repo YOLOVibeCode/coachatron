@@ -102,6 +102,30 @@ test("GET / returns 200 with no database, and the box posts to /start", async ()
   });
 });
 
+test("landing header, hero, sections, voice control, and footer sign-in", async () => {
+  await withServer(async (base) => {
+    const body = await (await fetch(`${base}/`)).text();
+    assert.match(body, /class="site-header"/);
+    assert.match(body, /position:\s*sticky/);
+    assert.match(body, /site-header[\s\S]*btn-outline[\s\S]*href="\/signin">Sign in</);
+    assert.match(body, /href="#how-it-works">How it works</);
+    assert.match(body, /href="#pricing">Pricing</);
+    assert.match(body, /href="#faq">FAQ</);
+    assert.match(body, /id="how-it-works"/);
+    assert.match(body, /id="pricing"/);
+    assert.match(body, /id="faq"/);
+    assert.match(body, /For coaches and trainers/);
+    assert.match(body, /<h1>Say your week\. Start taking bookings\.<\/h1>/);
+    assert.match(body, /Tell us your week in plain words/);
+    assert.match(body, /id="week-voice"/);
+    assert.match(body, /aria-label="Talk instead of typing"/);
+    assert.match(body, /SpeechRecognition/);
+    assert.match(body, /Voice isn't available here/);
+    assert.match(body, /Already set up\? <a href="\/signin">Sign in<\/a>/);
+    assert.doesNotMatch(body, /Tap the mic on your keyboard/);
+  });
+});
+
 test("the text line is hidden until COACHATRON_SMS_NUMBER is set", async () => {
   const prev = process.env.COACHATRON_SMS_NUMBER;
   process.env.COACHATRON_SMS_NUMBER = "+15551230000";
