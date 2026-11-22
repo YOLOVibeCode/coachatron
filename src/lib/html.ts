@@ -267,6 +267,16 @@ export const POSTCARD_TOKENS_CSS = `
   .weekly-day-row input[type="checkbox"] { flex: 0 0 auto; width: 1.25rem; height: 1.25rem; margin: 0; }
   .weekly-day-row .weekly-day-label { flex: 0 0 2.5rem; font-family: ui-sans-serif, system-ui, sans-serif; font-weight: 600; }
   .weekly-day-row input[type="time"] { flex: 1 1 8rem; min-width: 8rem; margin-top: 0; }
+  .payments-banner { margin-bottom: 12px; }
+  .payments-banner p { margin: 0 0 8px; }
+  .payments-banner .action { margin-top: 8px; }
+  .page-link-compact { margin-bottom: 10px; }
+  .page-link-share-note { margin-top: 6px; font-size: 0.85rem; }
+  button[disabled], .action[aria-disabled="true"] {
+    opacity: 0.55;
+    cursor: not-allowed;
+    pointer-events: none;
+  }
   .page-link label { margin-top: 0; }
   button.ghost { background: transparent; color: var(--teal); border: 1px solid var(--teal); }
   a.card { display: block; color: inherit; text-decoration: none; }

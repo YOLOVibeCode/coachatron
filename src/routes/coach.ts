@@ -1126,27 +1126,65 @@ function paymentsStepCard(step: PaymentsStep) {
     <a class="action" href="/app/money">${step === 'finish' ? FINISH_CONNECTING_PAYMENTS : CONNECT_PAYMENTS}</a>`;
 }
 
+/** Top-of-schedule notice when parents cannot pay yet. */
+function renderPaymentsBanner(step: PaymentsStep) {
+  if (step === 'test-only') {
+    return html`<div class="card payments-banner">
+      <p><strong>Parents can't book yet</strong></p>
+      <p class="muted">${TEST_ONLY_PAYMENTS}</p>
+      <a class="action" href="/app/money">See payments</a>
+    </div>`;
+  }
+  return html`<div class="card payments-banner">
+    <p><strong>Parents can't book yet</strong></p>
+    <p class="muted">Parents can't book until payments are set up.</p>
+    <a class="action" href="/app/money">${step === 'finish' ? FINISH_CONNECTING_PAYMENTS : CONNECT_PAYMENTS}</a>
+  </div>`;
+}
+
+type PageLinkOpts = {
+  main: 'share' | PaymentsStep | 'none';
+  justPublished?: boolean;
+  layout?: 'card' | 'compact';
+  sharingOpen?: boolean;
+  paymentsInCard?: boolean;
+};
+
 /** The coach's page link, always in view on Schedule and Money: one box to
  * select or copy, and a way to text it. On Schedule the main action is
  * sharing it, or, until payments work, the next payments step. Money has
  * its own. */
-function renderPageLinkCard(coach: CoachRow, opts: { main: 'share' | PaymentsStep | 'none'; justPublished?: boolean }) {
+function renderPageLinkCard(coach: CoachRow, opts: PageLinkOpts) {
+  const layout = opts.layout ?? 'card';
+  const sharingOpen = opts.sharingOpen ?? true;
+  const paymentsInCard = opts.paymentsInCard ?? true;
   const link = coachPageUrl(coach.handle);
   const share = `sms:?&body=${encodeURIComponent(`Book with me: ${link}`)}`;
-  const shareReady = opts.main === 'share' || opts.main === 'none';
-  return html`<div class="card page-link">
+  const wrapClass = layout === 'compact' ? 'page-link page-link-compact' : 'card page-link';
+  const copyBtn = sharingOpen
+    ? html`<button type="button" class="ghost" onclick="${COPY_LINK_SCRIPT}">Copy link</button>`
+    : html`<button type="button" class="ghost" disabled>Copy link</button>`;
+  const shareCtrl = sharingOpen
+    ? html`<a class="action${opts.main === 'share' ? '' : ' ghost'}" href="${share}">Share your link</a>`
+    : html`<span class="action ghost" aria-disabled="true">Share your link</span>`;
+  const shareNote =
+    !sharingOpen && layout === 'compact'
+      ? html`<p class="muted page-link-share-note">${
+          opts.main === 'test-only' ? TEST_ONLY_PAYMENTS : "Parents can't book until payments are set up."
+        }</p>`
+      : raw('');
+  return html`<div class="${wrapClass}">
     ${opts.justPublished
       ? html`<p><strong>You're live.</strong> Parents book at ${link.replace(/^https?:\/\//, '')}</p>`
       : raw('')}
     <label for="page-link">Your page</label>
     <input id="page-link" type="text" readonly value="${link}" onfocus="this.select()" />
     <div class="btn-row">
-      <button type="button" class="ghost" onclick="${COPY_LINK_SCRIPT}">Copy link</button>
-      ${shareReady
-        ? html`<a class="action" href="${share}">Share your link</a>`
-        : html`<span class="action ghost disabled" aria-disabled="true">Share your link</span>`}
+      ${copyBtn}
+      ${shareCtrl}
     </div>
-    ${!shareReady && opts.main !== 'none' && opts.main !== 'share' ? paymentsStepCard(opts.main) : raw('')}
+    ${shareNote}
+    ${paymentsInCard && opts.main !== 'share' && opts.main !== 'none' ? paymentsStepCard(opts.main) : raw('')}
   </div>`;
 }
 
@@ -1167,9 +1205,15 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
     res.status(200).send(renderSetupScreen(coach, draft, notice, hasSchedule, startText));
     return;
   }
+  const sharingOpen = await paymentsOpen(db, coach);
+  const paymentsStepNow = sharingOpen ? null : await paymentsStep(db, coach.id);
+  const paymentsBanner = paymentsStepNow ? renderPaymentsBanner(paymentsStepNow) : raw('');
   const live = renderPageLinkCard(coach, {
-    main: (await paymentsOpen(db, coach)) ? 'share' : await paymentsStep(db, coach.id),
+    main: sharingOpen ? 'share' : paymentsStepNow!,
     justPublished: req.query.published === '1',
+    layout: 'compact',
+    sharingOpen,
+    paymentsInCard: false,
   });
   const askCard = renderAskCard(await pendingAskForCoach(db, coachId));
   const cascadeCards = renderRunningCascades(await runningCascadesForCoach(db, coachId));
@@ -1220,13 +1264,10 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
       html`<div class="screen-main">
           ${coachNav('schedule')}
           <h1>Coming up</h1>
-          ${live}
+          ${paymentsBanner}
           ${req.query.published === '1' ? await ownPlacesNote(db, coachId) : raw('')}
           ${askCard}
           ${cascadeCards}
-          ${phoneCard}
-          ${emailCard}
-          <p><a class="action ghost" href="/app/schedule?setup=1">Edit schedule</a></p>
           ${assistant.reply
             ? html`<div class="card ask-reply">
                 <p>${assistant.reply.body}</p>
@@ -1250,6 +1291,10 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
                   </a>`,
               )}
           ${calendar}
+          ${live}
+          <p><a class="action ghost" href="/app/schedule?setup=1">Add more by talking</a></p>
+          ${phoneCard}
+          ${emailCard}
         </div>
         <details class="schedule-edit">
           <summary class="schedule-edit-toggle">Edit schedule</summary>
