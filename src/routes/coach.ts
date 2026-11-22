@@ -49,7 +49,7 @@ import {
   type PaymentsStep,
 } from '../domain/payments.js';
 import { createWeeklySlots, deactivateSlot, listWeeklySlots, type WeeklySlot } from '../domain/scheduling.js';
-import { keptOwnPlace, mountLocationRoutes, ownPlacesNote, placeFromForm, sessionPlaceSection, typeLocationsSection, weeklyPlaceFields } from './locations.js';
+import { mountLocationRoutes, ownPlacesNote, placeFromForm, sessionPlaceSection, typeLocationsSection, weeklyPlaceFields } from './locations.js';
 import { coachNav, html, oneTimeCodeNote, page, raw, smsConsentCheckbox, type SafeHtml } from '../lib/html.js';
 import { cancelReach, cancelScheduledSession, dropInCreditNote, previewSessionCancel, type CancelReach } from '../domain/cancelSession.js';
 import { DEFAULT_TZ, formatClockLocal, formatCoachDollars, formatLocal, formatTimeRange, isValidTimeZone } from '../lib/time.js';
@@ -816,22 +816,56 @@ coachRouter.get('/app/session-types/:id/generate-week', requireAuth, async (req,
     return;
   }
   const kept = typeof req.query.kept === 'string' ? Number(req.query.kept) : 0;
-  res.status(200).send(renderWeeklyTimes(typeRows.rows[0], await listWeeklySlots(db, typeId), kept, undefined, await weeklyPlaceFields(db, typeId)));
+  const addedRaw = typeof req.query.added === 'string' ? Number(req.query.added) : 0;
+  const added = Number.isFinite(addedRaw) && addedRaw > 0 ? Math.floor(addedRaw) : 0;
+  res.status(200).send(
+    renderWeeklyTimes(typeRows.rows[0], await listWeeklySlots(db, typeId), kept, added, undefined, await weeklyPlaceFields(db, typeId)),
+  );
 });
+
+function formatTypeCapacity(capacity: number): string {
+  return capacity === 1 ? 'one-on-one' : `up to ${capacity} spots`;
+}
+
+const WEEKLY_TIMES_ADD_SCRIPT = raw(`<script>(function(){
+var form=document.getElementById('weekly-times-form');
+if(!form)return;
+var btn=form.querySelector('button[type=submit]');
+function sync(){
+var n=0;
+for(var i=0;i<7;i+=1){
+var day=form.querySelector('input[name="day_'+i+'"]');
+var time=form.querySelector('input[name="time_'+i+'"]');
+if(day&&day.checked&&time&&time.value)n+=1;
+}
+if(!btn)return;
+if(n<1){btn.disabled=true;btn.textContent='Choose a day and time';}
+else{btn.disabled=false;btn.textContent=n===1?'Add 1 time':'Add '+n+' times';}
+}
+form.addEventListener('change',sync);
+form.addEventListener('input',sync);
+sync();
+})();</script>`);
 
 function renderWeeklyTimes(
   type: { id: number; name: string; duration_min: number; capacity: number; price_cents: number },
   slots: Array<{ id: number; weekday: number; time_local: string; location_text: string | null }>,
   kept: number,
+  added = 0,
   error?: string,
   where: SafeHtml = raw(''),
 ) {
-  const typeLine = `${type.name} · ${type.duration_min} min · ${type.capacity} athletes · ${formatCoachDollars(type.price_cents)}`;
+  const typeLine = `${type.name} · ${type.duration_min} min · ${formatTypeCapacity(type.capacity)} · ${formatCoachDollars(type.price_cents)}`;
+  const addedTimes = added === 1 ? 'time' : 'times';
   return page(
     'Weekly times',
     html`${coachNav('types')}
+      <p><a href="/app/session-types">Session types</a></p>
       <h1>Weekly times</h1>
-      <p class="muted">${typeLine}. Sessions stay on your calendar 8 weeks ahead.</p>
+      <p class="muted">${typeLine}. Sessions are created 8 weeks ahead and kept up to date. Existing bookings are never changed.</p>
+      ${added > 0
+        ? html`<div class="card"><p><strong>Added ${added} weekly ${addedTimes}.</strong> <a href="/app/schedule">Schedule</a></p></div>`
+        : raw('')}
       ${kept > 0
         ? html`<p class="muted">${kept} upcoming ${kept === 1 ? 'session has' : 'sessions have'} bookings and stayed. Cancel ${kept === 1 ? 'it' : 'them'} from the schedule if you need to.</p>`
         : raw('')}
@@ -845,15 +879,16 @@ function renderWeeklyTimes(
           </div>
         </div>`,
       )}
-      <form method="post" action="/app/session-types/${type.id}/generate-week">
+      <form id="weekly-times-form" method="post" action="/app/session-types/${type.id}/generate-week">
         ${WEEKDAY_LABELS.map(
           (label, i) =>
             html`<label><input type="checkbox" name="day_${i}" value="1" /> ${label}
               <input type="time" name="time_${i}" aria-label="${label} start time" /></label>`,
         )}
         ${where}
-        <button type="submit">Add weekly times</button>
+        <button type="submit" disabled>Choose a day and time</button>
       </form>
+      ${WEEKLY_TIMES_ADD_SCRIPT}
       ${error ? html`<p class="error">${error}</p>` : raw('')}`,
   );
 }
@@ -885,7 +920,7 @@ coachRouter.post('/app/session-types/:id/generate-week', requireAuth, async (req
   const locationText = place.ok ? place.text : null;
   const current = await listWeeklySlots(db, typeId);
   const where = await weeklyPlaceFields(db, typeId);
-  const refuse = (message: string) => res.status(422).send(renderWeeklyTimes(typeRows.rows[0], current, 0, message, where));
+  const refuse = (message: string) => res.status(422).send(renderWeeklyTimes(typeRows.rows[0], current, 0, 0, message, where));
   if (!place.ok) {
     refuse(place.error);
     return;
@@ -926,8 +961,7 @@ coachRouter.post('/app/session-types/:id/generate-week', requireAuth, async (req
   const saved = await createWeeklySlots(db, typeId, tz, slots, new Date());
   const coach = await findCoachById(db, coachId);
   if (coach) await notePublished(db, coach);
-  // A new place the type had no room to save is explained on this screen.
-  res.redirect(303, keptOwnPlace(saved) ? `/app/session-types/${typeId}/generate-week` : '/app/schedule');
+  res.redirect(303, `/app/session-types/${typeId}/generate-week?added=${slots.length}`);
 });
 
 coachRouter.post('/app/session-types/:id/slots/:slotId/remove', requireAuth, async (req, res) => {

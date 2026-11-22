@@ -98,6 +98,10 @@ test('weekly times screen: add with a location, list, remove; schedule links eac
         redirect: 'manual',
       });
       assert.equal(addRes.status, 303);
+      assert.equal(
+        addRes.headers.get('location'),
+        `/app/session-types/${seed.sessionTypeId}/generate-week?added=2`,
+      );
 
       const slots = await db.query<{ id: number }>('select id from weekly_slot where session_type_id = $1 and active', [
         seed.sessionTypeId,
@@ -108,7 +112,21 @@ test('weekly times screen: add with a location, list, remove; schedule links eac
       );
       assert.ok(Number(located.rows[0].n) >= 16, 'expected about 8 weeks of Tue and Thu sessions');
 
+      const confirmPage = await (
+        await fetch(`${base}${addRes.headers.get('location')}`, { headers: { cookie } })
+      ).text();
+      assert.match(confirmPage, /<strong>Added 2 weekly times\.<\/strong>/);
+      assert.match(confirmPage, /href="\/app\/schedule"/);
+
       const page = await (await fetch(`${base}/app/session-types/${seed.sessionTypeId}/generate-week`, { headers: { cookie } })).text();
+      assert.match(page, /href="\/app\/session-types"/);
+      assert.match(page, /up to 2 spots/);
+      assert.doesNotMatch(page, / athletes/);
+      assert.match(page, /Sessions are created 8 weeks ahead and kept up to date\. Existing bookings are never changed\./);
+      assert.match(page, /placeholder="e\.g\. Field 3, or Zoom link"/);
+      assert.match(page, /id="weekly-times-form"/);
+      assert.match(page, /<button type="submit" disabled>Choose a day and time<\/button>/);
+      assert.match(page, /weekly-times-form/);
       // Shown on a 12-hour clock, like every other screen; the inputs stay 24-hour.
       assert.match(page, /Tue 6:00pm · Field 3/);
       assert.match(page, /Thu 6:00pm · Field 3/);
@@ -136,6 +154,7 @@ test('weekly times screen: add with a location, list, remove; schedule links eac
         body: JSON.stringify({}),
       });
       assert.equal(empty.status, 422);
+      assert.match(await empty.text(), /Pick at least one day and time\./);
     });
   });
 });

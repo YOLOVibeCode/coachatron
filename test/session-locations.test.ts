@@ -217,9 +217,9 @@ test("a weekly time picks one of its type's saved locations, or none, and each s
       assert.match(form, /<label for="location">Or a new place<\/label>/);
 
       const picked = await coach.post(weekly, { day_2: '1', time_2: '18:00', location_id: String(park.id) });
-      assert.equal(picked.headers.get('location'), '/app/schedule');
+      assert.equal(picked.headers.get('location'), `${weekly}?added=1`);
       const none = await coach.post(weekly, { day_4: '1', time_4: '18:00' });
-      assert.equal(none.headers.get('location'), '/app/schedule');
+      assert.equal(none.headers.get('location'), `${weekly}?added=1`);
 
       const slots = await db.query<{ id: number; weekday: number; location_text: string | null; location_id: number | null }>(
         'select id, weekday, location_text, location_id from weekly_slot where session_type_id = $1 order by weekday',
@@ -448,14 +448,17 @@ test('a typed place uses the saved location it matches, is saved while there is 
 
       // Matches a saved one, whatever the capitals and spacing.
       const match = await coach.post(weekly, { day_1: '1', time_1: '17:00', location: '  field   3 ' });
-      assert.equal(match.headers.get('location'), '/app/schedule');
+      assert.equal(match.headers.get('location'), `${weekly}?added=1`);
       const monday = await slotAt(1);
       assert.deepEqual([monday.location_text, monday.location_id], ['Field 3', field3.id]);
       assert.equal((await listLocations(db, seed.sessionTypeId)).length, 1, 'nothing new was saved');
       for (const s of await slotSessions(db, monday.id)) assert.deepEqual([s.location_text, s.location_address], ['Field 3', 'North lot']);
 
       // A new place is saved to the type's list.
-      assert.equal((await coach.post(weekly, { day_2: '1', time_2: '17:00', location: 'Field 9' })).headers.get('location'), '/app/schedule');
+      assert.equal(
+        (await coach.post(weekly, { day_2: '1', time_2: '17:00', location: 'Field 9' })).headers.get('location'),
+        `${weekly}?added=1`,
+      );
       const tuesday = await slotAt(2);
       const names = (await listLocations(db, seed.sessionTypeId)).map((l) => l.name);
       assert.deepEqual(names, ['Field 3', 'Field 9']);
@@ -471,7 +474,7 @@ test('a typed place uses the saved location it matches, is saved while there is 
       // ...and one sent anyway stays on that weekly time, and the coach is told why.
       const over = await coach.post(weekly, { day_6: '1', time_6: '09:00', location: 'Beach Courts' });
       assert.equal(over.status, 303);
-      assert.equal(over.headers.get('location'), weekly, 'back to the weekly times, where the reason is');
+      assert.equal(over.headers.get('location'), `${weekly}?added=1`, 'back to the weekly times, where the reason is');
       const saturday = await slotAt(6);
       assert.deepEqual([saturday.location_text, saturday.location_id], ['Beach Courts', null]);
       assert.equal((await listLocations(db, seed.sessionTypeId)).length, 5, 'not saved as a sixth');
