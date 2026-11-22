@@ -37,7 +37,7 @@ export function cancelGivesSummary(policy: Pick<BookingPolicy, 'cancelGives'>): 
 
 /** The card's closing line: how card refunds are made under the choice. */
 export function cardRefundsNote(policy: Pick<BookingPolicy, 'cancelGives'>): string {
-  const yours = "You can refund any payment yourself, from Money or the session's screen.";
+  const yours = "You can refund any payment yourself, from Payments or the session's screen.";
   return policy.cancelGives === 'refund'
     ? `A refund is of a whole payment: children paid for together are refunded once each of their bookings is cancelled in time, and until then a cancelled booking gets a session credit. ${yours}`
     : `Card refunds are separate. ${yours}`;
