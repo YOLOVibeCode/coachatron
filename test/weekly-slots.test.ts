@@ -110,9 +110,19 @@ test('weekly times screen: add with a location, list, remove; schedule links eac
 
       const page = await (await fetch(`${base}/app/session-types/${seed.sessionTypeId}/generate-week`, { headers: { cookie } })).text();
       // Shown on a 12-hour clock, like every other screen; the inputs stay 24-hour.
+      assert.match(page, /weekly-chip-list/);
+      assert.match(page, /weekly-day-row/);
       assert.match(page, /Tue 6:00pm · Field 3/);
       assert.match(page, /Thu 6:00pm · Field 3/);
       assert.doesNotMatch(page, /18:00/);
+
+      const confirmRemove = await (
+        await fetch(`${base}/app/session-types/${seed.sessionTypeId}/slots/${slots.rows[0].id}/remove`, {
+          headers: { cookie },
+        })
+      ).text();
+      assert.match(confirmRemove, /Remove weekly time\?/);
+      assert.match(confirmRemove, /nobody booked/);
 
       const schedule = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
       assert.match(schedule, /href="\/app\/sessions\/\d+"/);
@@ -180,10 +190,14 @@ test('weekly times take a clock time from 00:00 to 23:59, and a time already the
       const placed = await db.query<{ location_text: string | null }>('select distinct location_text from session where weekly_slot_id is not null');
       assert.deepEqual(placed.rows, [{ location_text: 'Field 3' }]);
 
-      // The same time again, with the same place or none, changes nothing and is fine.
-      assert.equal((await post({ day_2: '1', time_2: '18:00', location: 'Field 3' })).status, 303);
-      assert.equal((await post({ day_2: '1', time_2: '18:00' })).status, 303);
+      const dup = await post({ day_2: '1', time_2: '18:00', location: 'Field 3' });
+      assert.equal(dup.status, 422);
+      assert.match(await dup.text(), /already a weekly time/);
       assert.equal((await slotRows()).length, 1);
+
+      assert.equal((await post({ day_6: '1', time_6: '09:00', time_6_1: '10:00', time_6_2: '11:00' })).status, 303);
+      const saturday = (await slotRows()).filter((r) => r.weekday === 6);
+      assert.equal(saturday.length, 3);
     });
   });
 });

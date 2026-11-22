@@ -7,6 +7,7 @@ import { seedCoachWithSession, seedRosterMember, seedBookedSession, seedWaitlist
 import { checkOverflow } from '../src/domain/cascade.js';
 import { buyerFromLocation, postStorePaid } from './helpers/store-event.js';
 import { postSignedSms } from './helpers/sms-webhook.js';
+import { postNewSessionType } from './helpers/sessionTypes.js';
 
 /**
  * End-to-end smoke test for the three journeys named in the idea's "I will
@@ -60,11 +61,11 @@ test('journey 1: coach signs in, creates a session type, generates a week, gets 
       assert.equal(verifyRes.status, 303, 'sign-in should redirect to /app/schedule');
       const cookie = extractSessionCookie(verifyRes as unknown as Response);
 
-      const createTypeRes = await fetch(`${base}/app/session-types`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', cookie },
-        body: JSON.stringify({ name: 'Goalkeeper Group', duration_min: '60', capacity: '8', price_dollars: '35' }),
-        redirect: 'manual',
+      const createTypeRes = await postNewSessionType(base, cookie, {
+        name: 'Goalkeeper Group',
+        duration_min: '60',
+        capacity: '8',
+        price_dollars: '35',
       });
       assert.equal(createTypeRes.status, 303);
 

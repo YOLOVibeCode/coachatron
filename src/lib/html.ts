@@ -141,6 +141,87 @@ export const POSTCARD_TOKENS_CSS = `
   .schedule-edit form { margin: 0; }
   .schedule-edit label { margin-top: 0; }
   .schedule-edit button { margin-top: 10px; }
+  .session-type-create, .session-type-edit { margin-top: 12px; }
+  .session-type-toggle {
+    list-style: none;
+    cursor: pointer;
+    display: block;
+    width: 100%;
+    text-align: center;
+    background: transparent;
+    color: var(--teal);
+    border: 1px solid var(--teal);
+    border-radius: 14px;
+    padding: 12px 16px;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 8px 0 0;
+    min-height: var(--touch-min);
+  }
+  .session-type-toggle::-webkit-details-marker { display: none; }
+  .session-type-create[open] .session-type-toggle,
+  .session-type-edit[open] .session-type-toggle { margin-bottom: 10px; }
+  .session-type-form .btn-row button { margin-top: 10px; }
+  .session-type-optional { margin-top: 8px; }
+  .session-type-optional summary { cursor: pointer; color: var(--screen-muted); font-size: 0.9rem; }
+  .fine { font-size: 0.85rem; color: var(--screen-muted); margin: 6px 0 0; font-family: ui-sans-serif, system-ui, sans-serif; }
+  .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
+  .session-type-banner { margin-bottom: 12px; }
+  .session-type-banner .action { margin-top: 8px; }
+  .weekly-chip-list { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+  .weekly-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 6px 10px 6px 12px;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 0.9rem;
+  }
+  .chip-remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: var(--touch-min);
+    min-height: var(--touch-min);
+    margin: -6px -8px -6px 0;
+    padding: 0 10px;
+    color: var(--teal);
+    text-decoration: none;
+    font-size: 1.25rem;
+    line-height: 1;
+  }
+  .weekly-add-form { margin-top: 8px; }
+  .weekly-day-row {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+  }
+  .weekly-day-label {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0;
+    font-size: 1rem;
+    color: inherit;
+  }
+  .weekly-day-check {
+    width: auto;
+    min-width: var(--touch-min);
+    min-height: var(--touch-min);
+    flex-shrink: 0;
+    margin: 0;
+  }
+  .weekly-day-label span { font-weight: 600; }
+  .weekly-times { margin-top: 8px; }
+  .weekly-time-row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+  .weekly-time-row input[type="time"] { flex: 1; }
+  .weekly-remove-time, .weekly-add-time { width: auto; margin-top: 0; flex-shrink: 0; font-size: 0.9rem; padding: 8px 12px; min-height: var(--touch-min); }
+  .weekly-add-form > button[type="submit"] { margin-top: 12px; }
   .setup-warnings { margin: 8px 0 0; padding-left: 1.2rem; font-family: ui-sans-serif, system-ui, sans-serif; font-size: 0.9rem; }
   .setup-field-error { margin-top: 8px; margin-bottom: 0; }
   .action.disabled, button:disabled.ghost { opacity: 0.45; pointer-events: none; cursor: default; }

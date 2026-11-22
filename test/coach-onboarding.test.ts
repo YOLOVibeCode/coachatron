@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { freshDb } from './helpers/db.js';
 import { withServer } from './helpers/server.js';
 import { withRelay } from './helpers/relay.js';
+import { postNewSessionType } from './helpers/sessionTypes.js';
 
 function extractSessionCookie(res: Response): string {
   const setCookie = res.headers.getSetCookie?.() ?? [];
@@ -50,11 +51,11 @@ test('coach onboarding: OTP sign-in, session type, weekly schedule, public page'
       const cookie = extractSessionCookie(verifyRes as unknown as Response);
 
       // 3. Create a session type.
-      const createTypeRes = await fetch(`${base}/app/session-types`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', cookie },
-        body: JSON.stringify({ name: 'Goalkeeper Group', duration_min: '60', capacity: '8', price_dollars: '35' }),
-        redirect: 'manual',
+      const createTypeRes = await postNewSessionType(base, cookie, {
+        name: 'Goalkeeper Group',
+        duration_min: '60',
+        capacity: '8',
+        price_dollars: '35',
       });
       assert.equal(createTypeRes.status, 303);
 

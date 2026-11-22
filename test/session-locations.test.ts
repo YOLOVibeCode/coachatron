@@ -243,7 +243,8 @@ test("a weekly time picks one of its type's saved locations, or none, and each s
 
       const listed = await coach.page(weekly);
       assert.match(listed, /Tue 6:00pm · Riverside Park/);
-      assert.match(listed, /Thu 6:00pm<\/span>/);
+      assert.match(listed, /weekly-chip/);
+      assert.match(listed, /Thu 6:00pm/);
 
       // Only one of this type's own locations, and one place at a time.
       const gym = (elsewhere as { location: SavedLocation }).location;

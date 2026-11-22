@@ -48,7 +48,16 @@ import {
   recordSellerStatus,
   type PaymentsStep,
 } from '../domain/payments.js';
-import { createWeeklySlots, deactivateSlot, listWeeklySlots, type WeeklySlot } from '../domain/scheduling.js';
+import {
+  createWeeklySlots,
+  deactivateSessionType,
+  deactivateSlot,
+  futureBookedSessionsForType,
+  listWeeklySlots,
+  type WeeklySlot,
+} from '../domain/scheduling.js';
+import { formatTypeMeta, formatWeeklySummary, weekdayTimeLabel } from '../lib/sessionTypeUi.js';
+import { randomBytes } from 'node:crypto';
 import { keptOwnPlace, mountLocationRoutes, ownPlacesNote, placeFromForm, sessionPlaceSection, typeLocationsSection, weeklyPlaceFields } from './locations.js';
 import { coachNav, html, oneTimeCodeNote, page, raw, smsConsentCheckbox, type SafeHtml } from '../lib/html.js';
 import { cancelReach, cancelScheduledSession, dropInCreditNote, previewSessionCancel, type CancelReach } from '../domain/cancelSession.js';
@@ -191,6 +200,31 @@ for (const name of ['id', 'bookingId', 'slotId', 'sessionId']) {
 function field(body: unknown, key: string): string {
   const value = (body as Record<string, unknown> | undefined)?.[key];
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function fieldList(body: Record<string, unknown>, weekday: number): string[] {
+  const times: string[] = [];
+  const main = field(body, `time_${weekday}`);
+  if (main) times.push(main);
+  for (let extra = 1; extra < 24; extra += 1) {
+    const t = field(body, `time_${weekday}_${extra}`);
+    if (!t) break;
+    times.push(t);
+  }
+  return times;
+}
+
+const CREATE_TYPE_COOKIE = 'cx_type_create';
+const CREATE_TYPE_MAX_AGE = 600;
+
+function mintCreateTypeToken(): string {
+  return randomBytes(12).toString('hex');
+}
+
+function verifyCreateTypeToken(req: Request, body: Record<string, unknown>): boolean {
+  const token = field(body, 'create_token');
+  const cookie = parseCookies(req.headers.cookie)[CREATE_TYPE_COOKIE];
+  return Boolean(token && cookie && token === cookie);
 }
 
 async function signedInCoachId(req: Request): Promise<number | null> {
@@ -597,7 +631,7 @@ function parseSessionTypeBody(body: Record<string, unknown>): SessionTypeFields 
 }
 
 /** The form's message when a number is missing or out of range. */
-const SESSION_TYPE_RANGES = `Fill in every field: ${LIMITS.durationMin.min}–${LIMITS.durationMin.max} minutes, ${LIMITS.capacity.min}–${LIMITS.capacity.max} athletes, and a price up to ${formatCoachDollars(LIMITS.priceCents.max)}.`;
+const SESSION_TYPE_RANGES = `Fill in every field: ${LIMITS.durationMin.min}–${LIMITS.durationMin.max} minutes, ${LIMITS.capacity.min}–${LIMITS.capacity.max} spots, and a price up to ${formatCoachDollars(LIMITS.priceCents.max)}.`;
 
 /** The future session of this type with the most spots taken, when that is
  * more than the new capacity. Sessions given their own capacity (a backup
@@ -624,30 +658,101 @@ async function sessionAboveCapacity(
   return result.rows[0] ?? null;
 }
 
-function renderSessionTypeForm(
-  action: string,
-  submitLabel: string,
-  values?: Partial<SessionTypeFields> & { priceDollars?: number; backupPayDollars?: number },
-) {
+type SessionTypeFormOpts = {
+  values?: Partial<SessionTypeFields> & { priceDollars?: number; backupPayDollars?: number };
+  fieldPrefix?: string;
+  createToken?: string;
+  showCancel?: boolean;
+  defaultsOnCreate?: boolean;
+};
+
+function renderSessionTypeForm(action: string, submitLabel: string, opts: SessionTypeFormOpts = {}) {
+  const { values, fieldPrefix = '', createToken, showCancel, defaultsOnCreate } = opts;
   const priceDollars = values?.priceDollars ?? (values?.priceCents != null ? values.priceCents / 100 : undefined);
   const backupPayDollars =
     values?.backupPayDollars ?? (values?.backupPayCents != null ? values.backupPayCents / 100 : undefined);
-  return html`<form method="post" action="${action}">
-    <label for="name">Session name</label>
-    <input id="name" name="name" required placeholder="e.g. Group training" value="${values?.name ?? ''}" />
-    <label for="duration_min">Duration (minutes)</label>
-    <input id="duration_min" name="duration_min" type="number" min="${LIMITS.durationMin.min}" max="${LIMITS.durationMin.max}" required value="${values?.durationMin ?? ''}" />
-    <label for="capacity">Capacity</label>
-    <input id="capacity" name="capacity" type="number" min="${LIMITS.capacity.min}" max="${LIMITS.capacity.max}" required value="${values?.capacity ?? ''}" />
-    <label for="price_dollars">Price (dollars)</label>
-    <input id="price_dollars" name="price_dollars" type="number" min="0.01" max="${LIMITS.priceCents.max / 100}" step="0.01" required value="${priceDollars ?? ''}" />
-    <label for="backup_pay_dollars">Backup coach pays (dollars, optional)</label>
-    <input id="backup_pay_dollars" name="backup_pay_dollars" type="number" min="0" max="${LIMITS.backupPayCents.max / 100}" step="0.01" value="${backupPayDollars ?? ''}" />
-    <button type="submit">${submitLabel}</button>
+  const durationDefault = values?.durationMin ?? (defaultsOnCreate ? 60 : undefined);
+  const capId = `${fieldPrefix}capacity`;
+  const durId = `${fieldPrefix}duration_min`;
+  const nameId = `${fieldPrefix}name`;
+  const priceId = `${fieldPrefix}price_dollars`;
+  const backupId = `${fieldPrefix}backup_pay_dollars`;
+  return html`<form method="post" action="${action}" class="session-type-form">
+    ${createToken ? html`<input type="hidden" name="create_token" value="${createToken}" />` : raw('')}
+    <label for="${nameId}">Session name</label>
+    <input id="${nameId}" name="name" required placeholder="e.g. Group training" value="${values?.name ?? ''}" />
+    <label for="${durId}">Duration (minutes)</label>
+    <input id="${durId}" name="duration_min" type="number" inputmode="numeric" min="${LIMITS.durationMin.min}" max="${LIMITS.durationMin.max}" required value="${durationDefault ?? ''}" />
+    <label for="${capId}">Spots</label>
+    <input id="${capId}" name="capacity" type="number" inputmode="numeric" min="${LIMITS.capacity.min}" max="${LIMITS.capacity.max}" required placeholder="e.g. 5" value="${values?.capacity ?? ''}" />
+    <p class="muted fine">1 spot means one-on-one.</p>
+    <label for="${priceId}">Price (per person, in dollars)</label>
+    <input id="${priceId}" name="price_dollars" type="number" inputmode="decimal" min="0.01" max="${LIMITS.priceCents.max / 100}" step="0.01" required value="${priceDollars ?? ''}" />
+    <details class="session-type-optional">
+      <summary>Optional: backup coach pay</summary>
+      <p class="muted fine">When someone on your roster covers a session, this is what you pay them for that session.</p>
+      <label for="${backupId}">Amount (dollars)</label>
+      <input id="${backupId}" name="backup_pay_dollars" type="number" inputmode="decimal" min="0" max="${LIMITS.backupPayCents.max / 100}" step="0.01" value="${backupPayDollars ?? ''}" />
+    </details>
+    <div class="btn-row">
+      <button type="submit">${submitLabel}</button>
+      ${showCancel ? html`<button type="reset" class="ghost session-type-cancel">Cancel</button>` : raw('')}
+    </div>
   </form>`;
 }
 
-coachRouter.get('/app/session-types', requireAuth, async (_req, res) => {
+const WEEKLY_TIMES_SCRIPT = raw(`<script>
+(function(){
+  document.querySelectorAll('.weekly-day-row').forEach(function(row){
+    var check=row.querySelector('.weekly-day-check');
+    var times=row.querySelector('.weekly-times');
+    if(!check||!times) return;
+    function sync(){ times.hidden=!check.checked; }
+    check.addEventListener('change',sync);
+    sync();
+    var day=row.getAttribute('data-weekday');
+  var next=1;
+    row.querySelector('.weekly-add-time')?.addEventListener('click',function(){
+      var wrap=row.querySelector('.weekly-time-rows');
+      var first=wrap.querySelector('.weekly-time-row');
+      var clone=first.cloneNode(true);
+      var input=clone.querySelector('input[type="time"]');
+      input.value='';
+      input.name='time_'+day+'_'+next;
+      next+=1;
+      clone.querySelector('.weekly-remove-time').hidden=false;
+      wrap.appendChild(clone);
+    });
+    row.addEventListener('click',function(e){
+      var btn=e.target.closest('.weekly-remove-time');
+      if(!btn) return;
+      var w=btn.closest('.weekly-time-row');
+      var wrap=row.querySelector('.weekly-time-rows');
+      if(wrap.querySelectorAll('.weekly-time-row').length>1) w.remove();
+    });
+  });
+  document.querySelectorAll('details.session-type-create').forEach(function(d){
+    d.querySelector('.session-type-cancel')?.addEventListener('click',function(){ d.open=false; });
+  });
+})();
+</script>`);
+
+async function sessionTypeNameTaken(
+  db: DbClient,
+  coachId: number,
+  name: string,
+  exceptId?: number,
+): Promise<boolean> {
+  const result = await db.query<{ id: number }>(
+    exceptId
+      ? `select id from session_type where coach_id = $1 and active and lower(trim(name)) = lower(trim($2)) and id <> $3 limit 1`
+      : `select id from session_type where coach_id = $1 and active and lower(trim(name)) = lower(trim($2)) limit 1`,
+    exceptId ? [coachId, name, exceptId] : [coachId, name],
+  );
+  return result.rows.length > 0;
+}
+
+coachRouter.get('/app/session-types', requireAuth, async (req, res) => {
   const db = getDb();
   const coachId = res.locals.coachId as number;
   const types = await db.query<{
@@ -658,41 +763,96 @@ coachRouter.get('/app/session-types', requireAuth, async (_req, res) => {
     price_cents: number;
     backup_pay_cents: number | null;
   }>(
-    'select id, name, duration_min, capacity, price_cents, backup_pay_cents from session_type where coach_id = $1 order by id',
+    'select id, name, duration_min, capacity, price_cents, backup_pay_cents from session_type where coach_id = $1 and active order by id',
     [coachId],
+  );
+  const createToken = mintCreateTypeToken();
+  res.setHeader('set-cookie', serializeCookie(CREATE_TYPE_COOKIE, createToken, CREATE_TYPE_MAX_AGE));
+  const createdRaw = typeof req.query.created === 'string' ? Number(req.query.created) : NaN;
+  const createdId = Number.isInteger(createdRaw) && createdRaw > 0 ? createdRaw : null;
+  const createdType = createdId ? types.rows.find((t) => t.id === createdId) : undefined;
+  const slotsByType = new Map<number, Awaited<ReturnType<typeof listWeeklySlots>>>();
+  await Promise.all(
+    types.rows.map(async (t) => {
+      slotsByType.set(t.id, await listWeeklySlots(db, t.id));
+    }),
   );
   res.status(200).send(
     page(
       'Session types',
       html`${coachNav('types')}
         <h1>Session types</h1>
-        ${types.rows.map(
-          (t) =>
-            html`<div class="card">
+        ${createdType
+          ? html`<div class="card session-type-banner">
+              <p><strong>${createdType.name}</strong> added.</p>
+              <a class="action" href="/app/session-types/${createdType.id}/generate-week">Add weekly times</a>
+            </div>`
+          : raw('')}
+        ${types.rows.map((t) => {
+          const weekly = formatWeeklySummary(slotsByType.get(t.id) ?? []);
+          return html`<div class="card session-type-card">
               <strong>${t.name}</strong>
               <div class="meta">
-                <span>${t.duration_min} min · ${t.capacity} athletes · ${formatCoachDollars(t.price_cents)}</span>
+                <span>${formatTypeMeta(t.duration_min, t.capacity, t.price_cents)}</span>
               </div>
+              <div class="meta"><span>${weekly}</span></div>
               ${t.backup_pay_cents ? html`<div class="meta"><span>Backup coach pays ${formatCoachDollars(t.backup_pay_cents)}</span></div>` : raw('')}
+              <h2 class="visually-hidden">Actions</h2>
+              <details class="session-type-edit">
+                <summary class="session-type-toggle">Edit</summary>
+                ${renderSessionTypeForm(`/app/session-types/${t.id}/edit`, 'Save changes', {
+                  fieldPrefix: `t${t.id}-`,
+                  values: {
+                    name: t.name,
+                    durationMin: t.duration_min,
+                    capacity: t.capacity,
+                    priceCents: t.price_cents,
+                    backupPayCents: t.backup_pay_cents,
+                  },
+                })}
+                <p class="fine"><a href="/app/session-types/${t.id}/edit#locations">Saved locations</a></p>
+              </details>
               <div class="btn-row">
-                <a class="action ghost" href="/app/session-types/${t.id}/edit">Edit</a>
                 <a class="action" href="/app/session-types/${t.id}/generate-week">Weekly times ›</a>
               </div>
-            </div>`,
-        )}
-        ${renderSessionTypeForm('/app/session-types', 'Create session type')}`,
+              <p class="fine"><a href="/app/session-types/${t.id}/delete">Delete session type</a></p>
+            </div>`;
+        })}
+        <details class="session-type-create">
+          <summary class="session-type-toggle">+ New session type</summary>
+          ${renderSessionTypeForm('/app/session-types', 'Create session type', {
+            createToken,
+            showCancel: true,
+            defaultsOnCreate: true,
+            fieldPrefix: 'new-',
+          })}
+        </details>`,
     ),
   );
 });
 
 coachRouter.post('/app/session-types', requireAuth, async (req, res) => {
   const coachId = res.locals.coachId as number;
-  const parsed = parseSessionTypeBody(req.body as Record<string, unknown>);
+  const body = req.body as Record<string, unknown>;
+  if (!verifyCreateTypeToken(req, body)) {
+    res.status(422).send(
+      page(
+        'Session types',
+        html`${coachNav('types')}
+          <h1>Session types</h1>
+          <p class="error">That form expired. Open Session types again, then create.</p>
+          <a class="action" href="/app/session-types">Back</a>`,
+      ),
+    );
+    return;
+  }
+  const parsed = parseSessionTypeBody(body);
   if (!parsed) {
     res.status(422).send(
       page(
         'Session types',
-        html`<h1>Session types</h1>
+        html`${coachNav('types')}
+          <h1>Session types</h1>
           <p class="error">${SESSION_TYPE_RANGES}</p>
           <a class="action" href="/app/session-types">Back</a>`,
       ),
@@ -701,12 +861,26 @@ coachRouter.post('/app/session-types', requireAuth, async (req, res) => {
   }
 
   const db = getDb();
-  await db.query(
+  if (await sessionTypeNameTaken(db, coachId, parsed.name)) {
+    res.status(422).send(
+      page(
+        'Session types',
+        html`${coachNav('types')}
+          <h1>Session types</h1>
+          <p class="error">You already have a session type called ${parsed.name}. Pick a different name.</p>
+          <a class="action" href="/app/session-types">Back</a>`,
+      ),
+    );
+    return;
+  }
+  const inserted = await db.query<{ id: number }>(
     `insert into session_type (coach_id, name, duration_min, capacity, price_cents, backup_pay_cents, active)
-     values ($1, $2, $3, $4, $5, $6, true)`,
+     values ($1, $2, $3, $4, $5, $6, true)
+     returning id`,
     [coachId, parsed.name, parsed.durationMin, parsed.capacity, parsed.priceCents, parsed.backupPayCents || null],
   );
-  res.redirect(303, '/app/session-types');
+  res.setHeader('set-cookie', clearCookie(CREATE_TYPE_COOKIE));
+  res.redirect(303, `/app/session-types?created=${inserted.rows[0].id}`);
 });
 
 coachRouter.get('/app/session-types/:id/edit', requireAuth, async (req, res) => {
@@ -735,11 +909,13 @@ coachRouter.get('/app/session-types/:id/edit', requireAuth, async (req, res) => 
       html`${coachNav('types')}
         <h1>Edit session type</h1>
         ${renderSessionTypeForm(`/app/session-types/${typeId}/edit`, 'Save changes', {
-          name: t.name,
-          durationMin: t.duration_min,
-          capacity: t.capacity,
-          priceCents: t.price_cents,
-          backupPayCents: t.backup_pay_cents,
+          values: {
+            name: t.name,
+            durationMin: t.duration_min,
+            capacity: t.capacity,
+            priceCents: t.price_cents,
+            backupPayCents: t.backup_pay_cents,
+          },
         })}
         ${await typeLocationsSection(db, typeId, req.query)}
         <a class="action ghost" href="/app/session-types">Back</a>`,
@@ -763,6 +939,17 @@ coachRouter.post('/app/session-types/:id/edit', requireAuth, async (req, res) =>
     return;
   }
   const db = getDb();
+  if (await sessionTypeNameTaken(db, coachId, parsed.name, typeId)) {
+    res.status(422).send(
+      page(
+        'Edit session type',
+        html`<h1>Edit session type</h1>
+          <p class="error">You already have a session type called ${parsed.name}. Pick a different name.</p>
+          <a class="action" href="/app/session-types/${typeId}/edit">Back</a>`,
+      ),
+    );
+    return;
+  }
   const crowded = await sessionAboveCapacity(db, coachId, typeId, parsed.capacity);
   if (crowded) {
     res.status(422).send(
@@ -826,7 +1013,7 @@ function renderWeeklyTimes(
   error?: string,
   where: SafeHtml = raw(''),
 ) {
-  const typeLine = `${type.name} · ${type.duration_min} min · ${type.capacity} athletes · ${formatCoachDollars(type.price_cents)}`;
+  const typeLine = `${type.name} · ${formatTypeMeta(type.duration_min, type.capacity, type.price_cents)}`;
   return page(
     'Weekly times',
     html`${coachNav('types')}
@@ -835,26 +1022,41 @@ function renderWeeklyTimes(
       ${kept > 0
         ? html`<p class="muted">${kept} upcoming ${kept === 1 ? 'session has' : 'sessions have'} bookings and stayed. Cancel ${kept === 1 ? 'it' : 'them'} from the schedule if you need to.</p>`
         : raw('')}
-      ${slots.map(
-        (slot) => html`<div class="card">
-          <div class="row">
-            <span>${WEEKDAY_LABELS[slot.weekday]} ${formatClock(slot.time_local)}${slot.location_text ? ` · ${slot.location_text}` : ''}</span>
-            <form method="post" action="/app/session-types/${type.id}/slots/${slot.id}/remove">
-              <button type="submit" class="ghost">Remove</button>
-            </form>
-          </div>
-        </div>`,
-      )}
-      <form method="post" action="/app/session-types/${type.id}/generate-week">
+      ${slots.length > 0
+        ? html`<div class="weekly-chip-list" aria-label="Current weekly times">
+            ${slots.map(
+              (slot) => html`<span class="weekly-chip">
+                ${weekdayTimeLabel(slot.weekday, slot.time_local, slot.location_text)}
+                <a class="chip-remove" href="/app/session-types/${type.id}/slots/${slot.id}/remove" aria-label="Remove ${weekdayTimeLabel(slot.weekday, slot.time_local)}">×</a>
+              </span>`,
+            )}
+          </div>`
+        : raw('')}
+      <form method="post" action="/app/session-types/${type.id}/generate-week" class="weekly-add-form">
         ${WEEKDAY_LABELS.map(
           (label, i) =>
-            html`<label><input type="checkbox" name="day_${i}" value="1" /> ${label}
-              <input type="time" name="time_${i}" aria-label="${label} start time" /></label>`,
+            html`<div class="weekly-day-row" data-weekday="${i}">
+              <label class="weekly-day-label">
+                <input type="checkbox" class="weekly-day-check" name="day_${i}" value="1" />
+                <span>${label}</span>
+              </label>
+              <div class="weekly-times" hidden>
+                <div class="weekly-time-rows">
+                  <div class="weekly-time-row">
+                    <input type="time" class="weekly-time-input" name="time_${i}" aria-label="${label} start time" />
+                    <button type="button" class="ghost weekly-remove-time" hidden>Remove time</button>
+                  </div>
+                </div>
+                <button type="button" class="ghost weekly-add-time">+ Add another time</button>
+              </div>
+            </div>`,
         )}
         ${where}
         <button type="submit">Add weekly times</button>
       </form>
-      ${error ? html`<p class="error">${error}</p>` : raw('')}`,
+      ${error ? html`<p class="error">${error}</p>` : raw('')}
+      <a class="action ghost" href="/app/session-types">Back</a>
+      ${WEEKLY_TIMES_SCRIPT}`,
   );
 }
 
@@ -892,15 +1094,20 @@ coachRouter.post('/app/session-types/:id/generate-week', requireAuth, async (req
   }
   const slots: WeeklySlot[] = [];
   for (let i = 0; i < 7; i += 1) {
-    const checked = field(body, `day_${i}`) === '1';
-    const raw = field(body, `time_${i}`);
-    if (!checked || !raw) continue;
-    const timeLocal = clockTime(raw);
-    if (!timeLocal) {
-      refuse(`${WEEKDAY_LABELS[i]}: use a time from 00:00 to 23:59.`);
+    if (field(body, `day_${i}`) !== '1') continue;
+    const rawTimes = fieldList(body, i);
+    if (rawTimes.length === 0) {
+      refuse(`Pick a time for ${WEEKDAY_LABELS[i]}.`);
       return;
     }
-    slots.push({ weekday: i, timeLocal, locationText, locationId: place.locationId });
+    for (const raw of rawTimes) {
+      const timeLocal = clockTime(raw);
+      if (!timeLocal) {
+        refuse(`${WEEKDAY_LABELS[i]}: use a time from 00:00 to 23:59.`);
+        return;
+      }
+      slots.push({ weekday: i, timeLocal, locationText, locationId: place.locationId });
+    }
   }
 
   if (slots.length === 0) {
@@ -908,18 +1115,34 @@ coachRouter.post('/app/session-types/:id/generate-week', requireAuth, async (req
     return;
   }
 
-  // A weekday and time the type already has stays as it is, so a new place
-  // for it would not be saved: say so instead of adding the rest.
-  const elsewhere = slots.flatMap((slot) => {
+  type SlotRow = (typeof current)[number];
+  const placeClash: SlotRow[] = [];
+  const alreadyHave: SlotRow[] = [];
+  for (const slot of slots) {
     const have = current.find((c) => c.weekday === slot.weekday && c.time_local === slot.timeLocal);
-    return have && locationText && (have.location_text ?? '') !== locationText ? [have] : [];
-  });
-  if (elsewhere.length > 0) {
-    const which = elsewhere
+    if (!have) continue;
+    const newPlace = locationText ?? '';
+    const oldPlace = have.location_text ?? '';
+    if (locationText && oldPlace !== newPlace) {
+      placeClash.push(have);
+    } else {
+      alreadyHave.push(have);
+    }
+  }
+  if (placeClash.length > 0) {
+    const which = placeClash
       .map((c) => `${WEEKDAY_LABELS[c.weekday]} ${formatClock(c.time_local)}${c.location_text ? ` (at ${c.location_text})` : ''}`)
       .join(', ');
-    const are = elsewhere.length === 1 ? 'is already a weekly time and keeps its place' : 'are already weekly times and keep their places';
+    const are = placeClash.length === 1 ? 'is already a weekly time and keeps its place' : 'are already weekly times and keep their places';
     refuse(`${which} ${are}, so nothing was added.`);
+    return;
+  }
+  if (alreadyHave.length > 0) {
+    const which = alreadyHave
+      .map((c) => weekdayTimeLabel(c.weekday, c.time_local, c.location_text))
+      .join(', ');
+    const are = alreadyHave.length === 1 ? 'is already a weekly time' : 'are already weekly times';
+    refuse(`${which} ${are}. Nothing was added.`);
     return;
   }
 
@@ -928,6 +1151,41 @@ coachRouter.post('/app/session-types/:id/generate-week', requireAuth, async (req
   if (coach) await notePublished(db, coach);
   // A new place the type had no room to save is explained on this screen.
   res.redirect(303, keptOwnPlace(saved) ? `/app/session-types/${typeId}/generate-week` : '/app/schedule');
+});
+
+coachRouter.get('/app/session-types/:id/slots/:slotId/remove', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const typeId = Number(req.params.id);
+  const slotId = Number(req.params.slotId);
+  const slotRows = await db.query<{ weekday: number; time_local: string; location_text: string | null; name: string }>(
+    `select ws.weekday, ws.time_local, ws.location_text, st.name
+     from weekly_slot ws
+     join session_type st on st.id = ws.session_type_id
+     where ws.id = $1 and ws.session_type_id = $2 and st.coach_id = $3 and ws.active`,
+    [slotId, typeId, coachId],
+  );
+  if (slotRows.rows.length === 0) {
+    res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
+    return;
+  }
+  const slot = slotRows.rows[0];
+  const label = weekdayTimeLabel(slot.weekday, slot.time_local, slot.location_text);
+  res.status(200).send(
+    page(
+      'Remove weekly time',
+      html`${coachNav('types')}
+        <h1>Remove weekly time?</h1>
+        <p>Remove <strong>${label}</strong> from ${slot.name}?</p>
+        <p class="muted">Future sessions with nobody booked will be cancelled. Sessions that already have bookings stay on your schedule — cancel them from the schedule when you are ready.</p>
+        <form method="post" action="/app/session-types/${typeId}/slots/${slotId}/remove">
+          <div class="btn-row">
+            <button type="submit" class="danger">Remove weekly time</button>
+            <a class="action ghost" href="/app/session-types/${typeId}/generate-week">Keep it</a>
+          </div>
+        </form>`,
+    ),
+  );
 });
 
 coachRouter.post('/app/session-types/:id/slots/:slotId/remove', requireAuth, async (req, res) => {
@@ -940,6 +1198,56 @@ coachRouter.post('/app/session-types/:id/slots/:slotId/remove', requireAuth, asy
     return;
   }
   res.redirect(303, `/app/session-types/${typeId}/generate-week${kept > 0 ? `?kept=${kept}` : ''}`);
+});
+
+coachRouter.get('/app/session-types/:id/delete', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const typeId = Number(req.params.id);
+  const typeRows = await db.query<{ name: string }>(
+    'select name from session_type where id = $1 and coach_id = $2 and active',
+    [typeId, coachId],
+  );
+  if (typeRows.rows.length === 0) {
+    res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
+    return;
+  }
+  const booked = await futureBookedSessionsForType(db, coachId, typeId);
+  const name = typeRows.rows[0].name;
+  res.status(200).send(
+    page(
+      'Delete session type',
+      html`${coachNav('types')}
+        <h1>Delete session type?</h1>
+        <p>Delete <strong>${name}</strong>?</p>
+        ${booked > 0
+          ? html`<p class="error">${booked} upcoming ${booked === 1 ? 'session has' : 'sessions have'} bookings. Cancel those sessions first, then you can delete this type.</p>
+              <a class="action" href="/app/session-types">Back</a>`
+          : html`<p class="muted">Weekly times stop. Empty future sessions are cancelled. Booked sessions are not on this type once weekly times are removed — there are no upcoming bookings on it.</p>
+              <form method="post" action="/app/session-types/${typeId}/delete">
+                <div class="btn-row">
+                  <button type="submit" class="danger">Delete session type</button>
+                  <a class="action ghost" href="/app/session-types">Keep it</a>
+                </div>
+              </form>`}`,
+    ),
+  );
+});
+
+coachRouter.post('/app/session-types/:id/delete', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const typeId = Number(req.params.id);
+  const result = await deactivateSessionType(db, coachId, typeId, new Date());
+  if (result === 'not-found') {
+    res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
+    return;
+  }
+  if (result === 'has-bookings') {
+    res.redirect(303, `/app/session-types/${typeId}/delete`);
+    return;
+  }
+  res.redirect(303, '/app/session-types');
 });
 
 // Saved locations: the list on the edit form above, the weekly times'

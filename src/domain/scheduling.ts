@@ -1,5 +1,6 @@
 import type { DbClient } from '../db/client.js';
 import { resolveTypedPlace } from './locations.js';
+import { takesSpotSql } from './pricing.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const offsetFormats = new Map<string, Intl.DateTimeFormat>();
@@ -311,4 +312,44 @@ export async function deactivateSlot(db: DbClient, coachId: number, slotId: numb
     [slotId, now.toISOString()],
   );
   return Number(kept.rows[0]?.n ?? '0');
+}
+
+/** Upcoming sessions of this type that still have a booked or pending spot. */
+export async function futureBookedSessionsForType(
+  db: DbClient,
+  coachId: number,
+  typeId: number,
+): Promise<number> {
+  const result = await db.query<{ n: string }>(
+    `select count(distinct s.id)::text as n
+     from session s
+     join session_type st on st.id = s.session_type_id
+     join booking b on b.session_id = s.id and ${takesSpotSql('b')}
+     where st.id = $1 and st.coach_id = $2 and s.status = 'scheduled' and s.starts_at_utc > now()`,
+    [typeId, coachId],
+  );
+  return Number(result.rows[0]?.n ?? '0');
+}
+
+/** Hides a session type. Weekly slots are deactivated like a remove; empty future
+ * sessions are cancelled. Blocked when any upcoming session still has bookings. */
+export async function deactivateSessionType(
+  db: DbClient,
+  coachId: number,
+  typeId: number,
+  now: Date,
+): Promise<'ok' | 'not-found' | 'has-bookings'> {
+  const owned = await db.query<{ id: number }>(
+    'select id from session_type where id = $1 and coach_id = $2 and active = true',
+    [typeId, coachId],
+  );
+  if (owned.rows.length === 0) return 'not-found';
+  if ((await futureBookedSessionsForType(db, coachId, typeId)) > 0) return 'has-bookings';
+
+  const slots = await listWeeklySlots(db, typeId);
+  for (const slot of slots) {
+    await deactivateSlot(db, coachId, slot.id, now);
+  }
+  await db.query('update session_type set active = false where id = $1 and coach_id = $2', [typeId, coachId]);
+  return 'ok';
 }
