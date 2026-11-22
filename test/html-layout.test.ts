@@ -8,7 +8,7 @@ test('POSTCARD_TOKENS_CSS includes responsive layout and touch targets', () => {
   assert.match(POSTCARD_TOKENS_CSS, /min-height:\s*var\(--touch-min\)/);
   assert.match(POSTCARD_TOKENS_CSS, /@media \(min-width: 768px\)/);
   assert.match(POSTCARD_TOKENS_CSS, /@media \(min-width: 1024px\)/);
-  assert.match(POSTCARD_TOKENS_CSS, /\.schedule-ask/);
+  assert.match(POSTCARD_TOKENS_CSS, /\.schedule-edit/);
   assert.match(POSTCARD_TOKENS_CSS, /\.sms-consent/);
   assert.match(POSTCARD_TOKENS_CSS, /\.sms-consent input\[type="checkbox"\]/);
   assert.match(POSTCARD_TOKENS_CSS, /\.sms-consent a \{ color: var\(--teal\)/);
