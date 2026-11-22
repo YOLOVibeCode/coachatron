@@ -20,7 +20,6 @@ import {
 import { runTick } from '../src/jobs/tick.js';
 import { resetComplete, setComplete } from '../src/llm/complete.js';
 import type { DbClient } from '../src/db/client.js';
-import { postNewSessionType } from './helpers/sessionTypes.js';
 
 /** A coach who only texts gets, by text, their page and a way to take
  * payments; the payments link signs them in once; reminders stop once
@@ -60,21 +59,9 @@ async function textingCoach(db: DbClient, opts: { consent?: boolean } = {}): Pro
 
 /** Session type, then weekly times: the by-hand way to publish. */
 async function publishByHand(base: string, db: DbClient, cookie: string, time = '18:00'): Promise<void> {
-  const existing = await db.query<{ id: number }>('select id from session_type where active order by id desc limit 1');
-  let typeId: number;
-  if (existing.rows.length === 0) {
-    const create = await postNewSessionType(base, cookie, {
-      name: 'Group training',
-      duration_min: '60',
-      capacity: '8',
-      price_dollars: '35',
-    });
-    assert.equal(create.status, 303);
-    typeId = (await db.query<{ id: number }>('select id from session_type order by id desc limit 1')).rows[0].id;
-  } else {
-    typeId = existing.rows[0].id;
-  }
-  const res = await form(base, `/app/session-types/${typeId}/generate-week`, { day_2: '1', time_2: time }, cookie);
+  await form(base, '/app/session-types', { name: 'Group training', duration_min: '60', capacity: '8', price_dollars: '35' }, cookie);
+  const type = await db.query<{ id: number }>('select id from session_type order by id desc limit 1');
+  const res = await form(base, `/app/session-types/${type.rows[0].id}/generate-week`, { day_2: '1', time_2: time }, cookie);
   assert.equal(res.status, 303);
 }
 

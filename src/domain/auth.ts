@@ -286,6 +286,19 @@ export async function setCoachPhone(db: DbClient, coachId: number, phone: string
   return 'ok';
 }
 
+/** Sets a coach's email and marks it proved. 'taken' when another coach holds it. */
+export async function setCoachEmailVerified(db: DbClient, coachId: number, email: string): Promise<'ok' | 'taken'> {
+  const norm = normalizeEmail(email);
+  if (!norm) return 'taken';
+  const holder = await findCoachHoldingEmail(db, norm);
+  if (holder && holder.id !== coachId) return 'taken';
+  await db.query(
+    `update coach set email = $1, email_verified_at = now() where id = $2 and (email = '' or lower(email) = lower($1))`,
+    [norm, coachId],
+  );
+  return 'ok';
+}
+
 export async function findCoachByHandle(db: DbClient, handle: string): Promise<CoachRow | null> {
   const result = await db.query<CoachRow>(`select ${COACH_COLUMNS} from coach where handle = $1`, [handle]);
   return result.rows[0] ?? null;

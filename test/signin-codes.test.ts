@@ -11,6 +11,7 @@ import { sendEmailMessage, sendText } from '../src/domain/outbound.js';
 import { grantSmsConsent, hasActiveConsent, revokeConsent } from '../src/domain/sms-consent.js';
 import { purgeRequestLimits, SIGNIN_CODE_LIMITS, takeRequest } from '../src/domain/requestLimits.js';
 import { setDb, type DbClient } from '../src/db/client.js';
+import { finishNewCoachProfile, postVerify, signUpNewCoach } from './helpers/signin.js';
 
 function post(base: string, path: string, body: Record<string, string>, headers: Record<string, string> = {}): Promise<Response> {
   return fetch(`${base}${path}`, {
@@ -69,20 +70,20 @@ test('a code stops working after five wrong tries', async () => {
       await post(base, '/signin/otp', { contact: 'pat@example.com' });
       const code = emailedCode(relay.emails[0].subject);
       for (let i = 1; i <= 4; i += 1) {
-        const res = await post(base, '/signin/verify', { to: 'pat@example.com', code: wrong(code, i), name: 'Pat' });
+        const res = await post(base, '/signin/verify', { to: 'pat@example.com', code: wrong(code, i) });
         assert.equal(res.status, 401);
         assert.match(await res.text(), /Invalid or expired code/);
       }
-      const fifth = await post(base, '/signin/verify', { to: 'pat@example.com', code: wrong(code, 5), name: 'Pat' });
+      const fifth = await post(base, '/signin/verify', { to: 'pat@example.com', code: wrong(code, 5) });
       assert.equal(fifth.status, 401);
       assert.match(await fifth.text(), /too many wrong tries/);
-      const right = await post(base, '/signin/verify', { to: 'pat@example.com', code, name: 'Pat' });
+      const right = await post(base, '/signin/verify', { to: 'pat@example.com', code });
       assert.equal(right.status, 401, 'the right code no longer works');
       assert.equal(right.headers.getSetCookie().length, 0);
 
       await post(base, '/signin/otp', { contact: 'pat@example.com' });
       const fresh = emailedCode(relay.emails[1].subject);
-      assert.equal((await post(base, '/signin/verify', { to: 'pat@example.com', code: fresh, name: 'Pat' })).status, 303, 'a new code works');
+      assert.equal((await signUpNewCoach(base, 'pat@example.com', fresh, 'Pat')).status, 303, 'a new code works');
     });
   });
 });
@@ -94,10 +95,13 @@ test('four wrong tries leave the right code working, and the right code without 
       await post(base, '/signin/otp', { contact: 'pat@example.com' });
       const code = emailedCode(relay.emails[0].subject);
       for (let i = 1; i <= 4; i += 1) await post(base, '/signin/verify', { to: 'pat@example.com', code: wrong(code, i) });
-      for (let i = 0; i < 3; i += 1) {
-        assert.equal((await post(base, '/signin/verify', { to: 'pat@example.com', code })).status, 422, 'asks for a name');
-      }
-      assert.equal((await post(base, '/signin/verify', { to: 'pat@example.com', code, name: 'Pat' })).status, 303);
+      const profileStep = await postVerify(base, 'pat@example.com', code);
+      assert.equal(profileStep.status, 303);
+      assert.match(profileStep.headers.get('location') ?? '', /\/signin\/profile/);
+      assert.equal((await post(base, '/signin/verify', { to: 'pat@example.com', code })).status, 401, 'the code is used after verify');
+      await post(base, '/signin/otp', { contact: 'pat@example.com' });
+      const fresh = emailedCode(relay.emails[1].subject);
+      assert.equal((await signUpNewCoach(base, 'pat@example.com', fresh, 'Pat')).status, 303);
     });
   });
 });
@@ -111,8 +115,8 @@ test('asking for a new code ends the one before it', async () => {
       const [first, second] = relay.sms.map((m) => textedCode(m.body));
       assert.notEqual(first, second);
       assert.equal(await count(db, "otp_code where phone = '+15550101010' and consumed_at is null and expires_at > now()"), 1);
-      assert.equal((await post(base, '/signin/verify', { to: '+15550101010', code: first, name: 'Pat' })).status, 401);
-      assert.equal((await post(base, '/signin/verify', { to: '+15550101010', code: second, name: 'Pat' })).status, 303);
+      assert.equal((await post(base, '/signin/verify', { to: '+15550101010', code: first })).status, 401);
+      assert.equal((await signUpNewCoach(base, '+15550101010', second, 'Pat', { sms_consent: '1' })).status, 303);
     });
   });
 });
@@ -157,7 +161,7 @@ test('code checks pause after too many for one email or number, even with the ri
       }
       await post(base, '/signin/otp', { contact: 'sam@example.com' });
       const code = emailedCode(relay.emails[1].subject);
-      const paused = await post(base, '/signin/verify', { to: 'sam@example.com', code, name: 'Sam' }, from('198.51.100.200'));
+      const paused = await postVerify(base, 'sam@example.com', code, '', from('198.51.100.200'));
       assert.equal(paused.status, 429);
       assert.match(await paused.text(), /Too many tries\. Try again in an hour\./);
       assert.equal((await post(base, '/signin/verify', { to: 'other@example.com', code: '000000' })).status, 401, 'another email is not paused');
@@ -175,7 +179,7 @@ test('checks for an email with no code out do not hold back the next code asked 
       assert.equal(await count(db, "request_limit where key = 'email:sam@example.com'"), 0, 'nothing counted for the email');
       await post(base, '/signin/otp', { contact: 'sam@example.com' });
       const code = emailedCode(relay.emails[0].subject);
-      assert.equal((await post(base, '/signin/verify', { to: 'sam@example.com', code, name: 'Sam' }, from('198.51.100.200'))).status, 303);
+      assert.equal((await postVerify(base, 'sam@example.com', code, '', from('198.51.100.200'))).status, 303);
     });
   });
 });
@@ -212,14 +216,20 @@ test('the same right code sent several times at once signs up only once', async 
       const code = emailedCode(relay.emails[0].subject);
       setDb(holdAcceptedCodes(db, 3));
       const answers = await Promise.all(
-        Array.from({ length: 3 }, () => post(base, '/signin/verify', { to: 'pat@example.com', code, name: 'Pat' })),
+        Array.from({ length: 3 }, () => post(base, '/signin/verify', { to: 'pat@example.com', code })),
       );
       setDb(db);
       assert.deepEqual(answers.map((res) => res.status).sort(), [303, 401, 401]);
       for (const res of answers.filter((r) => r.status === 401)) {
         assert.match(await res.text(), /Invalid or expired code/);
-        assert.equal(res.headers.getSetCookie().length, 0);
+        assert.equal(res.headers.getSetCookie()?.find((c) => c.startsWith('cx_session=')), undefined);
       }
+      const ok = answers.find((r) => r.status === 303)!;
+      const done = await finishNewCoachProfile(base, ok, {
+        name: 'Pat',
+        tz: 'America/Chicago',
+      });
+      assert.equal(done.status, 303);
     });
     assert.equal(await count(db, 'coach'), 1);
     assert.equal(await count(db, 'coach_session'), 1);
@@ -334,7 +344,7 @@ test('a request the daily limit refuses stores no code', async () => {
       assert.equal(await count(db, "otp_code where email = 'cap@example.com'"), 5, 'one stored code per email sent');
       assert.equal(await count(db, "otp_code where email = 'cap@example.com' and consumed_at is null and expires_at > now()"), 1);
       const last = emailedCode(relay.emails[4].subject);
-      assert.equal((await post(base, '/signin/verify', { to: 'cap@example.com', code: last, name: 'Cap' })).status, 303);
+      assert.equal((await signUpNewCoach(base, 'cap@example.com', last, 'Cap')).status, 303);
     });
   });
 });
@@ -419,7 +429,7 @@ test('a STOP texted after asking for a code stays in place when the code is ente
       await post(base, '/signin/otp', { contact: '5551212121', sms_consent: '1' });
       const code = textedCode(relay.sms[0].body);
       assert.equal((await postSignedSms(base, { From: '+15551212121', Body: 'STOP' })).status, 200);
-      const joined = await post(base, '/signin/verify', { to: '+15551212121', code, name: 'Pat' });
+      const joined = await signUpNewCoach(base, '+15551212121', code, 'Pat', { sms_consent: '1' });
       assert.equal(joined.status, 303, 'signing in still works');
     });
     assert.equal(await isOptedOut(db, '+15551212121'), true);

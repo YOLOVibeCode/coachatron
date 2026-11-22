@@ -141,87 +141,6 @@ export const POSTCARD_TOKENS_CSS = `
   .schedule-edit form { margin: 0; }
   .schedule-edit label { margin-top: 0; }
   .schedule-edit button { margin-top: 10px; }
-  .session-type-create, .session-type-edit { margin-top: 12px; }
-  .session-type-toggle {
-    list-style: none;
-    cursor: pointer;
-    display: block;
-    width: 100%;
-    text-align: center;
-    background: transparent;
-    color: var(--teal);
-    border: 1px solid var(--teal);
-    border-radius: 14px;
-    padding: 12px 16px;
-    font-family: ui-sans-serif, system-ui, sans-serif;
-    font-size: 1rem;
-    font-weight: 600;
-    margin: 8px 0 0;
-    min-height: var(--touch-min);
-  }
-  .session-type-toggle::-webkit-details-marker { display: none; }
-  .session-type-create[open] .session-type-toggle,
-  .session-type-edit[open] .session-type-toggle { margin-bottom: 10px; }
-  .session-type-form .btn-row button { margin-top: 10px; }
-  .session-type-optional { margin-top: 8px; }
-  .session-type-optional summary { cursor: pointer; color: var(--screen-muted); font-size: 0.9rem; }
-  .fine { font-size: 0.85rem; color: var(--screen-muted); margin: 6px 0 0; font-family: ui-sans-serif, system-ui, sans-serif; }
-  .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
-  .session-type-banner { margin-bottom: 12px; }
-  .session-type-banner .action { margin-top: 8px; }
-  .weekly-chip-list { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
-  .weekly-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    background: var(--card);
-    border: 1px solid var(--line);
-    border-radius: 999px;
-    padding: 6px 10px 6px 12px;
-    font-family: ui-sans-serif, system-ui, sans-serif;
-    font-size: 0.9rem;
-  }
-  .chip-remove {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: var(--touch-min);
-    min-height: var(--touch-min);
-    margin: -6px -8px -6px 0;
-    padding: 0 10px;
-    color: var(--teal);
-    text-decoration: none;
-    font-size: 1.25rem;
-    line-height: 1;
-  }
-  .weekly-add-form { margin-top: 8px; }
-  .weekly-day-row {
-    border: 1px solid var(--line);
-    border-radius: 12px;
-    padding: 10px 12px;
-    margin-bottom: 8px;
-  }
-  .weekly-day-label {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin: 0;
-    font-size: 1rem;
-    color: inherit;
-  }
-  .weekly-day-check {
-    width: auto;
-    min-width: var(--touch-min);
-    min-height: var(--touch-min);
-    flex-shrink: 0;
-    margin: 0;
-  }
-  .weekly-day-label span { font-weight: 600; }
-  .weekly-times { margin-top: 8px; }
-  .weekly-time-row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
-  .weekly-time-row input[type="time"] { flex: 1; }
-  .weekly-remove-time, .weekly-add-time { width: auto; margin-top: 0; flex-shrink: 0; font-size: 0.9rem; padding: 8px 12px; min-height: var(--touch-min); }
-  .weekly-add-form > button[type="submit"] { margin-top: 12px; }
   .setup-warnings { margin: 8px 0 0; padding-left: 1.2rem; font-family: ui-sans-serif, system-ui, sans-serif; font-size: 0.9rem; }
   .setup-field-error { margin-top: 8px; margin-bottom: 0; }
   .action.disabled, button:disabled.ghost { opacity: 0.45; pointer-events: none; cursor: default; }
@@ -332,8 +251,66 @@ export const POSTCARD_TOKENS_CSS = `
   }
   .error { color: var(--alert); font-family: ui-sans-serif, system-ui, sans-serif; font-size: 0.9rem; margin-top: 8px; }
   .ask-reply p { margin: 0 0 8px; font-family: ui-sans-serif, system-ui, sans-serif; }
-  .btn-row { display: flex; gap: 8px; }
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: stretch; }
   .btn-row button, .btn-row .action { margin-top: 8px; flex: 1; }
+  .btn-row details.type-edit { flex: 1; min-width: 0; }
+  .btn-row details.type-edit summary { margin-top: 8px; }
+  details.type-create > summary,
+  details.type-edit > summary.action {
+    list-style: none;
+    cursor: pointer;
+  }
+  details.type-create > summary::-webkit-details-marker,
+  details.type-edit > summary::-webkit-details-marker { display: none; }
+  details.type-create { margin-top: 12px; }
+  details.type-create > summary {
+    display: block;
+    width: 100%;
+    text-align: center;
+    background: transparent;
+    color: var(--teal);
+    border: 1px solid var(--teal);
+    border-radius: 14px;
+    padding: 12px 16px;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 1rem;
+    font-weight: 600;
+  }
+  details.type-create[open] > summary { margin-bottom: 8px; }
+  details.type-optional { margin: 12px 0; }
+  details.type-optional > summary {
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--screen-ink);
+    cursor: pointer;
+  }
+  .weekday-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 8px 0;
+  }
+  .weekday-row input[type="checkbox"] {
+    width: var(--touch-min);
+    min-width: var(--touch-min);
+    min-height: var(--touch-min);
+    flex-shrink: 0;
+    margin: 0;
+  }
+  .weekday-row .weekday-name {
+    flex: 0 0 2.6rem;
+    margin: 0;
+    font-weight: 600;
+    color: var(--screen-ink);
+    font-size: 0.95rem;
+  }
+  .weekday-row input[type="time"] {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+  }
+  .type-card-actions { margin-top: 10px; }
   .payments-banner { margin-bottom: 12px; }
   .payments-banner p { margin: 0 0 8px; }
   .payments-banner .action { margin-top: 8px; }
@@ -456,8 +433,76 @@ export function landingSmsDisclosure(): SafeHtml {
 /** Shown by a phone field that sends a code the person asks for. That one
  * text needs no box; the box is only for the texts that keep coming. */
 export function oneTimeCodeNote(): SafeHtml {
-  return html`<p class="muted sms-once">If you enter a mobile, we'll text a one-time code to it. Message and data rates may apply. Texts after that are optional: check the box below only if you want them.</p>`;
+  return html`<p class="muted sms-once">No password. We send a one-time code. Include a country code on phone numbers (for example +1). We text codes only to US and Canadian mobile numbers.</p>`;
 }
+
+const SIGNIN_PAGE_CSS = `
+  .signin-top { margin: 0 0 16px; font-size: 0.95rem; }
+  .signin-top a, .signin-home-bottom a { color: var(--teal); }
+  .signin-home-bottom { margin-top: 20px; font-size: 0.95rem; text-align: center; }
+  .signin-back { margin-top: 16px; }
+  .signin-actions { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; align-items: stretch; }
+  .signin-actions form { margin: 0; }
+  .signin-actions .ghost { display: block; text-align: center; }
+  #contact-hint { min-height: 1.4em; }
+`;
+
+export type SignInChromeOptions = { backHref?: string };
+
+/** Coach sign-in substeps: home links in the header and below the card. */
+export function signInPage(title: string, main: SafeHtml, chrome: SignInChromeOptions = {}): string {
+  const back = chrome.backHref;
+  const body = html`<header class="signin-top">
+      <a href="/">Back to home</a>
+    </header>
+    <div class="signin-card">${main}</div>
+    ${back ? html`<p class="signin-back"><a class="action ghost" href="${back}">Back</a></p>` : raw('')}
+    <p class="signin-home-bottom"><a href="/">Back to home</a></p>`;
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+${FAVICON_LINK}
+<title>${escapeHtml(title)} — Coachatron</title>
+<style>${POSTCARD_TOKENS_CSS}
+  ${SIGNIN_PAGE_CSS}
+  .site-footer { margin-top: 24px; font-size: 0.9rem; }
+  .site-footer a { color: var(--teal); }
+  .sms-consent { display: block; margin: 12px 0; font-size: 0.95rem; color: var(--screen-muted); }
+  .sms-consent input { margin-right: 8px; }
+  .sms-once { font-size: 0.95rem; }
+  .operator { font-size: 0.9rem; color: var(--screen-muted); }
+</style>
+</head>
+<body>
+<div class="phone"><div class="screen">${body.value}${siteFooter().value}</div></div>
+</body>
+</html>`;
+}
+
+export const CONTACT_HINT_SCRIPT = raw(`<script>
+(function(){
+  var input=document.getElementById('contact');
+  var hint=document.getElementById('contact-hint');
+  if(!input||!hint)return;
+  function up(){
+    var v=input.value.trim();
+    if(!v){hint.textContent='';return;}
+    if(v.indexOf('@')!==-1){
+      hint.textContent='We will email a code to this address.';
+      return;
+    }
+    if(/^[\\d\\s()+.-]+$/.test(v)&&/[\\d]/.test(v)){
+      hint.textContent='We will text a code to this phone number (US or Canada +1 only).';
+      return;
+    }
+    hint.textContent='Enter an email address or a phone number with country code.';
+  }
+  input.addEventListener('input',up);
+  up();
+})();
+</script>`);
 
 /** Who runs Coachatron, in the footer and at the top of the legal pages, so
  * a reviewer can tie the site to the business behind it. */
@@ -465,9 +510,15 @@ export function operatorLine(): SafeHtml {
   return html`<p class="operator">Coachatron is operated by Noctusoft, Inc. (<a href="https://noctusoft.com">https://noctusoft.com</a>)</p>`;
 }
 
-export function siteFooter(): SafeHtml {
+export function siteFooter(coachMessage?: { handle: string; name: string }): SafeHtml {
+  const message =
+    coachMessage === undefined
+      ? raw('')
+      : html`<a href="/c/${coachMessage.handle}/message">Message ${coachMessage.name}</a>
+    <span aria-hidden="true"> · </span>`;
   return html`<footer class="site-footer">
     ${operatorLine()}
+    ${message}
     <a href="/privacy">Privacy</a>
     <span aria-hidden="true"> · </span>
     <a href="/terms">Terms</a>
@@ -487,6 +538,8 @@ export interface PageHead {
    * is not indexed as a page of its own. Never set on a coach's screen or
    * on a page a private link opens. */
   canonicalPath?: string;
+  /** Adds a Message link in the footer on a coach's public pages. */
+  coachMessage?: { handle: string; name: string };
 }
 
 /** The <link rel="canonical"> line, or nothing when the page names no path
@@ -509,10 +562,16 @@ ${FAVICON_LINK}${canonicalLink(head)}
   .site-footer a { color: var(--teal); }
   .sms-once { font-size: 0.95rem; }
   .operator { font-size: 0.9rem; color: var(--screen-muted); }
+  .public-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 8px; }
+  .public-top h1 { margin: 0; flex: 1; }
+  .public-top .my-bookings { flex-shrink: 0; font-size: 0.95rem; font-weight: 600; color: var(--teal); text-decoration: none; padding-top: 4px; }
+  .booking-closed-banner { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-bottom: 14px; }
+  .pack-card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; margin-bottom: 10px; }
+  .pack-card .save { color: var(--teal); font-weight: 600; }
 </style>
 </head>
 <body>
-<div class="phone"><div class="screen">${body.value}${siteFooter().value}</div></div>
+<div class="phone"><div class="screen">${body.value}${siteFooter(head.coachMessage).value}</div></div>
 </body>
 </html>`;
 }

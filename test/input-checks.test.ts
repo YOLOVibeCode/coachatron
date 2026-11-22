@@ -6,7 +6,6 @@ import { withRelay } from './helpers/relay.js';
 import { seedBookedSession, seedCoachWithSession, seedRosterMember } from './helpers/fixtures.js';
 import { createCoachSession } from '../src/domain/auth.js';
 import { dollarsToCents, LIMITS, rowId, wholeNumber } from '../src/lib/input.js';
-import { loadSessionTypeCreate, postNewSessionType } from './helpers/sessionTypes.js';
 
 /** What the coach's forms and the app's URLs accept: plain numbers in a
  * sensible range, and row ids. Anything else is a 4xx with a message. */
@@ -48,21 +47,11 @@ test('numbers past what the forms accept get the form message, and ordinary ones
     const member = await seedRosterMember(db, seed.coach.id, 'Backup', 1);
     const cookie = `cx_session=${await createCoachSession(db, seed.coach.id)}`;
     await withServer(async (base) => {
-      const createRefused = [
-        { ...goodType, price_dollars: '1e9' },
-        { ...goodType, capacity: '999999999999' },
-        { ...goodType, duration_min: '999999999999' },
-        { ...goodType, backup_pay_dollars: '-5' },
-      ];
-      for (const body of createRefused) {
-        const { bodyToken, cookie: withCreate } = await loadSessionTypeCreate(base, cookie);
-        const res = await fetch(
-          `${base}/app/session-types`,
-          form({ ...body, create_token: bodyToken }, withCreate),
-        );
-        assert.equal(res.status, 422, `/app/session-types ${JSON.stringify(body)} answered ${res.status}`);
-      }
       const refused: Array<[string, Record<string, string>]> = [
+        ['/app/session-types', { ...goodType, price_dollars: '1e9' }],
+        ['/app/session-types', { ...goodType, capacity: '999999999999' }],
+        ['/app/session-types', { ...goodType, duration_min: '999999999999' }],
+        ['/app/session-types', { ...goodType, backup_pay_dollars: '-5' }],
         [`/app/session-types/${seed.sessionTypeId}/edit`, { ...goodType, price_dollars: '1e9' }],
         ['/app/pricing/package', { name: 'Pack', credits: '999999999999', price_dollars: '10' }],
         ['/app/pricing/package', { name: 'Pack', credits: '10', price_dollars: '1e9' }],
@@ -76,24 +65,16 @@ test('numbers past what the forms accept get the form message, and ordinary ones
         const res = await fetch(`${base}${path}`, form(body, cookie));
         assert.equal(res.status, 422, `${path} ${JSON.stringify(body)} answered ${res.status}`);
       }
-      const { bodyToken, cookie: withCreate } = await loadSessionTypeCreate(base, cookie);
-      const message = await (
-        await fetch(`${base}/app/session-types`, form({ ...goodType, capacity: '0', create_token: bodyToken }, withCreate))
-      ).text();
+      const message = await (await fetch(`${base}/app/session-types`, form({ ...goodType, capacity: '0' }, cookie))).text();
       assert.match(message, /1–1000 spots/);
 
       const saved: Array<[string, Record<string, string>]> = [
-        [`__create__`, { ...goodType, capacity: '99', price_dollars: '19.99' }],
+        ['/app/session-types', { ...goodType, capacity: '99', price_dollars: '19.99' }],
         ['/app/pricing/package', { name: 'Pack', credits: '10', price_dollars: '100', expires_days: '60' }],
         ['/app/pricing/plan', { name: 'Four', price_dollars: '120', credits_per_month: '4' }],
         [`/app/roster/${member.id}/priority`, { priority: '3' }],
       ];
       for (const [path, body] of saved) {
-        if (path.startsWith('__create__')) {
-          const res = await postNewSessionType(base, cookie, body);
-          assert.equal(res.status, 303, `/app/session-types ${JSON.stringify(body)} answered ${res.status}`);
-          continue;
-        }
         const res = await fetch(`${base}${path}`, form(body, cookie));
         assert.equal(res.status, 303, `${path} ${JSON.stringify(body)} answered ${res.status}`);
       }
@@ -138,11 +119,7 @@ test('an id that is not a row id is a 404, and a NUL character in a request is a
         const res = await fetch(`${base}${path}`, { redirect: 'manual' });
         assert.equal(res.status, 400, `GET ${path} answered ${res.status}`);
       }
-      const { bodyToken, cookie: withCreate } = await loadSessionTypeCreate(base, cookie);
-      const nulName = await fetch(
-        `${base}/app/session-types`,
-        form({ ...goodType, name: 'Group\u0000', create_token: bodyToken }, withCreate),
-      );
+      const nulName = await fetch(`${base}/app/session-types`, form({ ...goodType, name: 'Group\u0000' }, cookie));
       assert.equal(nulName.status, 400);
       // The pages themselves still answer.
       assert.equal((await fetch(`${base}/app/sessions/${seed.sessionId}`, { headers: { cookie } })).status, 200);
@@ -161,7 +138,7 @@ test('a capacity below what a session already has booked is refused, and the typ
       const path = `/app/session-types/${seed.sessionTypeId}/edit`;
       const low = await fetch(`${base}${path}`, form({ ...goodType, capacity: '4', price_dollars: '40' }, cookie));
       assert.equal(low.status, 422);
-      assert.match(await low.text(), /already has 6 booked\. Set the capacity to at least 6/);
+      assert.match(await low.text(), /already has 6 booked\. Set spots to at least 6/);
       const row = await db.query<{ capacity: number; price_cents: number }>('select capacity, price_cents from session_type where id = $1', [
         seed.sessionTypeId,
       ]);
