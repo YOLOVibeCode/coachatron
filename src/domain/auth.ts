@@ -205,10 +205,11 @@ export interface CoachRow {
   phone: string | null;
   tz: string;
   connect_recipient_key: string | null;
+  texts_consent_prompt_dismissed_at: string | null;
 }
 
 const COACH_COLUMNS =
-  'id, handle, name, email, email_verified_at is not null as email_verified, phone, tz, connect_recipient_key';
+  'id, handle, name, email, email_verified_at is not null as email_verified, phone, tz, connect_recipient_key, texts_consent_prompt_dismissed_at';
 
 export function getConnectRecipientKey(coach: Pick<CoachRow, 'handle' | 'connect_recipient_key'>): string {
   return coach.connect_recipient_key ?? coach.handle;
@@ -356,10 +357,15 @@ export async function createCoach(db: DbClient, input: NewCoachInput): Promise<C
     phone: input.phone,
     tz: input.tz,
     connect_recipient_key: handle,
+    texts_consent_prompt_dismissed_at: null,
   };
 }
 
 export async function findCoachById(db: DbClient, id: number): Promise<CoachRow | null> {
   const result = await db.query<CoachRow>(`select ${COACH_COLUMNS} from coach where id = $1`, [id]);
   return result.rows[0] ?? null;
+}
+
+export async function dismissTextsConsentPrompt(db: DbClient, coachId: number): Promise<void> {
+  await db.query('update coach set texts_consent_prompt_dismissed_at = now() where id = $1', [coachId]);
 }

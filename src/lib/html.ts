@@ -98,20 +98,52 @@ export const POSTCARD_TOKENS_CSS = `
     min-height: 0;
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
+    padding-bottom: 12px;
   }
-  /* Sticky ask block stays above the virtual keyboard on small screens. */
-  .schedule-ask {
+  .banner-warn {
+    background: color-mix(in srgb, var(--alert) 12%, var(--card));
+    border: 1px solid var(--alert);
+    border-radius: 12px;
+    padding: 10px 12px;
+    margin: 10px 0;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--screen-ink);
+  }
+  .schedule-edit {
     flex-shrink: 0;
     position: sticky;
     bottom: 0;
     margin: 12px -16px -20px;
-    padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px));
+    padding: 8px 16px calc(8px + env(safe-area-inset-bottom, 0px));
     background: var(--screen);
     border-top: 1px solid var(--line);
   }
-  .schedule-ask form { margin: 0; }
-  .schedule-ask label { margin-top: 0; }
-  .schedule-ask button { margin-top: 10px; }
+  .schedule-edit-toggle {
+    list-style: none;
+    cursor: pointer;
+    display: block;
+    width: 100%;
+    text-align: center;
+    background: transparent;
+    color: var(--teal);
+    border: 1px solid var(--teal);
+    border-radius: 14px;
+    padding: 12px 16px;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 0;
+  }
+  .schedule-edit-toggle::-webkit-details-marker { display: none; }
+  .schedule-edit[open] .schedule-edit-toggle { margin-bottom: 10px; }
+  .schedule-edit form { margin: 0; }
+  .schedule-edit label { margin-top: 0; }
+  .schedule-edit button { margin-top: 10px; }
+  .setup-warnings { margin: 8px 0 0; padding-left: 1.2rem; font-family: ui-sans-serif, system-ui, sans-serif; font-size: 0.9rem; }
+  .setup-field-error { margin-top: 8px; margin-bottom: 0; }
+  .action.disabled, button:disabled.ghost { opacity: 0.45; pointer-events: none; cursor: default; }
   h1 { font-size: 1.5rem; margin: 0 0 6px; }
   h2 { font-size: 1.1rem; margin: 18px 0 8px; font-weight: 600; }
   .muted, p.muted { color: var(--screen-muted); font-family: ui-sans-serif, system-ui, sans-serif; font-size: 0.95rem; }
@@ -219,8 +251,76 @@ export const POSTCARD_TOKENS_CSS = `
   }
   .error { color: var(--alert); font-family: ui-sans-serif, system-ui, sans-serif; font-size: 0.9rem; margin-top: 8px; }
   .ask-reply p { margin: 0 0 8px; font-family: ui-sans-serif, system-ui, sans-serif; }
-  .btn-row { display: flex; gap: 8px; }
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: stretch; }
   .btn-row button, .btn-row .action { margin-top: 8px; flex: 1; }
+  .btn-row details.type-edit { flex: 1; min-width: 0; }
+  .btn-row details.type-edit summary { margin-top: 8px; }
+  details.type-create > summary,
+  details.type-edit > summary.action {
+    list-style: none;
+    cursor: pointer;
+  }
+  details.type-create > summary::-webkit-details-marker,
+  details.type-edit > summary::-webkit-details-marker { display: none; }
+  details.type-create { margin-top: 12px; }
+  details.type-create > summary {
+    display: block;
+    width: 100%;
+    text-align: center;
+    background: transparent;
+    color: var(--teal);
+    border: 1px solid var(--teal);
+    border-radius: 14px;
+    padding: 12px 16px;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 1rem;
+    font-weight: 600;
+  }
+  details.type-create[open] > summary { margin-bottom: 8px; }
+  details.type-optional { margin: 12px 0; }
+  details.type-optional > summary {
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--screen-ink);
+    cursor: pointer;
+  }
+  .weekday-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 8px 0;
+  }
+  .weekday-row input[type="checkbox"] {
+    width: var(--touch-min);
+    min-width: var(--touch-min);
+    min-height: var(--touch-min);
+    flex-shrink: 0;
+    margin: 0;
+  }
+  .weekday-row .weekday-name {
+    flex: 0 0 2.6rem;
+    margin: 0;
+    font-weight: 600;
+    color: var(--screen-ink);
+    font-size: 0.95rem;
+  }
+  .weekday-row input[type="time"] {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+  }
+  .type-card-actions { margin-top: 10px; }
+  .payments-banner { margin-bottom: 12px; }
+  .payments-banner p { margin: 0 0 8px; }
+  .payments-banner .action { margin-top: 8px; }
+  .page-link-compact { margin-bottom: 10px; }
+  .page-link-share-note { margin-top: 6px; font-size: 0.85rem; }
+  button[disabled], .action[aria-disabled="true"] {
+    opacity: 0.55;
+    cursor: not-allowed;
+    pointer-events: none;
+  }
   .page-link label { margin-top: 0; }
   button.ghost { background: transparent; color: var(--teal); border: 1px solid var(--teal); }
   a.card { display: block; color: inherit; text-decoration: none; }
@@ -240,6 +340,25 @@ export const POSTCARD_TOKENS_CSS = `
   }
   .coach-nav a { color: var(--screen-muted); text-decoration: none; padding: 6px 0; }
   .coach-nav a[aria-current="page"] { color: var(--teal); font-weight: 600; }
+  .sms-consent {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    margin: 12px 0;
+    font-size: 0.95rem;
+    color: var(--screen-muted);
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    cursor: pointer;
+  }
+  .sms-consent input[type="checkbox"] {
+    width: auto;
+    min-width: var(--touch-min);
+    min-height: var(--touch-min);
+    flex-shrink: 0;
+    margin: 0;
+    accent-color: var(--teal);
+  }
+  .sms-consent a { color: var(--teal); }
   @media (min-width: 768px) {
     :root { --shell-max: min(640px, 100%); }
     body {
@@ -251,9 +370,9 @@ export const POSTCARD_TOKENS_CSS = `
       padding: 28px 24px;
       min-height: auto;
     }
-    .schedule-ask {
+    .schedule-edit {
       margin: 16px -24px -28px;
-      padding: 16px 24px;
+      padding: 12px 24px 16px;
       border-radius: 0 0 18px 18px;
     }
     .card { padding: 14px 16px; border-radius: 16px; }
@@ -261,9 +380,9 @@ export const POSTCARD_TOKENS_CSS = `
   @media (min-width: 1024px) {
     :root { --shell-max: min(720px, 100%); }
     .screen { padding: 32px 28px; }
-    .schedule-ask {
+    .schedule-edit {
       margin: 16px -28px -32px;
-      padding: 16px 28px;
+      padding: 12px 28px 16px;
     }
   }
 `;
@@ -294,6 +413,10 @@ export function smsConsentCheckbox(): SafeHtml {
     Text me booking confirmations, reminders, and session updates from Coachatron. Message frequency varies. Message and data rates may apply. Reply STOP to opt out, HELP for help. Consent is not a condition of purchase. See our <a href="/terms#sms">SMS Terms</a> and <a href="/privacy">Privacy Policy</a>.
   </label>`;
 }
+
+/** Enables submit on forms that require the consent box first (schedule “Turn on texts”). */
+export const SMS_CONSENT_GATED_SUBMIT_SCRIPT =
+  "document.querySelectorAll('form.sms-consent-gated').forEach(function(f){var c=f.querySelector('input[name=sms_consent]');var b=f.querySelector('button[type=submit]');if(!c||!b)return;function sync(){b.disabled=!c.checked;}sync();c.addEventListener('change',sync);});";
 
 /** Short disclosure beside the landing-page text option (approved program copy). */
 export function landingSmsDisclosure(): SafeHtml {
@@ -429,8 +552,6 @@ ${FAVICON_LINK}${canonicalLink(head)}
 <style>${POSTCARD_TOKENS_CSS}
   .site-footer { margin-top: 24px; font-size: 0.9rem; }
   .site-footer a { color: var(--teal); }
-  .sms-consent { display: block; margin: 12px 0; font-size: 0.95rem; color: var(--screen-muted); }
-  .sms-consent input { margin-right: 8px; }
   .sms-once { font-size: 0.95rem; }
   .operator { font-size: 0.9rem; color: var(--screen-muted); }
 </style>

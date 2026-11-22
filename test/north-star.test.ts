@@ -263,7 +263,7 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           assert.equal((await get(startPath)).status, 410, 'the start link works once');
 
           const preview = visible(await (await get('/app/schedule?setup=1', coachCookie)).text());
-          assert.match(preview, /Here's your week/);
+          assert.match(preview, /Edit schedule/);
           assert.match(preview, /Private 60 min · 1 athlete · \$60 Tue & Thu 6:00pm/, 'privates: Tuesday and Thursday at 6pm, $60');
           assert.match(preview, /Group 60 min · how many\? · \$25 Sat 9:00am/, 'the group: Saturday at 9am, $25');
           assert.match(preview, /How many athletes fit in Group\?/, 'the group size was not said, so the preview asks');
@@ -298,6 +298,7 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           assert.ok(link, `the schedule shows the coach's public link: ${live.slice(0, 300)}`);
           handle = link[1];
           assert.equal(handle, 'dana-rivera', 'the handle comes from the name');
+          assert.match(live, /Parents can't book yet/);
           assert.match(live, /Parents can't book until payments are set up\./);
 
           const texts = textsToCoach();
