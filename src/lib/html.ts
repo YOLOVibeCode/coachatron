@@ -287,7 +287,7 @@ export const POSTCARD_TOKENS_CSS = `
   }
   .weekday-row {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 8px;
     margin: 8px 0;
   }
@@ -304,11 +304,38 @@ export const POSTCARD_TOKENS_CSS = `
     font-weight: 600;
     color: var(--screen-ink);
     font-size: 0.95rem;
+    line-height: var(--touch-min);
+    cursor: pointer;
   }
   .weekday-row input[type="time"] {
     flex: 1;
     min-width: 0;
     margin: 0;
+  }
+  .weekday-times { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+  .weekday-row:not(:has(input[type="checkbox"]:checked)) .weekday-times { display: none; }
+  .weekday-time { display: flex; gap: 8px; }
+  .weekday-add, .weekday-remove { width: auto; margin: 0; padding: 8px 12px; font-size: 0.9rem; align-self: flex-start; }
+  .weekly-chips { list-style: none; display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; padding: 0; }
+  .weekly-chip {
+    display: inline-flex;
+    align-items: center;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding-left: 12px;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 0.9rem;
+  }
+  .weekly-chip a {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: var(--touch-min);
+    min-height: var(--touch-min);
+    color: var(--teal);
+    text-decoration: none;
+    font-size: 1.2rem;
   }
   .type-card-actions { margin-top: 10px; }
   .payments-banner { margin-bottom: 12px; }

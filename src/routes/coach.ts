@@ -1560,30 +1560,76 @@ function renderWeeklyTimes(
       ${kept > 0
         ? html`<p class="muted">${kept} upcoming ${kept === 1 ? 'session has' : 'sessions have'} bookings and stayed. Cancel ${kept === 1 ? 'it' : 'them'} from the schedule if you need to.</p>`
         : raw('')}
-      ${slots.map(
-        (slot) => html`<div class="card">
-          <div class="row">
-            <span>${WEEKDAY_LABELS[slot.weekday]} ${formatClock(slot.time_local)}${slot.location_text ? ` · ${slot.location_text}` : ''}</span>
-            <form method="post" action="/app/session-types/${type.id}/slots/${slot.id}/remove">
-              <button type="submit" class="ghost">Remove</button>
-            </form>
-          </div>
-        </div>`,
-      )}
+      ${slots.length > 0
+        ? html`<ul class="weekly-chips" aria-label="Current weekly times">
+            ${slots.map(
+              (slot) => html`<li class="weekly-chip">
+                <span>${slotLabel(slot)}${slot.location_text ? ` · ${slot.location_text}` : ''}</span>
+                <a href="/app/session-types/${type.id}/slots/${slot.id}/remove" aria-label="Remove ${slotLabel(slot)}">×</a>
+              </li>`,
+            )}
+          </ul>`
+        : raw('')}
       <form method="post" action="/app/session-types/${type.id}/generate-week">
+        <p class="muted">Tick each day you run it, then pick its start time.</p>
         ${WEEKDAY_LABELS.map(
           (label, i) =>
             html`<div class="weekday-row">
               <input type="checkbox" name="day_${i}" value="1" id="weekday-${type.id}-${i}" />
-              <span class="weekday-name">${label}</span>
-              <input type="time" name="time_${i}" aria-label="${label} start time" />
+              <label class="weekday-name" for="weekday-${type.id}-${i}">${label}</label>
+              <div class="weekday-times" data-day="${i}" data-label="${label}">
+                <div class="weekday-time"><input type="time" name="time_${i}" aria-label="${label} start time" /></div>
+                <button type="button" class="ghost weekday-add" hidden>+ Add another time</button>
+              </div>
             </div>`,
         )}
         ${where}
         <button type="submit">Add weekly times</button>
       </form>
-      ${error ? html`<p class="error">${error}</p>` : raw('')}`,
+      ${error ? html`<p class="error">${error}</p>` : raw('')}
+      ${WEEKLY_TIMES_SCRIPT}`,
   );
+}
+
+function slotLabel(slot: { weekday: number; time_local: string }): string {
+  return `${WEEKDAY_LABELS[slot.weekday]} ${formatClock(slot.time_local)}`;
+}
+
+// "+ Add another time" needs script; without it each day still takes one time.
+const WEEKLY_TIMES_SCRIPT = raw(`<script>
+document.querySelectorAll('.weekday-times').forEach(function (box) {
+  var day = box.getAttribute('data-day'), label = box.getAttribute('data-label'), n = 0;
+  var add = box.querySelector('.weekday-add');
+  add.hidden = false;
+  add.addEventListener('click', function () {
+    n += 1;
+    var row = document.createElement('div');
+    row.className = 'weekday-time';
+    var input = document.createElement('input');
+    input.type = 'time';
+    input.name = 'time_' + day + '_' + n;
+    input.setAttribute('aria-label', label + ' another start time');
+    var remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'ghost weekday-remove';
+    remove.textContent = 'Remove';
+    remove.addEventListener('click', function () { row.remove(); });
+    row.appendChild(input);
+    row.appendChild(remove);
+    box.insertBefore(row, add);
+    input.focus();
+  });
+});
+</script>`);
+
+/** A ticked day's times: time_N, then any extra time_N_M the page added. */
+function dayTimes(body: Record<string, unknown>, weekday: number): string[] {
+  const extra = Object.keys(body)
+    .map((key) => new RegExp(`^time_${weekday}_(\\d{1,3})$`).exec(key))
+    .filter((m): m is RegExpExecArray => m !== null)
+    .sort((a, b) => Number(a[1]) - Number(b[1]))
+    .map((m) => field(body, m[0]));
+  return [field(body, `time_${weekday}`), ...extra].filter((t) => t !== '');
 }
 
 coachRouter.post('/app/session-types/:id/generate-week', requireAuth, async (req, res) => {
@@ -1620,15 +1666,17 @@ coachRouter.post('/app/session-types/:id/generate-week', requireAuth, async (req
   }
   const slots: WeeklySlot[] = [];
   for (let i = 0; i < 7; i += 1) {
-    const checked = field(body, `day_${i}`) === '1';
-    const raw = field(body, `time_${i}`);
-    if (!checked || !raw) continue;
-    const timeLocal = clockTime(raw);
-    if (!timeLocal) {
-      refuse(`${WEEKDAY_LABELS[i]}: use a time from 00:00 to 23:59.`);
-      return;
+    if (field(body, `day_${i}`) !== '1') continue;
+    for (const raw of dayTimes(body, i)) {
+      const timeLocal = clockTime(raw);
+      if (!timeLocal) {
+        refuse(`${WEEKDAY_LABELS[i]}: use a time from 00:00 to 23:59.`);
+        return;
+      }
+      if (!slots.some((s) => s.weekday === i && s.timeLocal === timeLocal)) {
+        slots.push({ weekday: i, timeLocal, locationText, locationId: place.locationId });
+      }
     }
-    slots.push({ weekday: i, timeLocal, locationText, locationId: place.locationId });
   }
 
   if (slots.length === 0) {
@@ -1650,12 +1698,52 @@ coachRouter.post('/app/session-types/:id/generate-week', requireAuth, async (req
     refuse(`${which} ${are}, so nothing was added.`);
     return;
   }
+  const repeats = current.filter((c) => slots.some((s) => s.weekday === c.weekday && s.timeLocal === c.time_local));
+  if (repeats.length > 0) {
+    const which = repeats.map(slotLabel).join(', ');
+    refuse(`${which} ${repeats.length === 1 ? 'is already a weekly time' : 'are already weekly times'}, so nothing was added.`);
+    return;
+  }
 
   const saved = await createWeeklySlots(db, typeId, tz, slots, new Date());
   const coach = await findCoachById(db, coachId);
   if (coach) await notePublished(db, coach);
   // A new place the type had no room to save is explained on this screen.
   res.redirect(303, keptOwnPlace(saved) ? `/app/session-types/${typeId}/generate-week` : '/app/schedule');
+});
+
+coachRouter.get('/app/session-types/:id/slots/:slotId/remove', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const typeId = Number(req.params.id);
+  const slotId = Number(req.params.slotId);
+  const found = await db.query<{ weekday: number; time_local: string; location_text: string | null; name: string }>(
+    `select ws.weekday, ws.time_local, ws.location_text, st.name
+     from weekly_slot ws
+     join session_type st on st.id = ws.session_type_id
+     where ws.id = $1 and ws.session_type_id = $2 and st.coach_id = $3 and ws.active = true`,
+    [slotId, typeId, coachId],
+  );
+  if (found.rows.length === 0) {
+    res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
+    return;
+  }
+  const slot = found.rows[0];
+  res.status(200).send(
+    page(
+      'Remove weekly time',
+      html`${coachNav('types')}
+        <h1>Remove weekly time?</h1>
+        <p>Stop running ${slot.name} on <strong>${slotLabel(slot)}${slot.location_text ? ` at ${slot.location_text}` : ''}</strong>?</p>
+        <p class="muted">Upcoming sessions at this time with nobody booked are cancelled. Sessions that already have bookings stay on your schedule, and nobody is texted. Cancel those one at a time from the schedule if you need to.</p>
+        <form method="post" action="/app/session-types/${typeId}/slots/${slotId}/remove">
+          <div class="btn-row">
+            <button type="submit">Remove weekly time</button>
+            <a class="action ghost" href="/app/session-types/${typeId}/generate-week">Keep it</a>
+          </div>
+        </form>`,
+    ),
+  );
 });
 
 coachRouter.post('/app/session-types/:id/slots/:slotId/remove', requireAuth, async (req, res) => {
