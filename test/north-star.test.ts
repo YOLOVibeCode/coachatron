@@ -298,6 +298,7 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           assert.ok(link, `the schedule shows the coach's public link: ${live.slice(0, 300)}`);
           handle = link[1];
           assert.equal(handle, 'dana-rivera', 'the handle comes from the name');
+          assert.match(live, /Parents can't book yet/);
           assert.match(live, /Parents can't book until payments are set up\./);
 
           const texts = textsToCoach();

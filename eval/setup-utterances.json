@@ -155,6 +155,18 @@
       }
     },
     {
+      "id": "jam-elementary-hs-tutor",
+      "text": "I tutor elementary students on Tuesdays and Thursdays at 4 PM. We work on multiplication, fractions, and word problems. Each group has up to 5 students, and sessions are 1 hour at $6 per student. I offer one-on-one high school tutoring on Saturdays at 9 AM, 10 AM, and 11 AM for algebra and geometry. Each session is 1 hour and costs $10, or $85 for a 10-session package.",
+      "expect": {
+        "types": [
+          { "name_includes": "elementary", "duration_min": 60, "capacity": 5, "price_cents": 600 },
+          { "name_includes": "high school", "duration_min": 60, "capacity": 1, "price_cents": 1000 }
+        ],
+        "weekly_min": 5,
+        "packages": [{ "credits": 10, "price_cents": 8500 }]
+      }
+    },
+    {
       "id": "refine-thursday",
       "draft_text": "Keeper group Tuesdays and Thursdays at 6, an hour, 8 kids, $35",
       "text": "actually make Thursday 6:30",

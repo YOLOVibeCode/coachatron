@@ -86,7 +86,8 @@ test('Schedule: payments banner blocks share until payments are ready', async ()
       assert.match(schedule, /payments-banner/);
       assert.match(schedule, /Parents can(&#39;|')t book until payments are set up/);
       assert.match(schedule, /Copy link<\/button>/);
-      assert.match(schedule, /disabled aria-disabled="true"/);
+      assert.match(schedule, /<button type="button" class="ghost" disabled>Copy link<\/button>/);
+      assert.match(schedule, /<span class="action ghost" aria-disabled="true">Share your link<\/span>/);
     });
   });
 });

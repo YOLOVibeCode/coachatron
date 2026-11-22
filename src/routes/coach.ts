@@ -1028,43 +1028,75 @@ const CONNECT_PAYMENTS = 'Connect payments';
 const FINISH_CONNECTING_PAYMENTS = 'Finish connecting payments';
 const TEST_ONLY_PAYMENTS = 'This payment account takes test payments only, so parents cannot book paid sessions yet.';
 
+/** Schedule's line and link for a coach who cannot take payments yet. */
+function paymentsStepCard(step: PaymentsStep) {
+  if (step === 'test-only') {
+    return html`<div class="banner-warn">${TEST_ONLY_PAYMENTS}</div>
+      <a class="action" href="/app/money">See payments</a>`;
+  }
+  return html`<div class="banner-warn">Parents can't book until payments are set up.</div>
+    <a class="action" href="/app/money">${step === 'finish' ? FINISH_CONNECTING_PAYMENTS : CONNECT_PAYMENTS}</a>`;
+}
+
+/** Top-of-schedule notice when parents cannot pay yet. */
 function renderPaymentsBanner(step: PaymentsStep) {
   if (step === 'test-only') {
-    return html`<div class="payments-banner" role="status">
-      <p>${TEST_ONLY_PAYMENTS}</p>
+    return html`<div class="card payments-banner" role="status">
+      <p><strong>Parents can't book yet</strong></p>
+      <p class="muted">${TEST_ONLY_PAYMENTS}</p>
       <a class="action" href="/app/money">See payments</a>
     </div>`;
   }
-  return html`<div class="payments-banner" role="status">
-    <p>Parents can't book until payments are set up.</p>
+  return html`<div class="card payments-banner" role="status">
+    <p><strong>Parents can't book yet</strong></p>
+    <p class="muted">Parents can't book until payments are set up.</p>
     <a class="action" href="/app/money">${step === 'finish' ? FINISH_CONNECTING_PAYMENTS : CONNECT_PAYMENTS}</a>
   </div>`;
 }
+
+type PageLinkOpts = {
+  main: 'share' | PaymentsStep | 'none';
+  justPublished?: boolean;
+  layout?: 'card' | 'compact';
+  sharingOpen?: boolean;
+  paymentsInCard?: boolean;
+};
 
 /** The coach's page link, always in view on Schedule and Money: one box to
  * select or copy, and a way to text it. On Schedule the main action is
  * sharing it, or, until payments work, the next payments step. Money has
  * its own. */
-function renderPageLinkCard(
-  coach: CoachRow,
-  opts: { main: 'share' | PaymentsStep | 'none'; justPublished?: boolean; bookingsOpen: boolean },
-) {
+function renderPageLinkCard(coach: CoachRow, opts: PageLinkOpts) {
+  const layout = opts.layout ?? 'card';
+  const sharingOpen = opts.sharingOpen ?? true;
+  const paymentsInCard = opts.paymentsInCard ?? true;
   const link = coachPageUrl(coach.handle);
   const share = `sms:?&body=${encodeURIComponent(`Book with me: ${link}`)}`;
-  const blocked = !opts.bookingsOpen && opts.main !== 'none';
-  return html`${blocked ? renderPaymentsBanner(opts.main as PaymentsStep) : raw('')}
-    <div class="card page-link">
+  const wrapClass = layout === 'compact' ? 'page-link page-link-compact' : 'card page-link';
+  const copyBtn = sharingOpen
+    ? html`<button type="button" class="ghost" onclick="${COPY_LINK_SCRIPT}">Copy link</button>`
+    : html`<button type="button" class="ghost" disabled>Copy link</button>`;
+  const shareCtrl = sharingOpen
+    ? html`<a class="action${opts.main === 'share' ? '' : ' ghost'}" href="${share}">Share your link</a>`
+    : html`<span class="action ghost" aria-disabled="true">Share your link</span>`;
+  const shareNote =
+    !sharingOpen && layout === 'compact'
+      ? html`<p class="muted page-link-share-note">${
+          opts.main === 'test-only' ? TEST_ONLY_PAYMENTS : "Parents can't book until payments are set up."
+        }</p>`
+      : raw('');
+  return html`<div class="${wrapClass}">
     ${opts.justPublished
       ? html`<p><strong>You're live.</strong> Parents book at ${link.replace(/^https?:\/\//, '')}</p>`
       : raw('')}
     <label for="page-link">Your page</label>
     <input id="page-link" type="text" readonly value="${link}" onfocus="this.select()" />
     <div class="btn-row">
-      ${blocked
-        ? html`<button type="button" class="ghost share-disabled" disabled aria-disabled="true">Copy link</button>`
-        : html`<button type="button" class="ghost" onclick="${COPY_LINK_SCRIPT}">Copy link</button>`}
-      <a class="${opts.main === 'share' && opts.bookingsOpen ? 'action' : 'action ghost'}${blocked ? ' share-disabled' : ''}" href="${share}"${blocked ? raw(' aria-disabled="true" tabindex="-1"') : raw('')}>Share your link</a>
+      ${copyBtn}
+      ${shareCtrl}
     </div>
+    ${shareNote}
+    ${paymentsInCard && opts.main !== 'share' && opts.main !== 'none' ? paymentsStepCard(opts.main) : raw('')}
   </div>`;
 }
 
@@ -1142,11 +1174,15 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
     res.status(200).send(renderSetupScreen(coach, draft, notice, hasSchedule, startText));
     return;
   }
-  const bookingsOpen = await paymentsOpen(db, coach);
+  const sharingOpen = await paymentsOpen(db, coach);
+  const paymentsStepNow = sharingOpen ? null : await paymentsStep(db, coach.id);
+  const paymentsBanner = paymentsStepNow ? renderPaymentsBanner(paymentsStepNow) : raw('');
   const live = renderPageLinkCard(coach, {
-    main: bookingsOpen ? 'share' : await paymentsStep(db, coach.id),
+    main: sharingOpen ? 'share' : paymentsStepNow!,
     justPublished: req.query.published === '1',
-    bookingsOpen,
+    layout: 'compact',
+    sharingOpen,
+    paymentsInCard: false,
   });
   const askCard = renderAskCard(await pendingAskForCoach(db, coachId));
   const cascadeCards = renderRunningCascades(await runningCascadesForCoach(db, coachId));
@@ -1188,7 +1224,7 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
       html`<div class="screen-main">
           ${coachNav('schedule')}
           <h1>${weekLabel}</h1>
-          ${live}
+          ${paymentsBanner}
           ${req.query.published === '1' ? await ownPlacesNote(db, coachId) : raw('')}
           ${askCard}
           ${cascadeCards}
@@ -1214,6 +1250,7 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
             ? html`<p><a class="action ghost" href="/app/schedule?week=1">Show next week</a></p>`
             : html`<p><a class="action ghost" href="/app/schedule">Back to this week</a></p>`}
           ${calendar}
+          ${live}
         </div>
         ${renderScheduleEditPanel()}`,
     ),
@@ -2510,7 +2547,7 @@ async function renderMoney(
         ${renderPaymentsCard(payments, opts.notice ?? null, opts.error ?? null)}
         ${renderPaymentAttention(attention, refunds, needing)}
         ${renderDisputes(disputes)}
-        ${renderPageLinkCard(coach, { main: 'none', bookingsOpen: await paymentsOpen(db, coach) })}
+        ${renderPageLinkCard(coach, { main: 'none' })}
         <h2>This week</h2>
         <p class="money-figure">${formatDollars(summary.collectedThisWeekCents)}</p>
         <p class="muted">Collected (gross): ${formatDollars(summary.collectedThisWeekCents)}</p>

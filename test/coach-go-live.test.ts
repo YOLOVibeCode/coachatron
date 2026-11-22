@@ -309,16 +309,19 @@ test('the page link stays on Schedule and Money in a box made to copy', async ()
     await withServer(async (base) => {
       await publishByHand(base, db, cookie);
       const link = `https://coachatron.com/c/${coach.handle}`;
-      for (const path of ['/app/schedule', '/app/money']) {
-        const page = await (await fetch(`${base}${path}`, { headers: { cookie } })).text();
-        assert.match(page, new RegExp(`<input id="page-link" type="text" readonly value="${link}"`), path);
-        assert.match(page, /Copy link/, path);
-        assert.match(page, /href="sms:\?&amp;body=Book%20with%20me/, path);
-      }
+      const money = await (await fetch(`${base}/app/money`, { headers: { cookie } })).text();
+      assert.match(money, new RegExp(`<input id="page-link" type="text" readonly value="${link}"`), '/app/money');
+      assert.match(money, /Copy link/);
+      assert.match(money, /href="sms:\?&amp;body=Book%20with%20me/);
       const schedule = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
+      assert.match(schedule, new RegExp(`<input id="page-link" type="text" readonly value="${link}"`), '/app/schedule');
+      assert.match(schedule, /<h1>This week<\/h1>/);
       assert.match(schedule, /payments-banner/);
+      assert.match(schedule, /Parents can(&#39;|')t book yet/);
       assert.match(schedule, /Parents can(&#39;|')t book until payments are set up\./);
+      assert.doesNotMatch(schedule, /<a class="action" href="sms:\?&amp;body=Book%20with%20me/);
       assert.match(schedule, /<a class="action" href="\/app\/money">Connect payments<\/a>/);
+      assert.match(schedule, /<button type="button" class="ghost" disabled>Copy link<\/button>/);
     });
   });
 });

@@ -140,6 +140,17 @@ export const POSTCARD_TOKENS_CSS = `
     margin-top: 0;
     width: 100%;
   }
+  .banner-warn {
+    background: color-mix(in srgb, var(--alert) 12%, var(--card));
+    border: 1px solid var(--alert);
+    border-radius: 12px;
+    padding: 10px 12px;
+    margin: 10px 0;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--screen-ink);
+  }
   .payments-banner {
     background: var(--warn-bg, #fff8e6);
     border: 1px solid var(--warn-line, #e8c96a);
@@ -312,6 +323,16 @@ export const POSTCARD_TOKENS_CSS = `
   .ask-reply p { margin: 0 0 8px; font-family: ui-sans-serif, system-ui, sans-serif; }
   .btn-row { display: flex; gap: 8px; }
   .btn-row button, .btn-row .action { margin-top: 8px; flex: 1; }
+  .payments-banner { margin-bottom: 12px; }
+  .payments-banner p { margin: 0 0 8px; }
+  .payments-banner .action { margin-top: 8px; }
+  .page-link-compact { margin-bottom: 10px; }
+  .page-link-share-note { margin-top: 6px; font-size: 0.85rem; }
+  button[disabled], .action[aria-disabled="true"] {
+    opacity: 0.55;
+    cursor: not-allowed;
+    pointer-events: none;
+  }
   .page-link label { margin-top: 0; }
   button.ghost { background: transparent; color: var(--teal); border: 1px solid var(--teal); }
   a.card { display: block; color: inherit; text-decoration: none; }
