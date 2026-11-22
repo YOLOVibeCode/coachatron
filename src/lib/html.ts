@@ -251,8 +251,22 @@ export const POSTCARD_TOKENS_CSS = `
   }
   .error { color: var(--alert); font-family: ui-sans-serif, system-ui, sans-serif; font-size: 0.9rem; margin-top: 8px; }
   .ask-reply p { margin: 0 0 8px; font-family: ui-sans-serif, system-ui, sans-serif; }
-  .btn-row { display: flex; gap: 8px; }
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: stretch; }
   .btn-row button, .btn-row .action { margin-top: 8px; flex: 1; }
+  .btn-row .type-edit { flex: 1 1 0; min-width: min(100%, 8rem); margin-top: 8px; }
+  .type-edit > summary { list-style: none; cursor: pointer; text-align: center; width: 100%; margin-top: 0; }
+  .type-edit > summary::-webkit-details-marker { display: none; }
+  .type-edit form { margin-top: 12px; }
+  .weekly-day-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 8px 0;
+    flex-wrap: wrap;
+  }
+  .weekly-day-row input[type="checkbox"] { flex: 0 0 auto; width: 1.25rem; height: 1.25rem; margin: 0; }
+  .weekly-day-row .weekly-day-label { flex: 0 0 2.5rem; font-family: ui-sans-serif, system-ui, sans-serif; font-weight: 600; }
+  .weekly-day-row input[type="time"] { flex: 1 1 8rem; min-width: 8rem; margin-top: 0; }
   .page-link label { margin-top: 0; }
   button.ghost { background: transparent; color: var(--teal); border: 1px solid var(--teal); }
   a.card { display: block; color: inherit; text-decoration: none; }

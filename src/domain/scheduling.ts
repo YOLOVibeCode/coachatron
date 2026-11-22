@@ -312,3 +312,76 @@ export async function deactivateSlot(db: DbClient, coachId: number, slotId: numb
   );
   return Number(kept.rows[0]?.n ?? '0');
 }
+
+export async function findActiveTypeByName(
+  db: DbClient,
+  coachId: number,
+  name: string,
+  excludeTypeId?: number,
+): Promise<number | null> {
+  const normalized = name.trim().toLowerCase();
+  if (!normalized) return null;
+  const result = await db.query<{ id: number }>(
+    `select id from session_type
+     where coach_id = $1 and active = true and lower(trim(name)) = $2
+       and ($3::int is null or id <> $3)
+     limit 1`,
+    [coachId, normalized, excludeTypeId ?? null],
+  );
+  return result.rows[0]?.id ?? null;
+}
+
+/** Soft-delete a session type: hide it, stop weekly top-up, cancel empty futures. */
+export async function deactivateSessionType(
+  db: DbClient,
+  coachId: number,
+  typeId: number,
+  now: Date,
+): Promise<boolean> {
+  const owned = await db.query<{ id: number }>(
+    `update session_type set active = false
+     where id = $1 and coach_id = $2 and active = true
+     returning id`,
+    [typeId, coachId],
+  );
+  if (owned.rows.length === 0) return false;
+
+  const slots = await db.query<{ id: number }>(
+    `update weekly_slot set active = false
+     where session_type_id = $1 and active = true
+     returning id`,
+    [typeId],
+  );
+  for (const slot of slots.rows) {
+    await db.query(
+      `update session s set status = 'cancelled'
+       where s.weekly_slot_id = $1 and s.status = 'scheduled' and s.starts_at_utc > $2
+         and not exists (
+           select 1 from booking b where b.session_id = s.id and b.status in ('booked', 'pending')
+         )`,
+      [slot.id, now.toISOString()],
+    );
+  }
+  return true;
+}
+
+export async function listWeeklySlotsForTypes(
+  db: DbClient,
+  typeIds: number[],
+): Promise<Map<number, Array<{ weekday: number; time_local: string; location_text: string | null }>>> {
+  const map = new Map<number, Array<{ weekday: number; time_local: string; location_text: string | null }>>();
+  if (typeIds.length === 0) return map;
+  const result = await db.query<{ session_type_id: number; weekday: number; time_local: string; location_text: string | null }>(
+    `select session_type_id, weekday, time_local, location_text
+     from weekly_slot
+     where session_type_id = any($1::int[]) and active = true
+     order by session_type_id, weekday, time_local`,
+    [typeIds],
+  );
+  for (const row of result.rows) {
+    const list = map.get(row.session_type_id) ?? [];
+    list.push({ weekday: row.weekday, time_local: row.time_local, location_text: row.location_text });
+    map.set(row.session_type_id, list);
+  }
+  return map;
+}

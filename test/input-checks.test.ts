@@ -66,7 +66,7 @@ test('numbers past what the forms accept get the form message, and ordinary ones
         assert.equal(res.status, 422, `${path} ${JSON.stringify(body)} answered ${res.status}`);
       }
       const message = await (await fetch(`${base}/app/session-types`, form({ ...goodType, capacity: '0' }, cookie))).text();
-      assert.match(message, /1–1000 athletes/);
+      assert.match(message, /1–1000 spots/);
 
       const saved: Array<[string, Record<string, string>]> = [
         ['/app/session-types', { ...goodType, capacity: '99', price_dollars: '19.99' }],
