@@ -982,7 +982,7 @@ function renderSetupScreen(
       <h1>Edit schedule</h1>
       ${hasSchedule ? html`<p class="muted">This adds to your current schedule. Start over clears only this draft.</p>` : raw('')}
       ${draft
-        ? renderSetupPreview(draft.plan, coach)
+        ? renderSetupPreview(draft.plan, coach, new Date(), draft.warnings ?? [])
         : html`<p class="muted">Say what you coach, how long, how many athletes, the price, and your days and times.</p>`}
       ${questions.length > 0
         ? html`<p class="muted"><strong>Still need:</strong></p>
