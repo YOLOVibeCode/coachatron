@@ -215,7 +215,7 @@ test("typed journey: landing box, phone, draft, Publish, live link", async () =>
             headers: { cookie: session! },
           })
         ).text();
-        assert.match(setup, /Here&#39;s your week/);
+        assert.match(setup, /Edit schedule/);
         assert.match(setup, /Evening group/);
         assert.match(setup, />Publish</);
 
