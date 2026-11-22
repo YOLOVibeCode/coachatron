@@ -14,33 +14,46 @@ import { cancelPromise, type CancelRefundState, type InTimeCancel } from '../dom
 // ---- Pricing (screen 5): the coach's choice ----
 
 const CHOICES: Array<[CancelGives, string]> = [
-  ['credit', 'A session credit'],
+  ['credit', 'A credit for another session'],
   ['refund', 'A refund to their card'],
 ];
 
 /** The third field of the booking-policy form, next to the cancellation
  * window and the children limit. */
 export function cancelGivesField(policy: Pick<BookingPolicy, 'cancelGives'>): SafeHtml {
-  return html`<label for="cancel_gives">When a parent cancels in time</label>
+  return html`<label for="cancel_gives">When a parent cancels in time (card payments)</label>
     <select id="cancel_gives" name="cancel_gives">
       ${CHOICES.map(([value, label]) =>
         value === policy.cancelGives ? html`<option value="${value}" selected>${label}</option>` : html`<option value="${value}">${label}</option>`,
       )}
     </select>
-    <p class="muted">For a session paid by card. A refund sends the whole payment back to the parent's card: Coachatron's ${APP_FEE_BPS / 100}% fee is returned with it, and Stripe keeps its card processing fee. Bookings already made keep the choice they were made under.</p>`;
+    <ul class="muted" style="margin:0.5rem 0;padding-left:1.25rem;">
+      <li><strong>Credit</strong> stays on the parent's account for another session.</li>
+      <li><strong>Refund</strong> returns the whole payment to their card, including Coachatron's ${APP_FEE_BPS / 100}% fee; the card company keeps its processing fee.</li>
+      <li>Bookings already made keep the choice they were made under.</li>
+    </ul>`;
 }
 
 /** What the policy card says a paid drop-in cancelled in time becomes. */
 export function cancelGivesSummary(policy: Pick<BookingPolicy, 'cancelGives'>): string {
-  return policy.cancelGives === 'refund' ? 'a paid drop-in is refunded to their card' : 'a paid drop-in becomes a session credit';
+  return policy.cancelGives === 'refund'
+    ? 'the payment goes back to their card'
+    : 'they get a credit for another session';
+}
+
+/** Short line for a coach's public page. */
+export function publicCancelSummary(policy: Pick<BookingPolicy, 'cancelWindowHours'>): string {
+  if (policy.cancelWindowHours === 0) return 'Cancel free until the session starts.';
+  const w = policy.cancelWindowHours;
+  return `Cancel free up to ${w} ${w === 1 ? 'hour' : 'hours'} before a session.`;
 }
 
 /** The card's closing line: how card refunds are made under the choice. */
 export function cardRefundsNote(policy: Pick<BookingPolicy, 'cancelGives'>): string {
   const yours = "You can refund any payment yourself, from Money or the session's screen.";
   return policy.cancelGives === 'refund'
-    ? `A refund is of a whole payment: children paid for together are refunded once each of their bookings is cancelled in time, and until then a cancelled booking gets a session credit. ${yours}`
-    : `Card refunds are separate. ${yours}`;
+    ? `Refunds are of a whole payment when every child in the pass has cancelled in time. ${yours}`
+    : `Card refunds are separate from a parent's cancel-in-time choice. ${yours}`;
 }
 
 // ---- Checkout (screen 10): what the booking is promised ----

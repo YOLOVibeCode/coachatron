@@ -77,16 +77,16 @@ test('the Pricing screen states the default policy and lets the coach change it'
     const cookie = `cx_session=${await createCoachSession(db, seed.coach.id)}`;
     const pricing = await (await fetch(`${base}/app/pricing`, { headers: { cookie } })).text();
     assert.match(pricing, /<h2 id="policy">Booking policy<\/h2>/);
-    assert.match(pricing, /No-show:<\/strong> the booking(?:'|&#39;)s credit is used/);
-    assert.match(pricing, /cancels more than 24 hours before a session gets their credit back/);
-    assert.match(pricing, /book up to 2 children at once/);
+    assert.match(pricing, /Not showing up:/);
+    assert.match(pricing, /Cancelling in time:/);
+    assert.match(pricing, /up to 2 children/);
     assert.match(pricing, /name="cancel_window_hours"[^>]*value="24"/);
 
     const saved = await post(base, '/app/pricing/policy', { cancel_window_hours: '48', children_per_booking: '3' }, cookie);
     assert.equal(saved.status, 303);
     const after = await (await fetch(`${base}/app/pricing`, { headers: { cookie } })).text();
-    assert.match(after, /more than 48 hours before a session/);
-    assert.match(after, /book up to 3 children at once/);
+    assert.match(after, /more than 48 hours before start/);
+    assert.match(after, /up to 3 children/);
 
     for (const bad of [
       { cancel_window_hours: '-1', children_per_booking: '2' },

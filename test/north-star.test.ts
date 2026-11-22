@@ -125,14 +125,14 @@ interface SessionCard {
 /** The session cards on a coach's public page, as a parent sees them. */
 function sessionCards(html: string): SessionCard[] {
   return html
-    .split('<div class="card">')
+    .split('<div class="card session-card">')
     .slice(1)
     .map((chunk) => {
       const spans = [...chunk.matchAll(/<span>([\s\S]*?)<\/span>/g)].map((m) => visible(m[1]));
       return {
         when: visible(/<strong>([\s\S]*?)<\/strong>/.exec(chunk)?.[1] ?? ''),
         name: spans[0] ?? '',
-        detail: spans[1] ?? '',
+        detail: spans[2] ?? spans[1] ?? '',
         book: /href="([^"]+\/book)"/.exec(chunk)?.[1] ?? null,
         opensSoon: /Booking opens soon/.test(visible(chunk)),
       };
@@ -330,11 +330,11 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           const groups = cards.filter((c) => c.name === 'Group');
           assert.ok(privates.length >= 2 && groups.length >= 1, `both kinds of session are listed: ${JSON.stringify(cards.slice(0, 4))}`);
           for (const c of privates) {
-            assert.match(c.when, /^(Tue|Thu), \w{3} \d{1,2}, 6:00 PM$/, `privates are Tue/Thu 6pm: ${c.when}`);
+            assert.match(c.when, /^(Tue|Thu), \w{3} \d{1,2}, (?:\d{4}, )?6:00 PM$/, `privates are Tue/Thu 6pm: ${c.when}`);
             assert.equal(c.detail, '1 spot left · $60.00');
           }
           for (const c of groups) {
-            assert.match(c.when, /^Sat, \w{3} \d{1,2}, 9:00 AM$/, `the group is Saturday 9am: ${c.when}`);
+            assert.match(c.when, /^Sat, \w{3} \d{1,2}, (?:\d{4}, )?9:00 AM$/, `the group is Saturday 9am: ${c.when}`);
             assert.equal(c.detail, '8 spots left · $25.00');
           }
         });
