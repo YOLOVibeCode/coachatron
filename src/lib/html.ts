@@ -314,6 +314,32 @@ export const POSTCARD_TOKENS_CSS = `
   .payments-banner { margin-bottom: 12px; }
   .payments-banner p { margin: 0 0 8px; }
   .payments-banner .action { margin-top: 8px; }
+  .coach-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
+  }
+  .coach-header .coach-nav { margin-bottom: 0; flex: 1 1 auto; }
+  .coach-account {
+    flex: 0 0 auto;
+    font-size: 0.9rem;
+  }
+  .coach-account > summary {
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-weight: 600;
+    color: var(--screen-muted);
+    cursor: pointer;
+    list-style: none;
+  }
+  .coach-account > summary::-webkit-details-marker { display: none; }
+  .coach-account form { margin: 8px 0 0; }
+  .download-custom[hidden] { display: none; }
+  .download-btn-wrap { margin: 12px 0 0; }
+  .download-btn-desc { margin: 4px 0 0; font-size: 0.85rem; }
+  #download_feedback { min-height: 1.4em; margin-top: 12px; }
+  .download-refund-note { margin-top: 12px; font-size: 0.85rem; }
   .page-link-compact { margin-bottom: 10px; }
   .page-link-share-note { margin-top: 6px; font-size: 0.85rem; }
   button[disabled], .action[aria-disabled="true"] {
@@ -394,7 +420,7 @@ const COACH_NAV: Array<[CoachNavKey, string, string]> = [
   ['types', '/app/session-types', 'Types'],
   ['pricing', '/app/pricing', 'Pricing'],
   ['roster', '/app/roster', 'Roster'],
-  ['money', '/app/money', 'Money'],
+  ['money', '/app/money', 'Payments'],
 ];
 
 /** Plain links across the coach screens. Muted text, not buttons, so each
@@ -406,6 +432,27 @@ export function coachNav(active?: CoachNavKey): SafeHtml {
     )}
   </nav>`;
 }
+
+/** Sign out on coach screens. */
+export function coachAccountMenu(): SafeHtml {
+  return html`<details class="coach-account">
+    <summary>Account</summary>
+    <form method="post" action="/signout">
+      <button type="submit" class="ghost">Sign out</button>
+    </form>
+  </details>`;
+}
+
+/** Top bar: main nav and account menu. */
+export function coachHeader(active: CoachNavKey): SafeHtml {
+  return html`<div class="coach-header">${coachNav(active)}${coachAccountMenu()}</div>`;
+}
+
+export const SESSION_CREDITS_EXPLANATION =
+  'Session credits are sessions parents paid for but have not used yet.';
+
+export const PLATFORM_FEE_DISCLOSURE =
+  "Coachatron keeps 5% of each payment, plus the card company's processing fee from your account.";
 
 export function smsConsentCheckbox(): SafeHtml {
   return html`<label class="sms-consent">

@@ -302,7 +302,7 @@ test('a coach without the texts box gets no go-live text and no reminders', asyn
 
 // ---- the page link on the coach's screens -------------------------------
 
-test('the page link stays on Schedule and Money in a box made to copy', async () => {
+test('the page link stays on Schedule in a box made to copy, not on Payments', async () => {
   await withRelay(async () => {
     const db = await freshDb();
     const { coach, cookie } = await textingCoach(db);
@@ -310,9 +310,7 @@ test('the page link stays on Schedule and Money in a box made to copy', async ()
       await publishByHand(base, db, cookie);
       const link = `https://coachatron.com/c/${coach.handle}`;
       const money = await (await fetch(`${base}/app/money`, { headers: { cookie } })).text();
-      assert.match(money, new RegExp(`<input id="page-link" type="text" readonly value="${link}"`), '/app/money');
-      assert.match(money, /Copy link/);
-      assert.match(money, /href="sms:\?&amp;body=Book%20with%20me/);
+      assert.doesNotMatch(money, /id="page-link"/);
       const schedule = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
       assert.match(schedule, new RegExp(`<input id="page-link" type="text" readonly value="${link}"`), '/app/schedule');
       assert.match(schedule, /Parents can(&#39;|')t book yet/);

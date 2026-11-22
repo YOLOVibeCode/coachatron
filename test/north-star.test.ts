@@ -440,9 +440,9 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
 
           const after = visible(await (await get('/app/money?seller=connected', moneyCookie)).text());
           assert.match(after, /Payments are connected\./, 'the return notice');
-          assert.match(after, /Payments connected\. Athletes pay you directly\. Coachatron keeps 5% of each payment\./);
-          assert.match(after, /Payouts go to your bank account\./);
+          assert.match(after, /Paid by parents:/);
           assert.doesNotMatch(after, /marketplace terms/, 'the terms are not asked again');
+          assert.doesNotMatch(after, /id="page-link"/);
 
           assert.equal(textsToCoach().length, 3, 'coming back from onboarding does not text again');
 
