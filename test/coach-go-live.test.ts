@@ -316,6 +316,7 @@ test('the page link stays on Schedule and Money in a box made to copy', async ()
         assert.match(page, /href="sms:\?&amp;body=Book%20with%20me/, path);
       }
       const schedule = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
+      assert.match(schedule, /payments-banner/);
       assert.match(schedule, /Parents can(&#39;|')t book until payments are set up\./);
       assert.match(schedule, /<a class="action" href="\/app\/money">Connect payments<\/a>/);
     });
@@ -351,9 +352,14 @@ async function pressCopy(
 test('Copy link says Copied only once the link is copied', async () => {
   await withRelay(async () => {
     const db = await freshDb();
-    const { cookie } = await textingCoach(db);
+    const { coach, cookie } = await textingCoach(db);
     await withServer(async (base) => {
       await publishByHand(base, db, cookie);
+      await db.query(
+        `insert into coach_payments (coach_id, charges_enabled, test_mode, checked_at) values ($1, true, false, now())
+         on conflict (coach_id) do update set charges_enabled = excluded.charges_enabled, test_mode = excluded.test_mode, checked_at = excluded.checked_at`,
+        [coach.id],
+      );
       const page = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
       assert.equal(await pressCopy(page, { clipboard: 'resolves', copyCommand: false }), 'Copied');
       assert.equal(await pressCopy(page, { clipboard: 'rejects', copyCommand: true }), 'Copied', 'the older command copies it');

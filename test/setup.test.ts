@@ -169,7 +169,7 @@ test('talk, refine, publish: nothing is written until Publish, and Publish runs 
     try {
       await withServer(async (base) => {
         const empty = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
-        assert.match(empty, /Tell me your week/);
+        assert.match(empty, /Edit schedule/);
         assert.match(empty, /<textarea/);
 
         const said = await post(base, '/app/setup', cookie, { text: 'Keeper group Tuesdays and Thursdays at 6...' });
@@ -178,7 +178,7 @@ test('talk, refine, publish: nothing is written until Publish, and Publish runs 
         assert.equal(await count(db, 'session'), 0, 'a draft writes nothing to the schedule');
 
         const preview = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
-        assert.match(preview, /Here&#39;s your week/);
+        assert.match(preview, /Edit schedule/);
         assert.match(preview, /Tue &amp; Thu 6:00pm · Field 3/);
         assert.match(preview, /<button type="submit">Publish<\/button>/);
 
@@ -243,7 +243,7 @@ test('an open question blocks Publish until it is answered', async () => {
 
         await post(base, '/app/setup/discard', cookie, { id: draftId });
         const fresh = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
-        assert.match(fresh, /Tell me your week/);
+        assert.match(fresh, /Edit schedule/);
       });
     } finally {
       resetComplete();
@@ -260,9 +260,10 @@ test('a model failure or a spent budget falls back to the forms, never a 500', a
     try {
       await withServer(async (base) => {
         const failed = await post(base, '/app/setup', cookie, { text: 'keeper group' });
-        assert.equal(failed.headers.get('location'), '/app/schedule?setup=1&e=read');
-        const page = await (await fetch(`${base}/app/schedule?setup=1&e=read`, { headers: { cookie } })).text();
+        assert.equal(failed.status, 422);
+        const page = await failed.text();
         assert.match(page, /couldn&#39;t read that/);
+        assert.match(page, /keeper group/);
         assert.match(page, /href="\/app\/session-types">Set up with a form instead/);
         assert.equal(await count(db, 'setup_draft'), 0);
 
@@ -270,8 +271,9 @@ test('a model failure or a spent budget falls back to the forms, never a 500', a
           await db.query('insert into assistant_model_call (coach_id, called_at) values ($1, now())', [coach.id]);
         }
         const callsBefore = broken.calls.length;
-        const capped = await post(base, '/app/setup', cookie, { text: 'keeper group' });
-        assert.equal(capped.headers.get('location'), '/app/schedule?setup=1&e=cap');
+        const capped = await post(base, '/app/setup', cookie, { text: 'keeper group again' });
+        assert.equal(capped.status, 422);
+        assert.match(await capped.text(), /That&#39;s all the reading/);
         assert.equal(broken.calls.length, callsBefore, 'the model is not called past the cap');
       });
     } finally {

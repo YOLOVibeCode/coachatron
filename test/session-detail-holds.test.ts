@@ -89,7 +89,7 @@ test('Schedule counts a session\'s spots as Session detail does: booked, attende
 
     await withServer(async (base) => {
       const schedule = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
-      assert.match(schedule, / · 3 of 6 spots booked · 1 holding · /, 'Ada, Ben and Cal were sold; Fay is holding');
+      assert.match(schedule, /class="spots">3 of 6 spots booked · 1 holding</, 'Ada, Ben and Cal were sold; Fay is holding');
       const detail = await (await fetch(`${base}/app/sessions/${seed.sessionId}`, { headers: { cookie } })).text();
       assert.match(detail, /<h2>Booked \(3\) · Holding \(1\)<\/h2>/, 'the same counts as Session detail');
     });
@@ -106,7 +106,8 @@ test('Schedule names no holds when no parent is paying', async () => {
     const cookie = `cx_session=${await createCoachSession(db, seed.coach.id)}`;
     await withServer(async (base) => {
       const schedule = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
-      assert.match(schedule, / · 1 of 6 spots booked · \$/);
+      assert.match(schedule, /class="spots">1 of 6 spots booked</);
+      assert.match(schedule, /class="session-price">\$/);
       assert.doesNotMatch(schedule, /holding/);
     });
   });

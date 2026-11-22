@@ -227,7 +227,7 @@ test('journey 4: a new coach talks their week in and publishes it, three decisio
           redirect: 'manual',
         });
         const cookie = extractSessionCookie(verify as unknown as Response);
-        assert.match(await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text(), /Tell me your week/);
+        assert.match(await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text(), /Edit schedule/);
 
         // Decision 2: say the week, then "Set it up".
         await fetch(`${base}/app/setup`, {

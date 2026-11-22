@@ -470,8 +470,9 @@ export async function publishSetupPlan(
 
   for (const pack of plan.packages) {
     const dup = await db.query<{ id: number }>(
-      'select id from package where coach_id = $1 and lower(name) = lower($2) and active = true',
-      [coach.id, pack.name],
+      `select id from package where coach_id = $1 and active = true
+         and (lower(name) = lower($2) or (credits = $3 and price_cents = $4))`,
+      [coach.id, pack.name, pack.credits, pack.price_cents],
     );
     if (dup.rows.length > 0) continue;
     await createPackage(db, coach.id, pack.name, pack.credits, pack.price_cents, pack.expires_days ?? undefined);

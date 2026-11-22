@@ -144,8 +144,8 @@ test('model path: fake intent confirms then Yes on the schedule screen', async (
 
         const page = await fetch(`${base}/app/schedule`, { headers: { cookie: cookieFor(token) } });
         const html = await page.text();
-        assert.match(html, /Text the week/);
-        assert.match(html, /placeholder="Text the week/);
+        assert.match(html, /Edit schedule/);
+        assert.match(html, /placeholder="Cancel tomorrow, or add Saturday 9am"/);
         assert.match(html, /Send/);
         assert.match(html, /Cancel /);
         assert.match(html, /name="answer" value="yes"/);
@@ -676,7 +676,7 @@ test('the assistant counts spots as Schedule does; WHO and a broadcast still mea
     const cookie = cookieFor(await createCoachSession(db, seed.coach.id));
     await withServer(async (base) => {
       const schedule = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
-      assert.match(schedule, / · 3 of 6 spots booked · /, 'Schedule counts Ada, Ben and Cal');
+      assert.match(schedule, /class="spots">3 of 6 spots booked/, 'Schedule counts Ada, Ben and Cal');
     });
 
     setComplete(fakeComplete(new Error('pattern only')));

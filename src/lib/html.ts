@@ -99,19 +99,97 @@ export const POSTCARD_TOKENS_CSS = `
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
   }
-  /* Sticky ask block stays above the virtual keyboard on small screens. */
-  .schedule-ask {
-    flex-shrink: 0;
-    position: sticky;
-    bottom: 0;
-    margin: 12px -16px -20px;
-    padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px));
-    background: var(--screen);
-    border-top: 1px solid var(--line);
+  .coach-top {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px 12px;
+    margin-bottom: 14px;
   }
-  .schedule-ask form { margin: 0; }
-  .schedule-ask label { margin-top: 0; }
-  .schedule-ask button { margin-top: 10px; }
+  .coach-top .coach-nav { margin: 0; flex: 1 1 auto; }
+  .coach-account { flex: 0 0 auto; position: relative; }
+  .coach-account > summary {
+    list-style: none;
+    cursor: pointer;
+    color: var(--teal);
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 0.9rem;
+    font-weight: 600;
+    padding: 6px 0;
+    min-height: var(--touch-min);
+    display: flex;
+    align-items: center;
+  }
+  .coach-account > summary::-webkit-details-marker { display: none; }
+  .coach-account-menu {
+    position: absolute;
+    right: 0;
+    top: 100%;
+    z-index: 2;
+    min-width: 10rem;
+    background: var(--screen);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+  }
+  .coach-account-menu form { margin: 0; }
+  .coach-account-menu button {
+    margin-top: 0;
+    width: 100%;
+  }
+  .payments-banner {
+    background: var(--warn-bg, #fff8e6);
+    border: 1px solid var(--warn-line, #e8c96a);
+    border-radius: 14px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+  }
+  .payments-banner p { margin: 0 0 8px; font-weight: 600; }
+  .share-disabled {
+    opacity: 0.45;
+    pointer-events: none;
+    cursor: not-allowed;
+  }
+  .schedule-day-heading {
+    font-size: 0.95rem;
+    font-weight: 600;
+    margin: 16px 0 6px;
+    color: var(--screen-muted);
+  }
+  .schedule-day-heading:first-child { margin-top: 0; }
+  .session-card .session-when {
+    font-size: 0.9rem;
+    color: var(--screen-muted);
+    margin-bottom: 4px;
+  }
+  .session-card .session-price {
+    margin: 4px 0 0;
+    font-size: 0.95rem;
+    color: var(--screen-muted);
+  }
+  .schedule-edit-wrap { flex-shrink: 0; margin-top: 12px; padding-top: 8px; }
+  .schedule-edit > summary {
+    list-style: none;
+    cursor: pointer;
+    display: block;
+    width: 100%;
+    margin-top: 0;
+    text-align: center;
+  }
+  .schedule-edit > summary::-webkit-details-marker { display: none; }
+  .schedule-edit-panel {
+    margin-top: 10px;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: var(--card);
+  }
+  .schedule-edit-panel form { margin: 0; }
+  .schedule-edit-panel label { margin-top: 0; }
+  .schedule-edit-panel button { margin-top: 10px; }
+  .schedule-edit-panel .muted { margin-top: 10px; margin-bottom: 0; }
   h1 { font-size: 1.5rem; margin: 0 0 6px; }
   h2 { font-size: 1.1rem; margin: 18px 0 8px; font-weight: 600; }
   .muted, p.muted { color: var(--screen-muted); font-family: ui-sans-serif, system-ui, sans-serif; font-size: 0.95rem; }
@@ -251,20 +329,11 @@ export const POSTCARD_TOKENS_CSS = `
       padding: 28px 24px;
       min-height: auto;
     }
-    .schedule-ask {
-      margin: 16px -24px -28px;
-      padding: 16px 24px;
-      border-radius: 0 0 18px 18px;
-    }
     .card { padding: 14px 16px; border-radius: 16px; }
   }
   @media (min-width: 1024px) {
     :root { --shell-max: min(720px, 100%); }
     .screen { padding: 32px 28px; }
-    .schedule-ask {
-      margin: 16px -28px -32px;
-      padding: 16px 28px;
-    }
   }
 `;
 
@@ -278,14 +347,23 @@ const COACH_NAV: Array<[CoachNavKey, string, string]> = [
   ['money', '/app/money', 'Money'],
 ];
 
-/** Plain links across the coach screens. Muted text, not buttons, so each
- * screen keeps its one teal action. */
+/** Plain links across the coach screens, with Account → Sign out. */
 export function coachNav(active?: CoachNavKey): SafeHtml {
-  return html`<nav class="coach-nav" aria-label="Coach">
-    ${COACH_NAV.map(([key, href, label]) =>
-      key === active ? html`<a href="${href}" aria-current="page">${label}</a>` : html`<a href="${href}">${label}</a>`,
-    )}
-  </nav>`;
+  return html`<div class="coach-top">
+    <nav class="coach-nav" aria-label="Coach">
+      ${COACH_NAV.map(([key, href, label]) =>
+        key === active ? html`<a href="${href}" aria-current="page">${label}</a>` : html`<a href="${href}">${label}</a>`,
+      )}
+    </nav>
+    <details class="coach-account">
+      <summary aria-label="Account menu">Account</summary>
+      <div class="coach-account-menu">
+        <form method="post" action="/signout">
+          <button type="submit" class="ghost">Sign out</button>
+        </form>
+      </div>
+    </details>
+  </div>`;
 }
 
 export function smsConsentCheckbox(): SafeHtml {
