@@ -126,8 +126,8 @@ test('in production a coach whose payment account is a test one cannot open book
 
       await withEnv(PRODUCTION, async () => {
         const page = await publicPage();
-        assert.match(page, /Booking opens soon/);
-        assert.doesNotMatch(page, />Book</);
+        assert.match(page, /Booking is not open yet/);
+        assert.doesNotMatch(page, /<a class="action" href="[^"]+\/book">Book<\/a>/);
         assert.equal((await bookForm()).status, 409);
         const money = await (await fetch(`${base}/app/money`, { headers: { cookie } })).text();
         assert.match(money, /takes test payments only, so parents cannot book paid sessions yet/);

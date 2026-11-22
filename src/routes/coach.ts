@@ -29,6 +29,8 @@ import {
   dismissTextsConsentPrompt,
   createCoach,
   getConnectRecipientKey,
+  PUBLIC_PAGE_LIMITS,
+  updateCoachPublicPage,
   type CoachRow,
 } from '../domain/auth.js';
 import {
@@ -1787,6 +1789,21 @@ type PageLinkOpts = {
  * select or copy, and a way to text it. On Schedule the main action is
  * sharing it, or, until payments work, the next payments step. Money has
  * its own. */
+function renderPublicPageEditCard(coach: CoachRow, error?: string): SafeHtml {
+  return html`<details class="public-page-edit"${error ? raw(' open') : raw('')}>
+    <summary>Your booking page</summary>
+    <p class="muted">Parents see this on ${coachPageUrl(coach.handle).replace(/^https?:\/\//, '')}.</p>
+    <form method="post" action="/app/schedule/public-page">
+      <label for="public_bio">What you teach and who it is for</label>
+      <textarea id="public_bio" name="public_bio" maxlength="${PUBLIC_PAGE_LIMITS.bioChars}" rows="3">${coach.public_bio ?? ''}</textarea>
+      <label for="sessions_place">Where sessions happen (online or a place)</label>
+      <input id="sessions_place" name="sessions_place" maxlength="${PUBLIC_PAGE_LIMITS.placeChars}" value="${coach.sessions_place ?? ''}" />
+      <button type="submit">Save</button>
+    </form>
+    ${error ? html`<p class="error">${error}</p>` : raw('')}
+  </details>`;
+}
+
 function renderPageLinkCard(coach: CoachRow, opts: PageLinkOpts) {
   const layout = opts.layout ?? 'card';
   const sharingOpen = opts.sharingOpen ?? true;
@@ -1820,6 +1837,34 @@ function renderPageLinkCard(coach: CoachRow, opts: PageLinkOpts) {
     ${paymentsInCard && opts.main !== 'share' && opts.main !== 'none' ? paymentsStepCard(opts.main) : raw('')}
   </div>`;
 }
+
+coachRouter.post('/app/schedule/public-page', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const coach = await findCoachById(db, coachId);
+  if (!coach) {
+    res.redirect(303, '/signin');
+    return;
+  }
+  const bioRaw = typeof req.body.public_bio === 'string' ? req.body.public_bio.trim() : '';
+  const placeRaw = typeof req.body.sessions_place === 'string' ? req.body.sessions_place.trim() : '';
+  if (bioRaw.length > PUBLIC_PAGE_LIMITS.bioChars || placeRaw.length > PUBLIC_PAGE_LIMITS.placeChars) {
+    res.status(422).send(
+      page(
+        'Schedule',
+        html`${coachNav('schedule')}
+          <h1>Coming up</h1>
+          ${renderPublicPageEditCard(coach, 'Keep the description shorter.')}`,
+      ),
+    );
+    return;
+  }
+  await updateCoachPublicPage(db, coachId, {
+    publicBio: bioRaw === '' ? null : bioRaw,
+    sessionsPlace: placeRaw === '' ? null : placeRaw,
+  });
+  res.redirect(303, '/app/schedule');
+});
 
 coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
   const db = getDb();
@@ -1928,6 +1973,7 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
               )}
           ${calendar}
           ${live}
+          ${renderPublicPageEditCard(coach)}
           <p><a class="action ghost" href="/app/schedule?setup=1">Add more by talking</a></p>
           ${phoneCard}
           ${emailCard}
@@ -2367,6 +2413,11 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
     }
   }
   
+  const listingRow = await db.query<{ hide_from_public: boolean; listing_note: string | null }>(
+    'select hide_from_public, listing_note from session where id = $1',
+    [sessionId],
+  );
+  const listing = listingRow.rows[0];
   const reach = session.status === 'cancelled' ? await cancelReach(db, sessionId) : null;
   const confirmId = Number(typeof req.query.refund === 'string' ? req.query.refund : '');
   const confirm =
@@ -2425,6 +2476,15 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
             </ul>`}
         
         ${await sessionPlaceSection(db, coachId, sessionId, req.query)}
+        ${session.status === 'scheduled' && new Date(session.starts_at_utc) >= new Date()
+          ? html`<h2>Public page</h2>
+              <form method="post" action="/app/sessions/${sessionId}/listing">
+                <label><input type="checkbox" name="hide_from_public" value="1"${listing?.hide_from_public ? raw(' checked') : raw('')} /> Hide from your booking page</label>
+                <label for="listing_note">Note for parents on this date (optional)</label>
+                <input id="listing_note" name="listing_note" maxlength="80" value="${listing?.listing_note ?? ''}" placeholder="e.g. Holiday — no session" />
+                <button type="submit" class="ghost">Save listing</button>
+              </form>`
+          : raw('')}
         <h2>Action</h2>
         ${session.status === 'scheduled' && new Date(session.starts_at_utc) >= new Date()
           ? html`<a class="action" href="/app/sessions/${sessionId}/cancel">Cancel session</a>`
@@ -2433,6 +2493,29 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
         <a class="action" href="/app/schedule">Back to schedule</a>`,
     ),
   );
+});
+
+coachRouter.post('/app/sessions/:id/listing', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const sessionId = Number(req.params.id);
+  const session = await loadSessionForCoach(db, coachId, sessionId);
+  if (!session) {
+    res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
+    return;
+  }
+  const hide = field(req.body, 'hide_from_public') === '1';
+  const noteRaw = field(req.body, 'listing_note').trim();
+  if (noteRaw.length > 80) {
+    res.redirect(303, `/app/sessions/${sessionId}`);
+    return;
+  }
+  await db.query('update session set hide_from_public = $2, listing_note = $3 where id = $1', [
+    sessionId,
+    hide,
+    noteRaw === '' ? null : noteRaw,
+  ]);
+  res.redirect(303, `/app/sessions/${sessionId}`);
 });
 
 interface MoveRow {

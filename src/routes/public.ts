@@ -14,7 +14,7 @@ import {
   type Contact,
 } from '../domain/auth.js';
 import { html, operatorLine, page, raw, smsConsentCheckbox } from '../lib/html.js';
-import { formatLocal } from '../lib/time.js';
+import { formatCoachDollars, formatLocal } from '../lib/time.js';
 import { atPlace, placeLine } from '../domain/locations.js';
 import { rowId } from '../lib/input.js';
 import {
@@ -72,6 +72,14 @@ import {
   MAX_CHILDREN_PER_BOOKING,
 } from '../domain/policy.js';
 import { hasPaymentHeldForCoach } from '../domain/paymentAttention.js';
+import {
+  coachHasUpcomingPaidSessions,
+  coachMinDropInCents,
+  loadPublicPagePolicy,
+  loadPublicSessions,
+  parsePublicPageQuery,
+  renderCoachPublicPage,
+} from '../domain/publicCoachPage.js';
 import { moveByParent, moveChoice, type MoveChoice, type MoveState } from '../domain/moveBooking.js';
 import { cancelRefundState, cancelUnderPolicy, inTimeCancel, type CancelRefundState, type InTimeCancel } from '../domain/cancelRefund.js';
 import { cancelRefundNote, checkoutCancelLine, inTimeCancelNote } from './cancelRefund.js';
@@ -143,9 +151,9 @@ function needsPayment(session: { price_cents: number }): boolean {
  * Nothing is sent to the payment page, which would answer an error. */
 function bookingOpensSoon(coach: CoachRow, note?: string) {
   return page(
-    'Booking opens soon',
-    html`<h1>Booking opens soon</h1>
-      <p class="muted">${coach.name} is still setting up payments. Check back soon to book.</p>
+    'Booking not open',
+    html`<h1>Booking is not open yet</h1>
+      <p class="muted">This coach has not turned on payments. ${coach.name} is still setting up.</p>
       ${note ? html`<p class="muted">${note}</p>` : raw('')}
       <a class="action" href="/c/${coach.handle}">See ${coach.name}'s sessions</a>`,
   );
@@ -403,63 +411,38 @@ publicRouter.get('/c/:handle', async (req, res) => {
 
   const from = (await bookingFromLink(db, coach, req.query.from)) ? fromToken(req.query.from) : null;
   const bookQuery = from ? `?from=${encodeURIComponent(from)}` : '';
-
-  const sessions = await db.query<{
-    id: number;
-    starts_at_utc: string;
-    tz: string;
-    name: string;
-    capacity: number;
-    price_cents: number;
-    booked: string;
-    location_text: string | null;
-    location_address: string | null;
-  }>(
-    `select s.id, s.starts_at_utc, s.tz, st.name, coalesce(s.capacity_override, st.capacity) as capacity, st.price_cents,
-            s.location_text, s.location_address,
-            (coalesce((select count(*) from booking b where b.session_id = s.id and ${takesSpotSql('b')}), 0)
-             + coalesce((select count(*) from waitlist w where w.session_id = coalesce(s.overflow_of, s.id) and w.state = 'waiting'), 0))::text as booked
-     from session s
-     join session_type st on st.id = s.session_type_id
-     where st.coach_id = $1 and s.status = 'scheduled' and s.starts_at_utc > now()
-     order by s.starts_at_utc
-     limit 50`,
-    [coach.id],
-  );
-  const open = sessions.rows.some(needsPayment) ? await paymentsOpen(db, coach) : true;
-  // Families who already hold credits can still book with them.
+  const pageQuery = parsePublicPageQuery(req.query as Record<string, unknown>);
+  const sessions = await loadPublicSessions(db, coach.id, {
+    week: pageQuery.week,
+    type: pageQuery.type,
+    coachTz: coach.tz,
+  });
+  const packages = (await getPackagesForCoach(db, coach.id)).filter((p) => p.credits > 0);
+  const policy = await loadPublicPagePolicy(db, coach.id);
+  const minDropInCents = await coachMinDropInCents(db, coach.id);
+  const needsPaymentAny = await coachHasUpcomingPaidSessions(db, coach.id);
+  const open = needsPaymentAny ? await paymentsOpen(db, coach) : true;
   const creditsWork = !open && (await coachHasOpenCredits(db, coach.id));
+  const askQuestionHref = `mailto:${encodeURIComponent(SUPPORT_EMAIL)}?subject=${encodeURIComponent(`Question about ${coach.handle} on Coachatron`)}`;
+  const body = renderCoachPublicPage({
+    coach,
+    sessions,
+    packages,
+    policy,
+    minDropInCents,
+    paymentsOpen: open,
+    creditsWork,
+    bookQuery,
+    pageQuery,
+    fromToken: from,
+    needsPaymentAny,
+    askQuestionHref,
+  });
 
   res.status(200).send(
     page(
       coach.name,
-      html`<h1>${coach.name}</h1>
-        ${sessions.rows.length === 0
-          ? html`<p class="muted">No open sessions right now.</p>`
-          : sessions.rows.map((s) => {
-              const spotsLeft = s.capacity - Number(s.booked);
-              return html`<div class="card">
-                <strong>${formatLocal(s.starts_at_utc, s.tz)}</strong>
-                <div class="meta">
-                  <span>${s.name}</span>
-                  <span>${spotsLeft > 0 ? `${spotsLeft} spot${spotsLeft === 1 ? '' : 's'} left · $${(s.price_cents / 100).toFixed(2)}` : 'Full'}</span>
-                </div>
-                ${s.location_text ? html`<div class="meta"><span>${placeLine(s.location_text, s.location_address)}</span></div>` : raw('')}
-                ${spotsLeft <= 0
-                  ? open || !needsPayment(s) || creditsWork
-                    ? html`<a class="action ghost" href="/c/${coach.handle}/sessions/${s.id}/book${bookQuery}">Join the waitlist</a>`
-                    : raw('')
-                  : open || !needsPayment(s)
-                    ? html`<a class="action" href="/c/${coach.handle}/sessions/${s.id}/book${bookQuery}">Book</a>`
-                    : html`<p class="muted">Booking opens soon</p>
-                        ${creditsWork
-                          ? html`<p class="muted"><a href="/c/${coach.handle}/sessions/${s.id}/book${bookQuery}">Have session credits? Book with them</a></p>`
-                          : raw('')}`}
-              </div>`;
-            })}
-        <p class="muted">Booked before? <a href="/my">See all your sessions</a></p>`,
-      // A page opened with ?from= carries a booking's manage link, so it
-      // names no canonical address.
+      body,
       req.query.from === undefined ? { canonicalPath: `/c/${encodeURIComponent(coach.handle)}` } : {},
     ),
   );
@@ -574,10 +557,17 @@ function renderBookingForm(
   opts: { creditsOnly?: boolean; children?: number; note?: string } = {},
 ) {
   const children = opts.children ?? 1;
+  const priceLine =
+    session.capacity > 1 && session.price_cents > 0
+      ? `${formatCoachDollars(session.price_cents)} per person · up to ${children} ${children === 1 ? 'child' : 'children'} (${formatCoachDollars(session.price_cents * children)} total)`
+      : session.price_cents > 0
+        ? formatCoachDollars(session.price_cents)
+        : 'Free';
   return page(
     'Book a session',
     html`<h1>${session.name}</h1>
-      <p class="muted">${formatLocal(session.starts_at_utc, session.tz)}${atPlace(session)} — $${(session.price_cents / 100).toFixed(2)}</p>
+      <p class="muted">${formatLocal(session.starts_at_utc, session.tz)}${atPlace(session)} — ${priceLine}</p>
+      <p class="muted">No account needed. We text you a link to manage this booking if you opt in to texts.</p>
       ${opts.note ? html`<p>${opts.note}</p>` : raw('')}
       ${opts.creditsOnly
         ? html`<p class="muted">${coach.name} is still setting up payments, so for now you can book only with session credits. Enter the phone number your credits are under.</p>`
@@ -986,7 +976,9 @@ function renderAlreadyBooked(
     'Booked',
     html`<h1>You're booked</h1>
       <p class="muted">${what}</p>
+      <p class="muted">If you opted in to texts, a confirmation is on its way. You can always use your manage link.</p>
       ${links}
+      <p class="muted"><a href="/my">See all your sessions</a></p>
       <a class="action ghost" href="/c/${coach.handle}">Back to ${coach.name}'s sessions</a>`,
   );
 }

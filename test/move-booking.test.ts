@@ -841,7 +841,7 @@ test("in production a booking whose test-mode payment was not applied cannot mov
       await withEnv(PRODUCTION, async () => {
         assert.equal((await postStorePaid(base, { userId: user, amountCents: 3500, paymentId: 'ch_test_only' })).status, 200);
         assert.equal((await payment(db, pending.id)).status, 'pending', 'the test-mode payment booked nothing');
-        assert.match(await (await fetch(`${base}/c/${seed.coach.handle}`)).text(), /Booking opens soon/);
+        assert.match(await (await fetch(`${base}/c/${seed.coach.handle}`)).text(), /Booking is not open yet/);
 
         assert.ok(!offers(await managePage(base, pending.manage_token), to), 'no move is offered');
         assert.equal((await move(base, pending.manage_token, to)).status, 409);

@@ -96,7 +96,7 @@ test('coach onboarding: OTP sign-in, session type, weekly schedule, public page'
       const publicHtml = await publicRes.text();
       assert.match(publicHtml, /Goalkeeper Group/);
       assert.match(publicHtml, /8 spots left/);
-      assert.match(publicHtml, /\$35\.00/);
+      assert.match(publicHtml, /\$35/);
     });
   });
 });

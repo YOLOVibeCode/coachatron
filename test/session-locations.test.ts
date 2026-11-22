@@ -770,12 +770,13 @@ test("parents see the session's own place on the coach's page, the booking form,
     await withServer(async (base) => {
       const handle = seed.coach.handle;
       const list = await (await fetch(`${base}/c/${handle}`)).text();
-      assert.equal(list.match(/<div class="meta"><span>Riverside Park, 120 River Rd<\/span><\/div>/g)?.length, 1, 'on its own session only');
+      assert.equal((list.match(/Riverside Park, 120 River Rd/g) ?? []).length, 1, 'on its own session only');
 
       const form = await (await fetch(`${base}/c/${handle}/sessions/${seed.sessionId}/book`)).text();
-      assert.match(form, /<p class="muted">[^<]+ · Riverside Park, 120 River Rd — \$35\.00<\/p>/);
+      assert.match(form, /<p class="muted">[^<]+ · Riverside Park, 120 River Rd — \$35/);
       const bareForm = await (await fetch(`${base}/c/${handle}/sessions/${bare.rows[0].id}/book`)).text();
-      assert.match(bareForm, /<p class="muted">[^<·]+ — \$35\.00<\/p>/, 'a session with no place says none');
+      assert.match(bareForm, /— \$35 per person/, 'a session with no place says none');
+      assert.doesNotMatch(bareForm, /Riverside Park/);
 
       const b = await bookOnline(base, handle, seed.sessionId, 'Alex', '5551112222', { contact_email: 'alex.parent@example.com' });
       assert.ok(b.key);

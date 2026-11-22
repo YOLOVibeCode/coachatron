@@ -89,7 +89,8 @@ link to show coaches.]
   Money screen.
 - Today Coachatron supports coaches in the United States, paid in US dollars.
 - **Booking opens when your account can take payments.** Until Stripe says it
-  can, your public page shows paid sessions as "Booking opens soon" and
+  can, your public page says Booking is not open yet (a **Not open**
+  control instead of Book) and
   takes no payment. Free sessions can still be booked, and families who hold
   session credits with you can still book with them.
 - **Texts about setting up payments.** If your mobile has opted in to texts,

@@ -163,7 +163,7 @@ the solo coach. They return only when a paying customer is blocked without them.
    cannot take a card).
    *(Updated 2026-11-03: Stripe Connect through the relay, not Square OAuth.
    Until the coach's account can take charges, each paid session on their
-   page says "Booking opens soon" in place of Book; free sessions book as
+   page says Booking is not open yet and shows Not open in place of Book; free sessions book as
    usual, and families who hold session credits can still book with them.
    Publishing texts the coach their page link and, until payments work, a
    payments link (one use, within 7 days) that signs them in on Money. One
@@ -713,12 +713,10 @@ message_log(id, to_phone, template, body, provider_id, sent_at, status)
 `credit.contact_phone` is the join key for a buyer, by design (§9.2). Normalize
 to E.164 on write.
 
-*(Numbers 0033–0041 are Slice 2, §8.2: 0033 refund policy, 0034 locations,
-0035 my-sessions link, 0036 assistant pay, 0037 calendar feed, 0038 payment
-receipt, 0039 setup draft warnings, 0040 texts consent prompt dismissed, 0041 one active
-session type name per coach.)*
+*(Numbers 0033–0043 include Slice 2 §8.2 (0033–0041) and public booking page fields:
+0042 coach public bio and sessions place, 0043 session listing note and hide-from-public.)*
 
-Added since the sketch (migrations 0013–0041): `request_limit` (fixed-window
+Added since the sketch (migrations 0013–0043): `request_limit` (fixed-window
 counts per client address, phone, or email) and `otp_code.attempts`;
 `coach.email_verified_at`; `coach_payments` (whether the coach can take
 charges, and the payment texts owed) and `payments_link`;

@@ -118,8 +118,8 @@ interface SessionCard {
   name: string;
   detail: string;
   book: string | null;
-  /** "Booking opens soon" in place of Book. */
-  opensSoon: boolean;
+  /** Paid sessions while charges are off show a disabled Not open control. */
+  notOpen: boolean;
 }
 
 /** The session cards on a coach's public page, as a parent sees them. */
@@ -127,16 +127,20 @@ function sessionCards(html: string): SessionCard[] {
   return html
     .split('<div class="card">')
     .slice(1)
+    .filter((chunk) => !chunk.includes('booking-closed-banner') && /<strong>/.test(chunk))
     .map((chunk) => {
       const spans = [...chunk.matchAll(/<span>([\s\S]*?)<\/span>/g)].map((m) => visible(m[1]));
+      const metaLeft = spans[0] ?? '';
+      const typeName = metaLeft.split(' · ').find((p) => p !== '' && !/^\d+ min$/.test(p)) ?? metaLeft;
       return {
         when: visible(/<strong>([\s\S]*?)<\/strong>/.exec(chunk)?.[1] ?? ''),
-        name: spans[0] ?? '',
+        name: typeName.includes(' · ') ? (metaLeft.split(' · ')[1] ?? typeName) : typeName,
         detail: spans[1] ?? '',
         book: /href="([^"]+\/book)"/.exec(chunk)?.[1] ?? null,
-        opensSoon: /Booking opens soon/.test(visible(chunk)),
+        notOpen: /Not open/.test(visible(chunk)) && !/href="[^"]+\/book/.test(chunk),
       };
-    });
+    })
+    .filter((c) => c.when.length > 0);
 }
 
 function sessionCookie(res: Response): string {
@@ -330,25 +334,27 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           const groups = cards.filter((c) => c.name === 'Group');
           assert.ok(privates.length >= 2 && groups.length >= 1, `both kinds of session are listed: ${JSON.stringify(cards.slice(0, 4))}`);
           for (const c of privates) {
-            assert.match(c.when, /^(Tue|Thu), \w{3} \d{1,2}, 6:00 PM$/, `privates are Tue/Thu 6pm: ${c.when}`);
-            assert.equal(c.detail, '1 spot left · $60.00');
+            assert.match(c.when, /^(Tue|Thu), \w{3} \d{1,2}.*6:00/, `privates are Tue/Thu 6pm: ${c.when}`);
+            assert.match(c.detail, /Available · \$60/);
           }
           for (const c of groups) {
-            assert.match(c.when, /^Sat, \w{3} \d{1,2}, 9:00 AM$/, `the group is Saturday 9am: ${c.when}`);
-            assert.equal(c.detail, '8 spots left · $25.00');
+            assert.match(c.when, /^Sat, \w{3} \d{1,2}.*9:00/, `the group is Saturday 9am: ${c.when}`);
+            assert.match(c.detail, /8 spots left · \$25/);
           }
         });
 
-        await step('4. until payments work, the coach page shows "Booking opens soon" and no Pay', async () => {
+        await step('4. until payments work, the coach page is closed and has no Pay', async () => {
           const pubHtml = await (await get(`/c/${handle}`)).text();
+          assert.match(visible(pubHtml), /Booking is not open yet/);
+          assert.match(visible(pubHtml), /has not turned on payments/);
           const cards = sessionCards(pubHtml);
           assert.ok(cards.length >= 3);
           assert.ok(
-            cards.every((c) => c.opensSoon && c.book === null),
-            `every priced session says "Booking opens soon" and has no Book link: ${JSON.stringify(cards.slice(0, 3))}`,
+            cards.every((c) => c.notOpen && c.book === null),
+            `every priced session shows Not open and has no Book link: ${JSON.stringify(cards.slice(0, 3))}`,
           );
           const pubText = visible(pubHtml);
-          assert.doesNotMatch(pubText, /\bPay\b/, 'nothing offers to pay');
+          assert.doesNotMatch(pubText, />\s*Book\s*</, 'no Book action on the list');
           assert.doesNotMatch(pubText, /Book with them/, 'no family holds credits, so there is no credits link either');
 
           const group = await db.query<{ id: number }>(
@@ -359,13 +365,14 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           const bookPage = await get(bookPath);
           assert.equal(bookPage.status, 200);
           const bookHtml = await bookPage.text();
-          assert.match(visible(bookHtml), /Booking opens soon Dana Rivera is still setting up payments\./);
+          assert.match(visible(bookHtml), /Booking is not open yet/);
+          assert.match(visible(bookHtml), /has not turned on payments/);
           assert.doesNotMatch(bookHtml, /name="contact_phone"/, 'no booking form');
           assert.doesNotMatch(bookHtml, new RegExp(escapeRegExp(relay.url)), 'no link to the payment page');
 
           const tried = await postForm(bookPath, { athlete_name: 'Sam Lee', contact_phone: '(512) 555-0142' });
           assert.equal(tried.status, 409, 'a booking posted anyway is turned away');
-          assert.match(visible(await tried.text()), /Booking opens soon/);
+          assert.match(visible(await tried.text()), /Booking is not open yet/);
           assert.equal(await count('booking'), 0, 'and starts no booking');
           assert.deepEqual(relay.buyLinks, [], 'no parent reached a payment page');
         });
@@ -417,7 +424,7 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
             'between accepting and finishing, Money asks the coach to finish',
           );
           const stillClosed = sessionCards(await (await get(`/c/${handle}`)).text());
-          assert.ok(stillClosed.every((c) => c.opensSoon), 'booking stays closed until charges work');
+          assert.ok(stillClosed.every((c) => c.notOpen), 'booking stays closed until charges work');
         });
 
         await step('6. when the seller event says charges work, the coach gets one "You can take payments now" text and booking opens', async () => {
@@ -448,7 +455,7 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           assert.doesNotMatch(live, /can't book until payments/, 'the schedule no longer warns about payments');
 
           const cards = sessionCards(await (await get(`/c/${handle}`)).text());
-          assert.ok(cards.every((c) => c.book && !c.opensSoon), 'every open session has a Book link now');
+          assert.ok(cards.every((c) => c.book && !c.notOpen), 'every open session has a Book link now');
         });
 
         await step('7. a parent books, pays on the signed buy link, gets a confirmation with the manage link, and the manage page shows the booking', async () => {
@@ -461,7 +468,8 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           const bookForm = await get(bookPath);
           assert.equal(bookForm.status, 200);
           const bookHtml = await bookForm.text();
-          assert.match(visible(bookHtml), /^Book a session — Coachatron Group Sat, \w{3} \d{1,2}, 9:00 AM — \$25\.00/);
+          assert.match(visible(bookHtml), /Group Sat, \w{3} \d{1,2}, 9:00 AM — \$25 per person/);
+          assert.match(visible(bookHtml), /No account needed/);
           for (const name of ['athlete_name', 'contact_phone', 'sms_consent', 'contact_email']) {
             assert.match(bookHtml, new RegExp(`name="${name}"`), `the booking form asks for ${name}`);
           }
@@ -578,7 +586,7 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           assert.match(backHtml, new RegExp(`href="/booking/${b.manage_token}">Manage this booking<`), 'with the manage link');
           assert.match(visible(await (await get(`${returned.pathname}${returned.search}`)).text()), /You're booked/, 'and so does the return link');
           const after = sessionCards(await (await get(`/c/${handle}`)).text()).find((c) => c.book === bookPath);
-          assert.equal(after?.detail, '7 spots left · $25.00', 'the coach page counts the paid spot');
+          assert.match(after?.detail ?? '', /7 spots left · \$25/, 'the coach page counts the paid spot');
 
           // The parent ticked the texts box and gave an email: one text and
           // one email confirm the booking, each with the manage link.

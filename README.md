@@ -54,7 +54,7 @@ npm run dev        # start the server on http://localhost:3000
 End-to-end test: `test/north-star.test.ts` runs in `npm test` and follows one
 coach from a texted week to a parent's paid booking through the real routes
 (text in, start link, preview, Publish, the texted page and payments links,
-"Booking opens soon" until payments work, connect payments, the payments-ready
+"Booking is not open yet" until payments work, connect payments, the payments-ready
 text, book, checkout by its token, signed buy link, payment event, the
 confirmation with the manage link, manage page), against the fake relay and a
 fake model.
@@ -231,9 +231,10 @@ texts box) with their page link and, until payments work, a payments link
 (`/p/:token`): it works once within 7 days, signs the coach in, and opens
 Money, where they accept the terms and connect payments. Until the relay says
 the coach's account can take charges, each paid session on `/c/:handle` shows
-**Booking opens soon** instead of Book, and nothing leads a parent to a
-payment page; free sessions book as usual, and families who hold session
-credits with the coach can still book with them. When charges turn on, the
+**Booking is not open yet** on the coach page (with **Not open** on each paid
+session) instead of Book, and nothing leads a parent to a payment page; free
+sessions book as usual, and families who hold session credits with the coach
+can still book with them. When charges turn on, the
 coach gets one "You can take payments now" text, held until 8am if it is
 quiet hours. A coach who published but has not finished gets the payments
 link again about a day and about three days after publishing, two reminders
@@ -244,7 +245,7 @@ The relay marks each payment and each coach's payment account test or live.
 In production (`APP_ENV=production`) only live money counts: a test-mode
 paid, refund or dispute event is not applied (it books nothing, gives no
 credit and shows nothing on Money; it is logged), and a coach
-whose account is a test one shows **Booking opens soon** and is told so on
+whose account is a test one shows **Booking is not open yet** and is told so on
 Money, until the account is live or `ALLOW_TEST_PAYMENTS` is set. The
 production relay row is test-only today, so production booking stays closed
 until it is switched to live. Development and uat take test payments as

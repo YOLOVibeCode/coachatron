@@ -41,9 +41,9 @@ booking to confirm they are the parent or guardian.]
   checkout page that opens when you choose how to pay. Coachatron never sees or
   stores your card number.
 - Prices are in US dollars.
-- **Booking opens when the coach can take payments.** Until the coach has
-  finished setting up payments, their page shows paid sessions as "Booking
-  opens soon" and does not take payment. If you already hold session credits
+- **Booking is not open yet until the coach can take payments.** Until the coach has
+  finished setting up payments, their page says booking is not open yet and
+  shows a **Not open** control on paid sessions instead of taking payment. If you already hold session credits
   with that coach, you can still book with them.
 - **Your spot is held while you pay.** When you start a booking, we hold the
   spot for 15 minutes while you choose how to pay and pay. One mobile number
