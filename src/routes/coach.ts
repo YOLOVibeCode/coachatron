@@ -593,21 +593,179 @@ type SessionTypeFields = {
   backupPayCents: number | null;
 };
 
-function parseSessionTypeBody(body: Record<string, unknown>): SessionTypeFields | null {
-  const name = field(body, 'name');
-  const durationMin = wholeNumber(field(body, 'duration_min'), LIMITS.durationMin);
-  const capacity = wholeNumber(field(body, 'capacity'), LIMITS.capacity);
-  const priceCents = dollarsToCents(field(body, 'price_dollars'), LIMITS.priceCents);
-  const backupPayRaw = field(body, 'backup_pay_dollars');
-  const backupPayCents = backupPayRaw ? dollarsToCents(backupPayRaw, LIMITS.backupPayCents) : null;
-  if (!name || durationMin === null || capacity === null || priceCents === null || (backupPayRaw && backupPayCents === null)) {
-    return null;
-  }
-  return { name, durationMin, capacity, priceCents, backupPayCents };
+type SessionTypeFormValues = {
+  name?: string;
+  durationMin?: number | string;
+  capacity?: number | string;
+  priceDollars?: number | string;
+  backupPayDollars?: number | string;
+};
+
+type SessionTypeFieldErrors = Partial<
+  Record<'name' | 'duration_min' | 'capacity' | 'price_dollars' | 'backup_pay_dollars' | '_form', string>
+>;
+
+const SESSION_TYPE_NAME_UNIQUE = 'session_type_name_unique';
+
+function uniqueViolation(err: unknown): string | null {
+  if (typeof err !== 'object' || err === null || (err as { code?: unknown }).code !== '23505') return null;
+  const constraint = (err as { constraint?: unknown }).constraint;
+  return typeof constraint === 'string' ? constraint : '';
 }
 
-/** The form's message when a number is missing or out of range. */
-const SESSION_TYPE_RANGES = `Fill in every field: ${LIMITS.durationMin.min}–${LIMITS.durationMin.max} minutes, ${LIMITS.capacity.min}–${LIMITS.capacity.max} athletes, and a price up to ${formatCoachDollars(LIMITS.priceCents.max)}.`;
+function formatTypeSpots(capacity: number): string {
+  return capacity === 1 ? 'one-on-one' : `up to ${capacity} spots`;
+}
+
+function formatTypeMeta(duration: number, capacity: number, priceCents: number): string {
+  return `${duration} min · ${formatTypeSpots(capacity)} · ${formatCoachDollars(priceCents)} per person`;
+}
+
+function formatWeeklySummary(slots: Array<{ weekday: number; time_local: string }>): string {
+  if (slots.length === 0) return 'No weekly times yet';
+  const groups = new Map<string, number[]>();
+  for (const slot of slots) {
+    const days = groups.get(slot.time_local) ?? [];
+    days.push(slot.weekday);
+    groups.set(slot.time_local, days);
+  }
+  return [...groups.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([time, days]) => {
+      const dayStr = [...new Set(days)].sort((x, y) => x - y).map((d) => WEEKDAY_LABELS[d]).join(', ');
+      return `${dayStr} · ${formatClock(time)}`;
+    })
+    .join('; ');
+}
+
+function readSessionTypeBody(
+  body: Record<string, unknown>,
+  opts?: { defaultDurationMin?: number },
+): { fields: SessionTypeFields | null; errors: SessionTypeFieldErrors; values: SessionTypeFormValues } {
+  const errors: SessionTypeFieldErrors = {};
+  const name = field(body, 'name');
+  if (!name) errors.name = 'Give the session a name.';
+
+  const durationRaw = field(body, 'duration_min');
+  let durationMin: number | null = null;
+  if (!durationRaw && opts?.defaultDurationMin != null) {
+    durationMin = opts.defaultDurationMin;
+  } else if (!durationRaw) {
+    errors.duration_min = `Use ${LIMITS.durationMin.min}–${LIMITS.durationMin.max} minutes.`;
+  } else {
+    durationMin = wholeNumber(durationRaw, LIMITS.durationMin);
+    if (durationMin === null) errors.duration_min = `Use ${LIMITS.durationMin.min}–${LIMITS.durationMin.max} minutes.`;
+  }
+
+  const capacityRaw = field(body, 'capacity');
+  const capacity = wholeNumber(capacityRaw, LIMITS.capacity);
+  if (capacity === null) {
+    errors.capacity = `Use ${LIMITS.capacity.min}–${LIMITS.capacity.max} spots. 1 means one-on-one.`;
+  }
+
+  const priceRaw = field(body, 'price_dollars');
+  const priceCents = dollarsToCents(priceRaw, LIMITS.priceCents);
+  if (priceCents === null) {
+    errors.price_dollars = `Enter a price up to ${formatCoachDollars(LIMITS.priceCents.max)} per person.`;
+  }
+
+  const backupPayRaw = field(body, 'backup_pay_dollars');
+  const backupPayCents = backupPayRaw ? dollarsToCents(backupPayRaw, LIMITS.backupPayCents) : null;
+  if (backupPayRaw && backupPayCents === null) {
+    errors.backup_pay_dollars = `Enter an amount up to ${formatCoachDollars(LIMITS.backupPayCents.max)}.`;
+  }
+
+  const values: SessionTypeFormValues = {
+    name,
+    durationMin: durationMin ?? durationRaw,
+    capacity: capacity ?? capacityRaw,
+    priceDollars: priceRaw,
+    backupPayDollars: backupPayRaw,
+  };
+
+  const fields =
+    name && durationMin !== null && capacity !== null && priceCents !== null && Object.keys(errors).length === 0
+      ? { name, durationMin, capacity, priceCents, backupPayCents }
+      : null;
+
+  return { fields, errors, values };
+}
+
+type SessionTypeRow = {
+  id: number;
+  name: string;
+  duration_min: number;
+  capacity: number;
+  price_cents: number;
+  backup_pay_cents: number | null;
+};
+
+type SessionTypesViewState = {
+  createdId?: number;
+  openCreate?: boolean;
+  create?: { values: SessionTypeFormValues; errors: SessionTypeFieldErrors };
+  openEditId?: number;
+  edit?: { typeId: number; values: SessionTypeFormValues; errors: SessionTypeFieldErrors };
+  deleteBlockedId?: number;
+};
+
+async function loadActiveSessionTypes(db: DbClient, coachId: number): Promise<SessionTypeRow[]> {
+  const types = await db.query<SessionTypeRow>(
+    'select id, name, duration_min, capacity, price_cents, backup_pay_cents from session_type where coach_id = $1 and active = true order by id',
+    [coachId],
+  );
+  return types.rows;
+}
+
+async function loadWeeklySlotsByType(
+  db: DbClient,
+  typeIds: number[],
+): Promise<Map<number, Array<{ weekday: number; time_local: string }>>> {
+  const map = new Map<number, Array<{ weekday: number; time_local: string }>>();
+  if (typeIds.length === 0) return map;
+  const result = await db.query<{ session_type_id: number; weekday: number; time_local: string }>(
+    `select session_type_id, weekday, time_local from weekly_slot
+     where active = true and session_type_id = any($1::int[])
+     order by session_type_id, weekday, time_local`,
+    [typeIds],
+  );
+  for (const row of result.rows) {
+    const list = map.get(row.session_type_id) ?? [];
+    list.push({ weekday: row.weekday, time_local: row.time_local });
+    map.set(row.session_type_id, list);
+  }
+  return map;
+}
+
+async function sessionTypeNameTaken(db: DbClient, coachId: number, name: string, exceptId?: number): Promise<boolean> {
+  const result = await db.query<{ id: number }>(
+    `select id from session_type
+     where coach_id = $1 and active = true and lower(btrim(name)) = lower(btrim($2))
+       and ($3::int is null or id <> $3)
+     limit 1`,
+    [coachId, name, exceptId ?? null],
+  );
+  return result.rows.length > 0;
+}
+
+async function sessionTypeHasFutureBookings(db: DbClient, coachId: number, typeId: number): Promise<boolean> {
+  const result = await db.query<{ exists: boolean }>(
+    `select exists(
+       select 1 from session s
+       join session_type st on st.id = s.session_type_id
+       join booking b on b.session_id = s.id and ${takesSpotSql('b')}
+       where st.id = $1 and st.coach_id = $2
+         and s.status = 'scheduled' and s.starts_at_utc > now()
+     ) as exists`,
+    [typeId, coachId],
+  );
+  return result.rows[0]?.exists ?? false;
+}
+
+function fieldError(errors: SessionTypeFieldErrors | undefined, key: keyof SessionTypeFieldErrors): SafeHtml {
+  const message = errors?.[key];
+  return message ? html`<p class="error setup-field-error">${message}</p>` : raw('');
+}
 
 /** The future session of this type with the most spots taken, when that is
  * more than the new capacity. Sessions given their own capacity (a backup
@@ -637,101 +795,225 @@ async function sessionAboveCapacity(
 function renderSessionTypeForm(
   action: string,
   submitLabel: string,
-  values?: Partial<SessionTypeFields> & { priceDollars?: number; backupPayDollars?: number },
+  opts: {
+    idPrefix: string;
+    mode: 'create' | 'edit';
+    values?: SessionTypeFormValues & { priceCents?: number; backupPayCents?: number | null };
+    errors?: SessionTypeFieldErrors;
+    cancelHref: string;
+  },
 ) {
-  const priceDollars = values?.priceDollars ?? (values?.priceCents != null ? values.priceCents / 100 : undefined);
+  const { idPrefix, mode, values, errors, cancelHref } = opts;
+  const priceDollars =
+    values?.priceDollars ??
+    (values?.priceCents != null ? values.priceCents / 100 : undefined);
   const backupPayDollars =
-    values?.backupPayDollars ?? (values?.backupPayCents != null ? values.backupPayCents / 100 : undefined);
-  return html`<form method="post" action="${action}">
-    <label for="name">Session name</label>
-    <input id="name" name="name" required placeholder="e.g. Group training" value="${values?.name ?? ''}" />
-    <label for="duration_min">Duration (minutes)</label>
-    <input id="duration_min" name="duration_min" type="number" min="${LIMITS.durationMin.min}" max="${LIMITS.durationMin.max}" required value="${values?.durationMin ?? ''}" />
-    <label for="capacity">Capacity</label>
-    <input id="capacity" name="capacity" type="number" min="${LIMITS.capacity.min}" max="${LIMITS.capacity.max}" required value="${values?.capacity ?? ''}" />
-    <label for="price_dollars">Price (dollars)</label>
-    <input id="price_dollars" name="price_dollars" type="number" min="0.01" max="${LIMITS.priceCents.max / 100}" step="0.01" required value="${priceDollars ?? ''}" />
-    <label for="backup_pay_dollars">Backup coach pays (dollars, optional)</label>
-    <input id="backup_pay_dollars" name="backup_pay_dollars" type="number" min="0" max="${LIMITS.backupPayCents.max / 100}" step="0.01" value="${backupPayDollars ?? ''}" />
-    <button type="submit">${submitLabel}</button>
+    values?.backupPayDollars ??
+    (values?.backupPayCents != null && values.backupPayCents != null ? values.backupPayCents / 100 : undefined);
+  const durationDefault = mode === 'create' && values?.durationMin === undefined ? 60 : values?.durationMin;
+  const formExtras =
+    mode === 'create'
+      ? raw(' onsubmit="const b=this.querySelector(\'button[type=submit]\');if(b){b.disabled=true;b.textContent=\'Saving…\';}"')
+      : raw('');
+  return html`<form method="post" action="${action}"${formExtras}>
+    <label for="${idPrefix}name">Session name</label>
+    <input id="${idPrefix}name" name="name" required placeholder="e.g. Group training" value="${values?.name ?? ''}" />
+    ${fieldError(errors, 'name')}
+    <label for="${idPrefix}duration_min">Duration (minutes)</label>
+    <input id="${idPrefix}duration_min" name="duration_min" type="number" inputmode="numeric" min="${LIMITS.durationMin.min}" max="${LIMITS.durationMin.max}" value="${durationDefault ?? ''}" />
+    ${fieldError(errors, 'duration_min')}
+    <label for="${idPrefix}capacity">Spots</label>
+    <input id="${idPrefix}capacity" name="capacity" type="number" inputmode="numeric" min="${LIMITS.capacity.min}" max="${LIMITS.capacity.max}" required placeholder="e.g. 5" value="${values?.capacity ?? ''}" />
+    <p class="muted">1 means one-on-one.</p>
+    ${fieldError(errors, 'capacity')}
+    <label for="${idPrefix}price_dollars">Price per person (dollars)</label>
+    <input id="${idPrefix}price_dollars" name="price_dollars" type="number" inputmode="decimal" min="0.01" max="${LIMITS.priceCents.max / 100}" step="0.01" required value="${priceDollars ?? ''}" />
+    ${fieldError(errors, 'price_dollars')}
+    <details class="type-optional">
+      <summary>Backup coach pay (optional)</summary>
+      <p class="muted">If a session fills and you open a second group, this is what you pay a roster backup coach to run it.</p>
+      <label for="${idPrefix}backup_pay_dollars">Amount (dollars)</label>
+      <input id="${idPrefix}backup_pay_dollars" name="backup_pay_dollars" type="number" inputmode="decimal" min="0" max="${LIMITS.backupPayCents.max / 100}" step="0.01" value="${backupPayDollars ?? ''}" />
+      ${fieldError(errors, 'backup_pay_dollars')}
+    </details>
+  ${errors?._form ? html`<p class="error">${errors._form}</p>` : raw('')}
+    <div class="btn-row">
+      <button type="submit">${submitLabel}</button>
+      <a class="action ghost" href="${cancelHref}">Cancel</a>
+    </div>
   </form>`;
 }
 
-coachRouter.get('/app/session-types', requireAuth, async (_req, res) => {
+async function renderSessionTypesPage(
+  db: DbClient,
+  coachId: number,
+  state: SessionTypesViewState = {},
+): Promise<string> {
+  const types = await loadActiveSessionTypes(db, coachId);
+  const slotsByType = await loadWeeklySlotsByType(
+    db,
+    types.map((t) => t.id),
+  );
+  const created = state.createdId ? types.find((t) => t.id === state.createdId) : undefined;
+  const createdBanner =
+    created
+      ? html`<div class="card">
+          <p><strong>${created.name} added.</strong> Add weekly times so it shows on your schedule.</p>
+          <a class="action" href="/app/session-types/${created.id}/generate-week">Add weekly times</a>
+        </div>`
+      : raw('');
+
+  const typeCards = types.map((t) => {
+    const slots = slotsByType.get(t.id) ?? [];
+    const weekly = formatWeeklySummary(slots);
+    const editing = state.openEditId === t.id && state.edit?.typeId === t.id;
+    const editValues =
+      editing && state.edit
+        ? {
+            ...state.edit.values,
+            priceCents: undefined,
+          }
+        : {
+            name: t.name,
+            durationMin: t.duration_min,
+            capacity: t.capacity,
+            priceCents: t.price_cents,
+            backupPayCents: t.backup_pay_cents,
+          };
+    const editErrors = editing && state.edit ? state.edit.errors : undefined;
+    return html`<div class="card">
+      <strong>${t.name}</strong>
+      <div class="meta">
+        <span>${formatTypeMeta(t.duration_min, t.capacity, t.price_cents)}</span>
+      </div>
+      <div class="meta"><span>${weekly}</span></div>
+      ${t.backup_pay_cents ? html`<div class="meta"><span>Backup coach pays ${formatCoachDollars(t.backup_pay_cents)}</span></div>` : raw('')}
+      ${state.deleteBlockedId === t.id
+        ? html`<p class="error">This type still has upcoming sessions with bookings. Cancel those sessions first, then remove the type.</p>`
+        : raw('')}
+      <div class="btn-row type-card-actions">
+        <details class="type-edit"${editing ? raw(' open') : raw('')}>
+          <summary class="action ghost">Edit</summary>
+          ${renderSessionTypeForm(`/app/session-types/${t.id}/edit`, 'Save changes', {
+            idPrefix: `edit-${t.id}-`,
+            mode: 'edit',
+            values: editValues,
+            errors: editErrors,
+            cancelHref: '/app/session-types',
+          })}
+          <p class="muted"><a href="/app/session-types/${t.id}/edit#locations">Saved locations</a></p>
+        </details>
+        <a class="action" href="/app/session-types/${t.id}/generate-week">Weekly times ›</a>
+      </div>
+      <details>
+        <summary class="ghost" style="margin-top:8px;font-family:ui-sans-serif,system-ui,sans-serif;font-size:0.9rem;color:var(--alert);cursor:pointer;">Delete</summary>
+        <p class="muted">Remove ${t.name}? Booked sessions stay on your schedule.</p>
+        <form method="post" action="/app/session-types/${t.id}/delete">
+          <button type="submit" class="ghost">Yes, remove this type</button>
+        </form>
+      </details>
+    </div>`;
+  });
+
+  const createOpen = state.openCreate ?? false;
+  const createValues = state.create?.values ?? { durationMin: 60 };
+  const createErrors = state.create?.errors;
+
+  return page(
+    'Session types',
+    html`${coachNav('types')}
+      <h1>Session types</h1>
+      ${createdBanner}
+      ${typeCards}
+      <details class="type-create"${createOpen ? raw(' open') : raw('')}>
+        <summary>+ New session type</summary>
+        ${renderSessionTypeForm('/app/session-types', 'Create session type', {
+          idPrefix: 'create-',
+          mode: 'create',
+          values: createValues,
+          errors: createErrors,
+          cancelHref: '/app/session-types',
+        })}
+      </details>`,
+  );
+}
+
+async function sendSessionTypesPage(
+  res: Response,
+  coachId: number,
+  status: number,
+  state: SessionTypesViewState = {},
+): Promise<void> {
   const db = getDb();
+  res.status(status).send(await renderSessionTypesPage(db, coachId, state));
+}
+
+coachRouter.get('/app/session-types', requireAuth, async (_req, res) => {
   const coachId = res.locals.coachId as number;
-  const types = await db.query<{
-    id: number;
-    name: string;
-    duration_min: number;
-    capacity: number;
-    price_cents: number;
-    backup_pay_cents: number | null;
-  }>(
-    'select id, name, duration_min, capacity, price_cents, backup_pay_cents from session_type where coach_id = $1 order by id',
-    [coachId],
-  );
-  res.status(200).send(
-    page(
-      'Session types',
-      html`${coachNav('types')}
-        <h1>Session types</h1>
-        ${types.rows.map(
-          (t) =>
-            html`<div class="card">
-              <strong>${t.name}</strong>
-              <div class="meta">
-                <span>${t.duration_min} min · ${t.capacity} athletes · ${formatCoachDollars(t.price_cents)}</span>
-              </div>
-              ${t.backup_pay_cents ? html`<div class="meta"><span>Backup coach pays ${formatCoachDollars(t.backup_pay_cents)}</span></div>` : raw('')}
-              <div class="btn-row">
-                <a class="action ghost" href="/app/session-types/${t.id}/edit">Edit</a>
-                <a class="action" href="/app/session-types/${t.id}/generate-week">Weekly times ›</a>
-              </div>
-            </div>`,
-        )}
-        ${renderSessionTypeForm('/app/session-types', 'Create session type')}`,
-    ),
-  );
+  const createdRaw = typeof _req.query.created === 'string' ? rowId(_req.query.created) : null;
+  await sendSessionTypesPage(res, coachId, 200, createdRaw ? { createdId: createdRaw } : {});
 });
 
 coachRouter.post('/app/session-types', requireAuth, async (req, res) => {
   const coachId = res.locals.coachId as number;
-  const parsed = parseSessionTypeBody(req.body as Record<string, unknown>);
-  if (!parsed) {
-    res.status(422).send(
-      page(
-        'Session types',
-        html`<h1>Session types</h1>
-          <p class="error">${SESSION_TYPE_RANGES}</p>
-          <a class="action" href="/app/session-types">Back</a>`,
-      ),
-    );
+  const body = req.body as Record<string, unknown>;
+  const read = readSessionTypeBody(body, { defaultDurationMin: 60 });
+  if (!read.fields) {
+    await sendSessionTypesPage(res, coachId, 422, {
+      openCreate: true,
+      create: { values: read.values, errors: read.errors },
+    });
     return;
   }
-
   const db = getDb();
-  await db.query(
-    `insert into session_type (coach_id, name, duration_min, capacity, price_cents, backup_pay_cents, active)
-     values ($1, $2, $3, $4, $5, $6, true)`,
-    [coachId, parsed.name, parsed.durationMin, parsed.capacity, parsed.priceCents, parsed.backupPayCents || null],
-  );
-  res.redirect(303, '/app/session-types');
+  if (await sessionTypeNameTaken(db, coachId, read.fields.name)) {
+    await sendSessionTypesPage(res, coachId, 422, {
+      openCreate: true,
+      create: {
+        values: read.values,
+        errors: { name: 'You already have a session type with this name.' },
+      },
+    });
+    return;
+  }
+  let inserted: { id: number };
+  try {
+    const row = await db.query<{ id: number }>(
+      `insert into session_type (coach_id, name, duration_min, capacity, price_cents, backup_pay_cents, active)
+       values ($1, $2, $3, $4, $5, $6, true)
+       returning id`,
+      [
+        coachId,
+        read.fields.name,
+        read.fields.durationMin,
+        read.fields.capacity,
+        read.fields.priceCents,
+        read.fields.backupPayCents || null,
+      ],
+    );
+    inserted = row.rows[0];
+  } catch (err) {
+    if (uniqueViolation(err) === SESSION_TYPE_NAME_UNIQUE) {
+      await sendSessionTypesPage(res, coachId, 422, {
+        openCreate: true,
+        create: {
+          values: read.values,
+          errors: { name: 'You already have a session type with this name.' },
+        },
+      });
+      return;
+    }
+    throw err;
+  }
+  res.redirect(303, `/app/session-types?created=${inserted.id}`);
 });
 
 coachRouter.get('/app/session-types/:id/edit', requireAuth, async (req, res) => {
   const db = getDb();
   const coachId = res.locals.coachId as number;
   const typeId = Number(req.params.id);
-  const typeRows = await db.query<{
-    id: number;
-    name: string;
-    duration_min: number;
-    capacity: number;
-    price_cents: number;
-    backup_pay_cents: number | null;
-  }>(
-    'select id, name, duration_min, capacity, price_cents, backup_pay_cents from session_type where id = $1 and coach_id = $2',
+  const typeRows = await db.query<SessionTypeRow>(
+    'select id, name, duration_min, capacity, price_cents, backup_pay_cents from session_type where id = $1 and coach_id = $2 and active = true',
     [typeId, coachId],
   );
   if (typeRows.rows.length === 0) {
@@ -741,18 +1023,12 @@ coachRouter.get('/app/session-types/:id/edit', requireAuth, async (req, res) => 
   const t = typeRows.rows[0];
   res.status(200).send(
     page(
-      'Edit session type',
+      'Locations',
       html`${coachNav('types')}
-        <h1>Edit session type</h1>
-        ${renderSessionTypeForm(`/app/session-types/${typeId}/edit`, 'Save changes', {
-          name: t.name,
-          durationMin: t.duration_min,
-          capacity: t.capacity,
-          priceCents: t.price_cents,
-          backupPayCents: t.backup_pay_cents,
-        })}
-        ${await typeLocationsSection(db, typeId, req.query)}
-        <a class="action ghost" href="/app/session-types">Back</a>`,
+        <h1>${t.name}</h1>
+        <p class="muted">${formatTypeMeta(t.duration_min, t.capacity, t.price_cents)}</p>
+        <p class="muted"><a href="/app/session-types">Back to session types</a></p>
+        ${await typeLocationsSection(db, typeId, req.query)}`,
     ),
   );
 });
@@ -760,50 +1036,95 @@ coachRouter.get('/app/session-types/:id/edit', requireAuth, async (req, res) => 
 coachRouter.post('/app/session-types/:id/edit', requireAuth, async (req, res) => {
   const coachId = res.locals.coachId as number;
   const typeId = Number(req.params.id);
-  const parsed = parseSessionTypeBody(req.body as Record<string, unknown>);
-  if (!parsed) {
-    res.status(422).send(
-      page(
-        'Edit session type',
-        html`<h1>Edit session type</h1>
-          <p class="error">${SESSION_TYPE_RANGES}</p>
-          <a class="action" href="/app/session-types/${typeId}/edit">Back</a>`,
-      ),
-    );
+  const body = req.body as Record<string, unknown>;
+  const read = readSessionTypeBody(body);
+  if (!read.fields) {
+    await sendSessionTypesPage(res, coachId, 422, {
+      openEditId: typeId,
+      edit: { typeId, values: read.values, errors: read.errors },
+    });
     return;
   }
   const db = getDb();
-  const crowded = await sessionAboveCapacity(db, coachId, typeId, parsed.capacity);
-  if (crowded) {
-    res.status(422).send(
-      page(
-        'Edit session type',
-        html`<h1>Edit session type</h1>
-          <p class="error">${formatLocal(crowded.starts_at_utc, crowded.tz)} already has ${crowded.taken} booked. Set the capacity to at least ${crowded.taken}, or cancel that session first.</p>
-          <a class="action" href="/app/session-types/${typeId}/edit">Back</a>`,
-      ),
-    );
+  if (await sessionTypeNameTaken(db, coachId, read.fields.name, typeId)) {
+    await sendSessionTypesPage(res, coachId, 422, {
+      openEditId: typeId,
+      edit: {
+        typeId,
+        values: read.values,
+        errors: { name: 'You already have a session type with this name.' },
+      },
+    });
     return;
   }
-  const updated = await db.query<{ id: number }>(
-    `update session_type
-     set name = $1, duration_min = $2, capacity = $3, price_cents = $4, backup_pay_cents = $5
-     where id = $6 and coach_id = $7
-     returning id`,
-    [
-      parsed.name,
-      parsed.durationMin,
-      parsed.capacity,
-      parsed.priceCents,
-      parsed.backupPayCents || null,
-      typeId,
-      coachId,
-    ],
+  const crowded = await sessionAboveCapacity(db, coachId, typeId, read.fields.capacity);
+  if (crowded) {
+    await sendSessionTypesPage(res, coachId, 422, {
+      openEditId: typeId,
+      edit: {
+        typeId,
+        values: read.values,
+        errors: {
+          capacity: `${formatLocal(crowded.starts_at_utc, crowded.tz)} already has ${crowded.taken} booked. Set spots to at least ${crowded.taken}, or cancel that session first.`,
+        },
+      },
+    });
+    return;
+  }
+  try {
+    const updated = await db.query<{ id: number }>(
+      `update session_type
+       set name = $1, duration_min = $2, capacity = $3, price_cents = $4, backup_pay_cents = $5
+       where id = $6 and coach_id = $7 and active = true
+       returning id`,
+      [
+        read.fields.name,
+        read.fields.durationMin,
+        read.fields.capacity,
+        read.fields.priceCents,
+        read.fields.backupPayCents || null,
+        typeId,
+        coachId,
+      ],
+    );
+    if (updated.rows.length === 0) {
+      res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
+      return;
+    }
+  } catch (err) {
+    if (uniqueViolation(err) === SESSION_TYPE_NAME_UNIQUE) {
+      await sendSessionTypesPage(res, coachId, 422, {
+        openEditId: typeId,
+        edit: {
+          typeId,
+          values: read.values,
+          errors: { name: 'You already have a session type with this name.' },
+        },
+      });
+      return;
+    }
+    throw err;
+  }
+  res.redirect(303, '/app/session-types');
+});
+
+coachRouter.post('/app/session-types/:id/delete', requireAuth, async (req, res) => {
+  const coachId = res.locals.coachId as number;
+  const typeId = Number(req.params.id);
+  const db = getDb();
+  const owned = await db.query<{ id: number }>(
+    'select id from session_type where id = $1 and coach_id = $2 and active = true',
+    [typeId, coachId],
   );
-  if (updated.rows.length === 0) {
+  if (owned.rows.length === 0) {
     res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
     return;
   }
+  if (await sessionTypeHasFutureBookings(db, coachId, typeId)) {
+    await sendSessionTypesPage(res, coachId, 422, { deleteBlockedId: typeId });
+    return;
+  }
+  await db.query('update session_type set active = false where id = $1 and coach_id = $2', [typeId, coachId]);
   res.redirect(303, '/app/session-types');
 });
 
@@ -836,7 +1157,7 @@ function renderWeeklyTimes(
   error?: string,
   where: SafeHtml = raw(''),
 ) {
-  const typeLine = `${type.name} · ${type.duration_min} min · ${type.capacity} athletes · ${formatCoachDollars(type.price_cents)}`;
+  const typeLine = `${type.name} · ${formatTypeMeta(type.duration_min, type.capacity, type.price_cents)}`;
   return page(
     'Weekly times',
     html`${coachNav('types')}
@@ -858,8 +1179,11 @@ function renderWeeklyTimes(
       <form method="post" action="/app/session-types/${type.id}/generate-week">
         ${WEEKDAY_LABELS.map(
           (label, i) =>
-            html`<label><input type="checkbox" name="day_${i}" value="1" /> ${label}
-              <input type="time" name="time_${i}" aria-label="${label} start time" /></label>`,
+            html`<div class="weekday-row">
+              <input type="checkbox" name="day_${i}" value="1" id="weekday-${type.id}-${i}" />
+              <span class="weekday-name">${label}</span>
+              <input type="time" name="time_${i}" aria-label="${label} start time" />
+            </div>`,
         )}
         ${where}
         <button type="submit">Add weekly times</button>
