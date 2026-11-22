@@ -24,8 +24,9 @@ test('the pricing screen lists a plan as a one-time pack', async () => {
       assert.equal(res.status, 200);
       const body = await res.text();
       assert.match(body, /One-time packs/);
-      assert.match(body, /4 sessions, one-time/);
-      assert.match(body, /Sessions in the pack/);
+      assert.match(body, /4 sessions/);
+      assert.match(body, /Sessions do not expire/);
+      assert.match(body, /Number of sessions/);
       assert.doesNotMatch(body, RECURRING);
     });
   });

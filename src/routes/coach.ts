@@ -70,8 +70,16 @@ import { DEFAULT_TZ, formatClockLocal, formatCoachDollars, formatLocal, formatTi
 import {
   getPackagesForCoach,
   getPlansForCoach,
+  getPackageById,
+  getPlanById,
   createPackage,
   createPlan,
+  findActivePackageDuplicate,
+  findActivePlanDuplicate,
+  updatePackage,
+  updatePlan,
+  retirePackage,
+  retirePlan,
   liveHoldSql,
   soldSql,
   SOLD_BOOKING_STATUSES,
@@ -87,9 +95,8 @@ import {
   parseBookingPolicy,
   setBookingPolicy,
   waiveBooking,
-  type BookingPolicy,
 } from '../domain/policy.js';
-import { cancelGivesField, cancelGivesSummary, cardRefundsNote } from './cancelRefund.js';
+import { parsePackageFields, parsePlanFields, renderPricingPage, type PricingViewState } from './pricingPage.js';
 import { summarizeMoney } from '../domain/money.js';
 import { moneyDownloadRouter, renderDownloadBlock } from './moneyExport.js';
 import { namesList } from '../domain/bookingMessages.js';
@@ -2796,92 +2803,30 @@ coachRouter.post('/app/sessions/:id/cancel', requireAuth, async (req, res) => {
 
 // ---- Screen 5: pricing (packages and plans) ----
 
-/** The booking policy on the Pricing screen (SPEC.md §9.5): what each
- * rule does now, and a form to change the two numbers. */
-function renderPolicySection(policy: BookingPolicy, error?: string) {
-  const hours = policy.cancelWindowHours;
-  const window = hours === 0 ? 'up to the start' : `more than ${hours} ${hours === 1 ? 'hour' : 'hours'} before a session`;
-  const children = policy.childrenPerBooking;
-  return html`<h2 id="policy">Booking policy</h2>
-    <div class="card policy">
-      <p><strong>No-show:</strong> the booking's credit is used. You can give it back on the session's screen.</p>
-      <p><strong>Cancelling:</strong> a parent who cancels ${window} gets their credit back (${cancelGivesSummary(policy)}).${hours === 0
-        ? ''
-        : ` Inside ${hours} ${hours === 1 ? 'hour' : 'hours'} it counts as a no-show, and you can give it back.`}</p>
-      <p><strong>Children:</strong> a parent can book up to ${children} ${children === 1 ? 'child' : 'children'} at once. Each takes a spot and uses a credit or a drop-in.</p>
-      <p class="muted">${cardRefundsNote(policy)}</p>
-    </div>
-    <details${error ? raw(' open') : raw('')}>
-      <summary>Change the policy</summary>
-      <form method="post" action="/app/pricing/policy">
-        <label for="cancel_window_hours">Cancellation window (hours before a session)</label>
-        <input id="cancel_window_hours" name="cancel_window_hours" type="number" min="0" max="${MAX_CANCEL_WINDOW_HOURS}" required value="${hours}" />
-        <label for="children_per_booking">Children per booking</label>
-        <input id="children_per_booking" name="children_per_booking" type="number" min="1" max="${MAX_CHILDREN_PER_BOOKING}" required value="${children}" />
-        ${cancelGivesField(policy)}
-        <button type="submit">Save policy</button>
-      </form>
-      ${error ? html`<p class="error">${error}</p>` : raw('')}
-    </details>`;
-}
+const PACKAGE_FILL_ERROR = `Fill in the package: ${LIMITS.credits.min}–${LIMITS.credits.max} sessions, a price up to ${formatCoachDollars(LIMITS.priceCents.max)}, and, if it expires, ${LIMITS.expiresDays.min}–${LIMITS.expiresDays.max} days.`;
+const PLAN_FILL_ERROR = `Fill in the pack: a price up to ${formatCoachDollars(LIMITS.priceCents.max)} and ${LIMITS.credits.min}–${LIMITS.credits.max} sessions.`;
+const DUPLICATE_PACKAGE_ERROR = 'You already have an active package with this session count and price.';
+const DUPLICATE_PLAN_ERROR = 'You already have an active one-time pack with this session count and price.';
 
-coachRouter.get('/app/pricing', requireAuth, async (_req, res) => {
-  const db = getDb();
-  const coachId = res.locals.coachId as number;
+async function sendPricingPage(
+  res: Response,
+  db: DbClient,
+  coachId: number,
+  state: PricingViewState,
+  status = 200,
+) {
   const packagesList = await getPackagesForCoach(db, coachId);
   const plansList = await getPlansForCoach(db, coachId);
   const policy = await getBookingPolicy(db, coachId);
+  res.status(status).send(renderPricingPage(packagesList, plansList, policy, state));
+}
 
-  res.status(200).send(
-    page(
-      'Pricing',
-      html`${coachNav('pricing')}
-        <h1>Pricing & credits</h1>
-        <h2>Session packages</h2>
-        ${packagesList.length === 0
-          ? html`<p class="muted">No packages yet.</p>`
-          : packagesList.map((p) => {
-              const expiry = p.expires_days ? ` · Expires after ${p.expires_days} days` : '';
-              return html`<div class="card">${p.name} · ${formatCoachDollars(p.price_cents)}${expiry}</div>`;
-            })}
-        <details>
-          <summary>+ New package</summary>
-          <form method="post" action="/app/pricing/package">
-            <label for="pkg_name">Package name</label>
-            <input id="pkg_name" name="name" required placeholder="e.g. 10-session pack" />
-            <label for="pkg_credits">Number of sessions</label>
-            <input id="pkg_credits" name="credits" type="number" min="${LIMITS.credits.min}" max="${LIMITS.credits.max}" required placeholder="e.g. 10" />
-            <label for="pkg_price_dollars">Price (dollars)</label>
-            <input id="pkg_price_dollars" name="price_dollars" type="number" min="0.01" max="${LIMITS.priceCents.max / 100}" step="0.01" required placeholder="e.g. 150" />
-            <label for="pkg_expires_days">Expires after days (optional)</label>
-            <input id="pkg_expires_days" name="expires_days" type="number" min="${LIMITS.expiresDays.min}" max="${LIMITS.expiresDays.max}" placeholder="e.g. 60" />
-            <button type="submit">Create package</button>
-          </form>
-        </details>
-
-        <h2>One-time packs</h2>
-        <p class="muted">Charged once. The sessions do not expire.</p>
-        ${plansList.length === 0
-          ? html`<p class="muted">No one-time packs yet.</p>`
-          : plansList.map(
-              (p) =>
-                html`<div class="card">${p.name} · ${formatCoachDollars(p.price_cents)} · ${p.credits_per_month} ${p.credits_per_month === 1 ? 'session' : 'sessions'}, one-time</div>`,
-            )}
-        <details>
-          <summary>+ New one-time pack</summary>
-          <form method="post" action="/app/pricing/plan">
-            <label for="plan_name">Pack name</label>
-            <input id="plan_name" name="name" required placeholder="e.g. 4-session pack" />
-            <label for="plan_price_dollars">Price (dollars)</label>
-            <input id="plan_price_dollars" name="price_dollars" type="number" min="0.01" max="${LIMITS.priceCents.max / 100}" step="0.01" required placeholder="e.g. 120" />
-            <label for="plan_credits">Sessions in the pack</label>
-            <input id="plan_credits" name="credits_per_month" type="number" min="${LIMITS.credits.min}" max="${LIMITS.credits.max}" required placeholder="e.g. 4" />
-            <button type="submit">Create pack</button>
-          </form>
-        </details>
-        ${renderPolicySection(policy)}`,
-    ),
-  );
+coachRouter.get('/app/pricing', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const state: PricingViewState = {};
+  if (req.query.policy_saved === '1') state.policySaved = true;
+  await sendPricingPage(res, db, coachId, state);
 });
 
 coachRouter.post('/app/pricing/policy', requireAuth, async (req, res) => {
@@ -2893,69 +2838,107 @@ coachRouter.post('/app/pricing/policy', requireAuth, async (req, res) => {
     field(req.body, 'cancel_gives'),
   );
   if (!policy) {
-    res.status(422).send(
-      page(
-        'Pricing',
-        html`${coachNav('pricing')}
-          <h1>Pricing & credits</h1>
-          ${renderPolicySection(
-            await getBookingPolicy(db, coachId),
-            `Use a window of 0 to ${MAX_CANCEL_WINDOW_HOURS} hours and 1 to ${MAX_CHILDREN_PER_BOOKING} children.`,
-          )}
-          <a class="action ghost" href="/app/pricing">Back</a>`,
-      ),
-    );
+    await sendPricingPage(res, db, coachId, {
+      policyEditing: true,
+      policyError: `Use a window of 0 to ${MAX_CANCEL_WINDOW_HOURS} hours and 1 to ${MAX_CHILDREN_PER_BOOKING} children.`,
+    }, 422);
     return;
   }
   await setBookingPolicy(db, coachId, policy);
-  res.redirect(303, '/app/pricing#policy');
+  res.redirect(303, '/app/pricing?policy_saved=1#policy');
 });
 
 coachRouter.post('/app/pricing/package', requireAuth, async (req, res) => {
   const db = getDb();
   const coachId = res.locals.coachId as number;
-  const name = field(req.body, 'name');
-  const credits = wholeNumber(field(req.body, 'credits'), LIMITS.credits);
-  const priceCents = dollarsToCents(field(req.body, 'price_dollars'), LIMITS.priceCents);
-  const expiresDaysRaw = field(req.body, 'expires_days');
-  const expiresDays = expiresDaysRaw ? wholeNumber(expiresDaysRaw, LIMITS.expiresDays) : undefined;
-
-  if (!name || credits === null || priceCents === null || expiresDays === null) {
-    res.status(422).send(
-      page(
-        'Pricing',
-        html`<h1>Pricing & credits</h1>
-          <p class="error">Fill in the package: ${LIMITS.credits.min}–${LIMITS.credits.max} sessions, a price up to ${formatCoachDollars(LIMITS.priceCents.max)}, and, if it expires, ${LIMITS.expiresDays.min}–${LIMITS.expiresDays.max} days.</p>
-          <a class="action" href="/app/pricing">Back</a>`,
-      ),
-    );
+  const parsed = parsePackageFields(req.body);
+  if (!parsed.valid || parsed.credits === null || parsed.priceCents === null) {
+    await sendPricingPage(res, db, coachId, { packageCreateOpen: true, formError: PACKAGE_FILL_ERROR }, 422);
     return;
   }
+  if (await findActivePackageDuplicate(db, coachId, parsed.credits, parsed.priceCents)) {
+    await sendPricingPage(res, db, coachId, { packageCreateOpen: true, formError: DUPLICATE_PACKAGE_ERROR }, 422);
+    return;
+  }
+  const exp = parsed.expiresDays === undefined ? undefined : parsed.expiresDays ?? undefined;
+  await createPackage(db, coachId, parsed.name, parsed.credits, parsed.priceCents, exp);
+  res.redirect(303, '/app/pricing');
+});
 
-  await createPackage(db, coachId, name, credits, priceCents, expiresDays);
+coachRouter.post('/app/pricing/package/:id/edit', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const packageId = rowId(req.params.id) ?? 0;
+  const existing = await getPackageById(db, coachId, packageId);
+  if (!existing) {
+    res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
+    return;
+  }
+  const parsed = parsePackageFields(req.body);
+  if (!parsed.valid || parsed.credits === null || parsed.priceCents === null) {
+    await sendPricingPage(res, db, coachId, { editingPackageId: packageId, formError: PACKAGE_FILL_ERROR }, 422);
+    return;
+  }
+  if (await findActivePackageDuplicate(db, coachId, parsed.credits, parsed.priceCents, packageId)) {
+    await sendPricingPage(res, db, coachId, { editingPackageId: packageId, formError: DUPLICATE_PACKAGE_ERROR }, 422);
+    return;
+  }
+  const expDb = parsed.expiresDays === undefined ? null : parsed.expiresDays;
+  const ok = await updatePackage(db, coachId, packageId, parsed.name, parsed.credits, parsed.priceCents, expDb);
+  res.redirect(303, ok ? '/app/pricing' : '/app/pricing');
+});
+
+coachRouter.post('/app/pricing/package/:id/delete', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const packageId = rowId(req.params.id) ?? 0;
+  await retirePackage(db, coachId, packageId);
   res.redirect(303, '/app/pricing');
 });
 
 coachRouter.post('/app/pricing/plan', requireAuth, async (req, res) => {
   const db = getDb();
   const coachId = res.locals.coachId as number;
-  const name = field(req.body, 'name');
-  const priceCents = dollarsToCents(field(req.body, 'price_dollars'), LIMITS.priceCents);
-  const creditsPerMonth = wholeNumber(field(req.body, 'credits_per_month'), LIMITS.credits);
-
-  if (!name || creditsPerMonth === null || priceCents === null) {
-    res.status(422).send(
-      page(
-        'Pricing',
-        html`<h1>Pricing & credits</h1>
-          <p class="error">Fill in the pack: a price up to ${formatCoachDollars(LIMITS.priceCents.max)} and ${LIMITS.credits.min}–${LIMITS.credits.max} sessions.</p>
-          <a class="action" href="/app/pricing">Back</a>`,
-      ),
-    );
+  const parsed = parsePlanFields(req.body);
+  if (!parsed.valid || parsed.creditsPerMonth === null || parsed.priceCents === null) {
+    await sendPricingPage(res, db, coachId, { planCreateOpen: true, formError: PLAN_FILL_ERROR }, 422);
     return;
   }
+  if (await findActivePlanDuplicate(db, coachId, parsed.creditsPerMonth, parsed.priceCents)) {
+    await sendPricingPage(res, db, coachId, { planCreateOpen: true, formError: DUPLICATE_PLAN_ERROR }, 422);
+    return;
+  }
+  await createPlan(db, coachId, parsed.name, parsed.priceCents, parsed.creditsPerMonth);
+  res.redirect(303, '/app/pricing');
+});
 
-  await createPlan(db, coachId, name, priceCents, creditsPerMonth);
+coachRouter.post('/app/pricing/plan/:id/edit', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const planId = rowId(req.params.id) ?? 0;
+  const existing = await getPlanById(db, coachId, planId);
+  if (!existing) {
+    res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
+    return;
+  }
+  const parsed = parsePlanFields(req.body);
+  if (!parsed.valid || parsed.creditsPerMonth === null || parsed.priceCents === null) {
+    await sendPricingPage(res, db, coachId, { editingPlanId: planId, formError: PLAN_FILL_ERROR }, 422);
+    return;
+  }
+  if (await findActivePlanDuplicate(db, coachId, parsed.creditsPerMonth, parsed.priceCents, planId)) {
+    await sendPricingPage(res, db, coachId, { editingPlanId: planId, formError: DUPLICATE_PLAN_ERROR }, 422);
+    return;
+  }
+  await updatePlan(db, coachId, planId, parsed.name, parsed.priceCents, parsed.creditsPerMonth);
+  res.redirect(303, '/app/pricing');
+});
+
+coachRouter.post('/app/pricing/plan/:id/delete', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const planId = rowId(req.params.id) ?? 0;
+  await retirePlan(db, coachId, planId);
   res.redirect(303, '/app/pricing');
 });
 

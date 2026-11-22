@@ -69,18 +69,17 @@ test('the Pricing screen offers the choice next to the window and the children l
   await withServer(async (base) => {
     const cookie = await coachCookie(db, seed.coach.id);
     const before = await getPage(base, '/app/pricing', cookie);
-    assert.match(before, /<label for="cancel_gives">When a parent cancels in time<\/label>/);
-    assert.match(before, /<option value="credit" selected>A session credit<\/option>/);
+    assert.match(before, /<label for="cancel_gives">When a parent cancels in time \(card payments\)<\/label>/);
+    assert.match(before, /<option value="credit" selected>A credit for another session<\/option>/);
     assert.match(before, /<option value="refund">A refund to their card<\/option>/);
-    assert.match(before, /Coachatron's 5% fee is returned with it, and Stripe keeps its card processing fee/);
-    assert.match(before, /gets their credit back \(a paid drop-in becomes a session credit\)/);
+    assert.match(before, /including Coachatron's 5% fee; the card company keeps its processing fee/);
+    assert.match(before, /they get a credit for another session/);
 
     const saved = await form(base, '/app/pricing/policy', cookie, { cancel_window_hours: '24', children_per_booking: '2', cancel_gives: 'refund' });
     assert.equal(saved.status, 303);
     const after = await getPage(base, '/app/pricing', cookie);
     assert.match(after, /<option value="refund" selected>A refund to their card<\/option>/);
-    assert.match(after, /gets their credit back \(a paid drop-in is refunded to their card\)/);
-    assert.match(after, /children paid for together are refunded once each of their bookings is cancelled in time/);
+    assert.match(after, /the payment goes back to their card/);
 
     // A choice the form does not offer is the form's own message, and saves nothing.
     const bad = await form(base, '/app/pricing/policy', cookie, { cancel_window_hours: '48', children_per_booking: '3', cancel_gives: 'cash' });
@@ -97,7 +96,7 @@ test('the Pricing screen offers the choice next to the window and the children l
 
     const back = await form(base, '/app/pricing/policy', cookie, { cancel_window_hours: '48', children_per_booking: '3', cancel_gives: 'credit' });
     assert.equal(back.status, 303);
-    assert.match(await getPage(base, '/app/pricing', cookie), /<option value="credit" selected>A session credit<\/option>/);
+    assert.match(await getPage(base, '/app/pricing', cookie), /<option value="credit" selected>A credit for another session<\/option>/);
   });
 });
 

@@ -14,7 +14,7 @@ import {
   type Contact,
 } from '../domain/auth.js';
 import { html, operatorLine, page, raw, smsConsentCheckbox } from '../lib/html.js';
-import { formatLocal } from '../lib/time.js';
+import { formatCoachDollars, formatLocal, formatSessionWhen } from '../lib/time.js';
 import { atPlace, placeLine } from '../domain/locations.js';
 import { rowId } from '../lib/input.js';
 import {
@@ -74,7 +74,7 @@ import {
 import { hasPaymentHeldForCoach } from '../domain/paymentAttention.js';
 import { moveByParent, moveChoice, type MoveChoice, type MoveState } from '../domain/moveBooking.js';
 import { cancelRefundState, cancelUnderPolicy, inTimeCancel, type CancelRefundState, type InTimeCancel } from '../domain/cancelRefund.js';
-import { cancelRefundNote, checkoutCancelLine, inTimeCancelNote } from './cancelRefund.js';
+import { cancelRefundNote, checkoutCancelLine, inTimeCancelNote, publicCancelSummary } from './cancelRefund.js';
 import {
   BOOKING_HOLD_MINUTES,
   OTP_DAILY_MAX_PER_CONTACT,
@@ -404,6 +404,10 @@ publicRouter.get('/c/:handle', async (req, res) => {
   const from = (await bookingFromLink(db, coach, req.query.from)) ? fromToken(req.query.from) : null;
   const bookQuery = from ? `?from=${encodeURIComponent(from)}` : '';
 
+  const policy = await getBookingPolicy(db, coach.id);
+  const packagesList = await getPackagesForCoach(db, coach.id);
+  const plansList = await getPlansForCoach(db, coach.id);
+
   const sessions = await db.query<{
     id: number;
     starts_at_utc: string;
@@ -411,11 +415,12 @@ publicRouter.get('/c/:handle', async (req, res) => {
     name: string;
     capacity: number;
     price_cents: number;
+    duration_min: number;
     booked: string;
     location_text: string | null;
     location_address: string | null;
   }>(
-    `select s.id, s.starts_at_utc, s.tz, st.name, coalesce(s.capacity_override, st.capacity) as capacity, st.price_cents,
+    `select s.id, s.starts_at_utc, s.tz, st.name, st.duration_min, coalesce(s.capacity_override, st.capacity) as capacity, st.price_cents,
             s.location_text, s.location_address,
             (coalesce((select count(*) from booking b where b.session_id = s.id and ${takesSpotSql('b')}), 0)
              + coalesce((select count(*) from waitlist w where w.session_id = coalesce(s.overflow_of, s.id) and w.state = 'waiting'), 0))::text as booked
@@ -430,18 +435,26 @@ publicRouter.get('/c/:handle', async (req, res) => {
   // Families who already hold credits can still book with them.
   const creditsWork = !open && (await coachHasOpenCredits(db, coach.id));
 
+  function publicPackageLine(credits: number, priceCents: number, expiresDays: number | null): string {
+    const per = credits > 0 ? (priceCents / 100 / credits).toFixed(2) : '';
+    const expiry = expiresDays ? ` · Credits expire after ${expiresDays} days` : '';
+    return `${credits} sessions for ${formatCoachDollars(priceCents)} (${per} per session)${expiry}`;
+  }
+
   res.status(200).send(
     page(
       coach.name,
       html`<h1>${coach.name}</h1>
+        <p class="muted">${publicCancelSummary(policy)}</p>
         ${sessions.rows.length === 0
           ? html`<p class="muted">No open sessions right now.</p>`
           : sessions.rows.map((s) => {
               const spotsLeft = s.capacity - Number(s.booked);
-              return html`<div class="card">
-                <strong>${formatLocal(s.starts_at_utc, s.tz)}</strong>
+              return html`<div class="card session-card">
+                <strong>${formatSessionWhen(s.starts_at_utc, s.tz)}</strong>
                 <div class="meta">
                   <span>${s.name}</span>
+                  <span>${s.duration_min} min</span>
                   <span>${spotsLeft > 0 ? `${spotsLeft} spot${spotsLeft === 1 ? '' : 's'} left · $${(s.price_cents / 100).toFixed(2)}` : 'Full'}</span>
                 </div>
                 ${s.location_text ? html`<div class="meta"><span>${placeLine(s.location_text, s.location_address)}</span></div>` : raw('')}
@@ -451,12 +464,22 @@ publicRouter.get('/c/:handle', async (req, res) => {
                     : raw('')
                   : open || !needsPayment(s)
                     ? html`<a class="action" href="/c/${coach.handle}/sessions/${s.id}/book${bookQuery}">Book</a>`
-                    : html`<p class="muted">Booking opens soon</p>
+                    : html`<p class="muted">Booking opens soon — ${coach.name} is still setting up payments.</p>
                         ${creditsWork
                           ? html`<p class="muted"><a href="/c/${coach.handle}/sessions/${s.id}/book${bookQuery}">Have session credits? Book with them</a></p>`
                           : raw('')}`}
               </div>`;
             })}
+        ${packagesList.length > 0 || plansList.length > 0
+          ? html`<h2 style="margin-top:1.5rem;">Packages</h2>
+              ${packagesList.map(
+                (p) => html`<div class="card"><strong>${p.name}</strong><div class="meta"><span>${publicPackageLine(p.credits, p.price_cents, p.expires_days)}</span></div></div>`,
+              )}
+              ${plansList.map(
+                (p) =>
+                  html`<div class="card"><strong>${p.name}</strong><div class="meta"><span>${publicPackageLine(p.credits_per_month, p.price_cents, null)} · one-time</span></div></div>`,
+              )}`
+          : raw('')}
         <p class="muted">Booked before? <a href="/my">See all your sessions</a></p>`,
       // A page opened with ?from= carries a booking's manage link, so it
       // names no canonical address.

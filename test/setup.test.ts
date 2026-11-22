@@ -379,13 +379,12 @@ test('a second publish does not duplicate an identical session package', async (
         const draft2 = (await db.query<{ id: number }>('select id from setup_draft order by id desc')).rows[0];
         await post(base, '/app/setup/publish', cookie, { id: String(draft2.id) });
 
-        const pricing = await (await fetch(`${base}/app/pricing`, { headers: { cookie } })).text();
-        const cardMatches = pricing.match(/10-session pack/g) ?? [];
         assert.equal(
           await count(db, 'package where coach_id = $1 and credits = 10 and price_cents = 30000', [coach.id]),
           1,
         );
-        assert.ok(cardMatches.length <= 1);
+        const pricing = await (await fetch(`${base}/app/pricing`, { headers: { cookie } })).text();
+        assert.equal((pricing.match(/<strong>10-pack<\/strong>/g) ?? []).length, 1);
       });
     } finally {
       resetComplete();

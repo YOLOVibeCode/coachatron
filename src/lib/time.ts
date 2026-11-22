@@ -24,6 +24,24 @@ export function formatLocal(isoUtc: string, tz: string): string {
   }).format(date);
 }
 
+/** Session list on a coach's public page: same as formatLocal but includes the
+ * year when the session is not in the current calendar year for that zone. */
+export function formatSessionWhen(isoUtc: string, tz: string, now: Date = new Date()): string {
+  const date = new Date(isoUtc);
+  if (Number.isNaN(date.getTime())) return NOT_A_TIME;
+  const yearFmt = new Intl.DateTimeFormat('en-US', { timeZone: tz, year: 'numeric' });
+  const options: Intl.DateTimeFormatOptions = {
+    timeZone: tz,
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  };
+  if (yearFmt.format(date) !== yearFmt.format(now)) options.year = 'numeric';
+  return new Intl.DateTimeFormat('en-US', options).format(date);
+}
+
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 /** Compact confirm line: "Tue Oct 7, 6:00pm". */

@@ -149,6 +149,38 @@ export async function decrementCredit(db: DbClient, creditId: number): Promise<b
   return result.rows.length === 1;
 }
 
+export async function findActivePackageDuplicate(
+  db: DbClient,
+  coachId: number,
+  credits: number,
+  priceCents: number,
+  excludeId?: number,
+): Promise<number | null> {
+  const result = await db.query<{ id: number }>(
+    `select id from package where coach_id = $1 and active = true
+     and credits = $2 and price_cents = $3${excludeId !== undefined ? ' and id <> $4' : ''}
+     limit 1`,
+    excludeId !== undefined ? [coachId, credits, priceCents, excludeId] : [coachId, credits, priceCents],
+  );
+  return result.rows[0]?.id ?? null;
+}
+
+export async function findActivePlanDuplicate(
+  db: DbClient,
+  coachId: number,
+  creditsPerMonth: number,
+  priceCents: number,
+  excludeId?: number,
+): Promise<number | null> {
+  const result = await db.query<{ id: number }>(
+    `select id from plan where coach_id = $1 and active = true
+     and credits_per_month = $2 and price_cents = $3${excludeId !== undefined ? ' and id <> $4' : ''}
+     limit 1`,
+    excludeId !== undefined ? [coachId, creditsPerMonth, priceCents, excludeId] : [coachId, creditsPerMonth, priceCents],
+  );
+  return result.rows[0]?.id ?? null;
+}
+
 export async function createPackage(
   db: DbClient,
   coachId: number,
@@ -164,6 +196,32 @@ export async function createPackage(
   return result.rows[0].id;
 }
 
+export async function updatePackage(
+  db: DbClient,
+  coachId: number,
+  packageId: number,
+  name: string,
+  credits: number,
+  priceCents: number,
+  expiresDays: number | null,
+): Promise<boolean> {
+  const result = await db.query<{ id: number }>(
+    `update package set name = $3, credits = $4, price_cents = $5, expires_days = $6
+     where id = $2 and coach_id = $1 and active = true
+     returning id`,
+    [coachId, packageId, name, credits, priceCents, expiresDays],
+  );
+  return result.rows.length === 1;
+}
+
+export async function retirePackage(db: DbClient, coachId: number, packageId: number): Promise<boolean> {
+  const result = await db.query<{ id: number }>(
+    'update package set active = false where id = $2 and coach_id = $1 and active = true returning id',
+    [coachId, packageId],
+  );
+  return result.rows.length === 1;
+}
+
 export async function createPlan(
   db: DbClient,
   coachId: number,
@@ -176,6 +234,31 @@ export async function createPlan(
     [coachId, name, priceCents, creditsPerMonth],
   );
   return result.rows[0].id;
+}
+
+export async function updatePlan(
+  db: DbClient,
+  coachId: number,
+  planId: number,
+  name: string,
+  priceCents: number,
+  creditsPerMonth: number,
+): Promise<boolean> {
+  const result = await db.query<{ id: number }>(
+    `update plan set name = $3, price_cents = $4, credits_per_month = $5
+     where id = $2 and coach_id = $1 and active = true
+     returning id`,
+    [coachId, planId, name, priceCents, creditsPerMonth],
+  );
+  return result.rows.length === 1;
+}
+
+export async function retirePlan(db: DbClient, coachId: number, planId: number): Promise<boolean> {
+  const result = await db.query<{ id: number }>(
+    'update plan set active = false where id = $2 and coach_id = $1 and active = true returning id',
+    [coachId, planId],
+  );
+  return result.rows.length === 1;
 }
 
 export async function createCredit(
