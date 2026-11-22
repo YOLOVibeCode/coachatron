@@ -309,15 +309,16 @@ test('the page link stays on Schedule and Money in a box made to copy', async ()
     await withServer(async (base) => {
       await publishByHand(base, db, cookie);
       const link = `https://coachatron.com/c/${coach.handle}`;
-      for (const path of ['/app/schedule', '/app/money']) {
-        const page = await (await fetch(`${base}${path}`, { headers: { cookie } })).text();
-        assert.match(page, new RegExp(`<input id="page-link" type="text" readonly value="${link}"`), path);
-        assert.match(page, /Copy link/, path);
-        assert.match(page, /href="sms:\?&amp;body=Book%20with%20me/, path);
-      }
+      const money = await (await fetch(`${base}/app/money`, { headers: { cookie } })).text();
+      assert.match(money, new RegExp(`<input id="page-link" type="text" readonly value="${link}"`), '/app/money');
+      assert.match(money, /Copy link/);
+      assert.match(money, /href="sms:\?&amp;body=Book%20with%20me/);
       const schedule = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
+      assert.match(schedule, new RegExp(`<input id="page-link" type="text" readonly value="${link}"`), '/app/schedule');
+      assert.match(schedule, /Parents can(&#39;|')t book yet/);
       assert.match(schedule, /Parents can(&#39;|')t book until payments are set up\./);
       assert.match(schedule, /<a class="action" href="\/app\/money">Connect payments<\/a>/);
+      assert.match(schedule, /<button type="button" class="ghost" disabled>Copy link<\/button>/);
     });
   });
 });
@@ -351,9 +352,14 @@ async function pressCopy(
 test('Copy link says Copied only once the link is copied', async () => {
   await withRelay(async () => {
     const db = await freshDb();
-    const { cookie } = await textingCoach(db);
+    const { coach, cookie } = await textingCoach(db);
     await withServer(async (base) => {
       await publishByHand(base, db, cookie);
+      await db.query(
+        `insert into coach_payments (coach_id, charges_enabled, test_mode, checked_at) values ($1, true, false, now())
+         on conflict (coach_id) do update set charges_enabled = true, test_mode = false, checked_at = now()`,
+        [coach.id],
+      );
       const page = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
       assert.equal(await pressCopy(page, { clipboard: 'resolves', copyCommand: false }), 'Copied');
       assert.equal(await pressCopy(page, { clipboard: 'rejects', copyCommand: true }), 'Copied', 'the older command copies it');

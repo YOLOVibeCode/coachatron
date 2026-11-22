@@ -208,8 +208,9 @@ test('talk, refine, publish: nothing is written until Publish, and Publish runs 
 
         const live = await (await fetch(`${base}/app/schedule?published=1`, { headers: { cookie } })).text();
         assert.match(live, /You're live/);
+        assert.match(live, /Parents can(&#39;|')t book yet/);
         assert.match(live, /<a class="action" href="\/app\/money">Connect payments<\/a>/);
-        assert.match(live, /href="sms:\?&amp;body=Book%20with%20me/);
+        assert.match(live, /<span class="action ghost" aria-disabled="true">Share your link<\/span>/);
 
         const publicPage = await (await fetch(`${base}/c/${coach.handle}`)).text();
         assert.match(publicPage, /Keeper Group/);
