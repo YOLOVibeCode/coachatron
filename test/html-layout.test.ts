@@ -8,7 +8,7 @@ test('POSTCARD_TOKENS_CSS includes responsive layout and touch targets', () => {
   assert.match(POSTCARD_TOKENS_CSS, /min-height:\s*var\(--touch-min\)/);
   assert.match(POSTCARD_TOKENS_CSS, /@media \(min-width: 768px\)/);
   assert.match(POSTCARD_TOKENS_CSS, /@media \(min-width: 1024px\)/);
-  assert.match(POSTCARD_TOKENS_CSS, /\.schedule-ask/);
+  assert.match(POSTCARD_TOKENS_CSS, /\.schedule-edit/);
   assert.doesNotMatch(POSTCARD_TOKENS_CSS, /max-width:\s*360px/);
   const tabletBlock = POSTCARD_TOKENS_CSS.split('@media (min-width: 768px)')[1];
   assert.ok(tabletBlock, 'expected tablet media query block');

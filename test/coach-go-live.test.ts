@@ -313,10 +313,15 @@ test('the page link stays on Schedule and Money in a box made to copy', async ()
         const page = await (await fetch(`${base}${path}`, { headers: { cookie } })).text();
         assert.match(page, new RegExp(`<input id="page-link" type="text" readonly value="${link}"`), path);
         assert.match(page, /Copy link/, path);
-        assert.match(page, /href="sms:\?&amp;body=Book%20with%20me/, path);
+        if (path === '/app/money') {
+          assert.match(page, /href="sms:\?&amp;body=Book%20with%20me/, path);
+        } else {
+          assert.doesNotMatch(page, /<a class="action" href="sms:\?&amp;body=Book%20with%20me/);
+        }
       }
       const schedule = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
-      assert.match(schedule, /Parents can(&#39;|')t book until payments are set up\./);
+      assert.match(schedule, /Parents can(&#39;|')t book until payments are set up/);
+      assert.match(schedule, /banner-warn/);
       assert.match(schedule, /<a class="action" href="\/app\/money">Connect payments<\/a>/);
     });
   });

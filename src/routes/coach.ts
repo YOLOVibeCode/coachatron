@@ -116,7 +116,7 @@ import {
   type RunningCascade,
 } from '../domain/cascade.js';
 import { assistantPayRouter, renderAssistantPay, renderOwedToAssistants } from './assistantPay.js';
-import { readStartText, START_COOKIE } from '../lib/startCookie.js';
+import { encodeStartCookie, readStartText, START_COOKIE, START_COOKIE_MAX_AGE } from '../lib/startCookie.js';
 import {
   coachHasSchedule,
   discardDraft,
@@ -961,6 +961,9 @@ const SETUP_NOTICES: Record<string, string> = {
 const SETUP_EXAMPLE =
   'Keeper group Tuesdays and Thursdays at 6pm at Field 3, an hour, 8 kids, $35. Backup coach gets $80. Privates Saturday at 9am, 10am and 11am, 45 minutes, $70. 10-pack for $300.';
 
+const SETUP_DISCARD_CONFIRM =
+  "return confirm('Start over clears this draft. Your published schedule stays. Continue?')";
+
 function renderSetupScreen(
   coach: CoachRow,
   draft: SetupDraft | null,
@@ -970,15 +973,17 @@ function renderSetupScreen(
 ) {
   const questions = draft?.questions ?? [];
   const ready = draft !== null && questions.length === 0;
-  const label = !draft ? 'Tell me your week' : questions.length > 0 ? questions[0] : 'Change anything? Just say it.';
+  const label = !draft ? 'Describe your week' : questions.length > 0 ? questions[0] : 'Change anything? Just say it.';
   const submit = !draft ? 'Set it up' : questions.length > 0 ? 'Answer' : 'Update';
   return page(
-    'Set up',
+    'Edit schedule',
     html`${coachNav('schedule')}
-      <h1>${draft ? "Here's your week" : 'Tell me your week'}</h1>
-      ${notice ? html`<p class="error">${notice}</p>` : raw('')}
+      <h1>Edit schedule</h1>
+      ${hasSchedule
+        ? html`<p class="muted">Set it up adds to your current schedule. Tap Publish when the preview looks right.</p>`
+        : raw('')}
       ${draft
-        ? renderSetupPreview(draft.plan, coach)
+        ? renderSetupPreview(draft.plan, coach, new Date(), draft.warnings)
         : html`<p class="muted">Tap the mic on your keyboard and talk. Say what you coach, how long, how many athletes, the price, and your days and times.</p>`}
       ${questions.length > 0
         ? html`<ul class="setup-questions">${questions.map((q) => html`<li>${q}</li>`)}</ul>`
@@ -989,20 +994,21 @@ function renderSetupScreen(
             <button type="submit">Publish</button>
           </form>`
         : raw('')}
-      <form method="post" action="/app/setup">
+      <form id="setup-form" method="post" action="/app/setup">
         <label for="setup-text">${label}</label>
         <textarea id="setup-text" name="text" rows="6" required placeholder="${SETUP_EXAMPLE}">${startText}</textarea>
+        ${notice ? html`<p class="error setup-field-error">${notice}</p>` : raw('')}
         <button type="submit"${ready ? raw(' class="ghost"') : raw('')}>${submit}</button>
       </form>
       ${draft
-        ? html`<form method="post" action="/app/setup/discard">
+        ? html`<form method="post" action="/app/setup/discard"${hasSchedule ? raw(` onsubmit="${SETUP_DISCARD_CONFIRM}"`) : raw('')}>
             <input type="hidden" name="id" value="${draft.id}" />
             <button type="submit" class="ghost">Start over</button>
           </form>`
         : raw('')}
       <p class="muted">
         ${hasSchedule
-          ? html`<a href="/app/schedule">Back to the schedule</a>`
+          ? html`<a href="/app/schedule">Back to the schedule</a> · <a href="/app/session-types">Set up with a form instead</a>`
           : html`Rather use forms? <a href="/app/session-types">Set up with a form instead</a>.`}
       </p>`,
   );
@@ -1025,10 +1031,10 @@ const TEST_ONLY_PAYMENTS = 'This payment account takes test payments only, so pa
 /** Schedule's line and link for a coach who cannot take payments yet. */
 function paymentsStepCard(step: PaymentsStep) {
   if (step === 'test-only') {
-    return html`<p class="muted">${TEST_ONLY_PAYMENTS}</p>
+    return html`<div class="banner-warn">${TEST_ONLY_PAYMENTS}</div>
       <a class="action" href="/app/money">See payments</a>`;
   }
-  return html`<p class="muted">Parents can't book until payments are set up.</p>
+  return html`<div class="banner-warn">Parents can't book until payments are set up.</div>
     <a class="action" href="/app/money">${step === 'finish' ? FINISH_CONNECTING_PAYMENTS : CONNECT_PAYMENTS}</a>`;
 }
 
@@ -1039,6 +1045,7 @@ function paymentsStepCard(step: PaymentsStep) {
 function renderPageLinkCard(coach: CoachRow, opts: { main: 'share' | PaymentsStep | 'none'; justPublished?: boolean }) {
   const link = coachPageUrl(coach.handle);
   const share = `sms:?&body=${encodeURIComponent(`Book with me: ${link}`)}`;
+  const shareReady = opts.main === 'share' || opts.main === 'none';
   return html`<div class="card page-link">
     ${opts.justPublished
       ? html`<p><strong>You're live.</strong> Parents book at ${link.replace(/^https?:\/\//, '')}</p>`
@@ -1047,9 +1054,11 @@ function renderPageLinkCard(coach: CoachRow, opts: { main: 'share' | PaymentsSte
     <input id="page-link" type="text" readonly value="${link}" onfocus="this.select()" />
     <div class="btn-row">
       <button type="button" class="ghost" onclick="${COPY_LINK_SCRIPT}">Copy link</button>
-      <a class="action${opts.main === 'share' ? '' : ' ghost'}" href="${share}">Share your link</a>
+      ${shareReady
+        ? html`<a class="action" href="${share}">Share your link</a>`
+        : html`<span class="action ghost disabled" aria-disabled="true">Share your link</span>`}
     </div>
-    ${opts.main === 'share' || opts.main === 'none' ? raw('') : paymentsStepCard(opts.main)}
+    ${!shareReady && opts.main !== 'none' && opts.main !== 'share' ? paymentsStepCard(opts.main) : raw('')}
   </div>`;
 }
 
@@ -1129,7 +1138,7 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
           ${cascadeCards}
           ${phoneCard}
           ${emailCard}
-          <p><a class="action ghost" href="/app/schedule?setup=1">Add more by talking</a></p>
+          <p><a class="action ghost" href="/app/schedule?setup=1">Edit schedule</a></p>
           ${assistant.reply
             ? html`<div class="card ask-reply">
                 <p>${assistant.reply.body}</p>
@@ -1154,13 +1163,15 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
               )}
           ${calendar}
         </div>
-        <div class="schedule-ask">
+        <details class="schedule-edit">
+          <summary class="schedule-edit-toggle">Edit schedule</summary>
           <form method="post" action="/app/schedule/ask" onsubmit="this.querySelector('button[type=submit]').disabled=true;this.querySelector('button[type=submit]').textContent='Working…';">
-            <label for="ask">Tell me what to change</label>
-            <input id="ask" name="text" type="text" placeholder="Text the week. &quot;who's at 6pm&quot; or &quot;cancel tomorrow&quot;" />
+            <label for="ask">Change a session or add a time</label>
+            <input id="ask" name="text" type="text" placeholder="Cancel tomorrow, or add Saturday 9am" />
             <button type="submit">Send</button>
           </form>
-        </div>`,
+          <p class="muted"><a href="/app/schedule?setup=1">Describe a whole new week</a></p>
+        </details>`,
     ),
   );
 });
@@ -1458,6 +1469,9 @@ coachRouter.post('/app/setup', requireAuth, async (req, res) => {
   }
   const result = await handleSetupMessage(db, coach, text, 'web');
   const error = result.kind === 'cap' ? '&e=cap' : result.kind === 'error' ? '&e=read' : '';
+  if (result.kind === 'cap' || result.kind === 'error') {
+    res.setHeader('Set-Cookie', serializeCookie(START_COOKIE, encodeStartCookie(text), START_COOKIE_MAX_AGE));
+  }
   res.redirect(303, `/app/schedule?setup=1${error}`);
 });
 
