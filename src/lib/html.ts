@@ -387,14 +387,14 @@ export const POSTCARD_TOKENS_CSS = `
   }
 `;
 
-export type CoachNavKey = 'schedule' | 'types' | 'pricing' | 'roster' | 'money';
+export type CoachNavKey = 'schedule' | 'types' | 'pricing' | 'roster' | 'payments';
 
 const COACH_NAV: Array<[CoachNavKey, string, string]> = [
   ['schedule', '/app/schedule', 'Schedule'],
   ['types', '/app/session-types', 'Types'],
-  ['pricing', '/app/pricing', 'Pricing'],
   ['roster', '/app/roster', 'Roster'],
-  ['money', '/app/money', 'Money'],
+  ['pricing', '/app/pricing', 'Pricing'],
+  ['payments', '/app/payments', 'Payments'],
 ];
 
 /** Plain links across the coach screens. Muted text, not buttons, so each

@@ -42,7 +42,7 @@ export const LANDING_PREVIEW_PACK = { name: '10-pack', priceLabel: '$300' };
 export function renderLandingPhonePreview(): SafeHtml {
   const defaultSlot = LANDING_PREVIEW_SLOTS[0]!;
   return html`<div class="stage" aria-hidden="true">
-    <p class="preview-label">What parents see, built from your words</p>
+    <p class="preview-label">What clients see, built from your words</p>
     <div class="phone"><div class="screen">
       <div class="status"><span>9:14</span><span>LTE</span></div>
       <div class="body landing-preview-body">

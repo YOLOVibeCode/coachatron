@@ -36,7 +36,7 @@ export const landingRouter = Router();
 
 const TITLE = 'Say your week. Start taking bookings.';
 const DESCRIPTION =
-  'Tell us your week in plain words. You get a link parents can book and pay on, in about five minutes, on your phone.';
+  'Tell us your week in plain words. You get a link clients can book and pay on, in about five minutes, on your phone.';
 // Every time says am or pm: a bare hour is read as pm (src/domain/setup.ts),
 // so "Saturday at 9" would mean 9pm.
 const WEEK_EXAMPLE = LANDING_WEEK_EXAMPLE;
@@ -126,7 +126,7 @@ function renderLanding(): string {
         <ol>
           <li><strong>Say it</strong><span>One box, or one text. What you coach, how long, how many, the price, your days.</span></li>
           <li><strong>Check it</strong><span>We show what we understood and ask about anything missing. We never guess a price. Nothing goes live until you tap Publish.</span></li>
-          <li><strong>Share it</strong><span>Parents pick a time and pay. No app. No account.</span></li>
+          <li><strong>Share it</strong><span>Clients pick a time and pay. No app. No account.</span></li>
         </ol>
       </section>
       <section class="faq" id="faq">
@@ -136,7 +136,7 @@ function renderLanding(): string {
           <dd>No. One box, or one text, and you're started.</dd>
           <dt>Do I need a password?</dt>
           <dd>No. Your email or phone is the sign-in.</dd>
-          <dt>Do parents need an app?</dt>
+          <dt>Do clients need an app?</dt>
           <dd>No. They pick a time and pay on your link.</dd>
         </dl>
       </section>

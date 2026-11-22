@@ -43,7 +43,7 @@ export function renderDownloadBlock(tz: string, now: Date = new Date()): SafeHtm
   const zone = coachZone(tz);
   return html`<h2 id="download">Download</h2>
     <div class="card download">
-      <p class="muted">Your payments and bookings as spreadsheet files (CSV), for your bookkeeping and taxes. Payments are listed by the day they were paid, bookings by the day of the session. Amounts are what parents paid, before fees. A part-refund made outside Coachatron appears in the file but not in Money's totals.</p>
+      <p class="muted">Your payments and bookings as spreadsheet files (CSV), for your bookkeeping and taxes. Payments are listed by the day they were paid, bookings by the day of the session. Amounts are what clients paid, before fees. A part-refund made outside Coachatron appears in the file but not in Payments totals.</p>
       <form method="get" action="${PAYMENTS_PATH}">
         <label for="download_range">Range</label>
         <select id="download_range" name="range">
@@ -67,7 +67,7 @@ function refusal(res: Response, status: number, title: string, message: string):
       title,
       html`<h1>${title}</h1>
         <p class="muted">${message}</p>
-        <a class="action" href="/app/money#download">Back to Money</a>`,
+        <a class="action" href="/app/payments#download">Back to Payments</a>`,
     ),
   );
 }

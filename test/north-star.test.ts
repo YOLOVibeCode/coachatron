@@ -31,7 +31,7 @@ import type { CompleteRequest } from '../src/llm/schema.js';
  *      gets one text with the page link and a /p/<token> payments link.
  *   4. Until payments work, the coach page shows "Booking opens soon" in
  *      place of Book, and nothing leads a parent to a payment page.
- *   5. The payments link from the text signs the coach in on /app/money,
+ *   5. The payments link from the text signs the coach in on /app/payments,
  *      where they accept the marketplace terms and onboard with the relay.
  *   6. The seller becomes charges-enabled; the relay's seller.updated event
  *      says so, and the coach gets one "You can take payments now" text.
@@ -294,12 +294,12 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           assert.equal(published.headers.get('location'), '/app/schedule?published=1');
 
           const live = visible(await (await get('/app/schedule?published=1', coachCookie)).text());
-          const link = new RegExp(`You're live\\. Parents book at ${escapeRegExp(appHost)}/c/([a-z0-9-]+)`).exec(live);
+          const link = new RegExp(`You're live\\. Clients book at ${escapeRegExp(appHost)}/c/([a-z0-9-]+)`).exec(live);
           assert.ok(link, `the schedule shows the coach's public link: ${live.slice(0, 300)}`);
           handle = link[1];
           assert.equal(handle, 'dana-rivera', 'the handle comes from the name');
-          assert.match(live, /Parents can't book yet/);
-          assert.match(live, /Parents can't book until payments are set up\./);
+          assert.match(live, /Clients can't book yet/);
+          assert.match(live, /Clients can't book until payments are set up\./);
 
           const texts = textsToCoach();
           assert.equal(texts.length, 2, 'one more text to the coach: the start link, then this one');
@@ -378,12 +378,12 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
 
           const tapped = await postForm(paymentsPath, {});
           assert.equal(tapped.status, 303);
-          assert.equal(tapped.headers.get('location'), '/app/money', 'the link opens Money');
+          assert.equal(tapped.headers.get('location'), '/app/payments', 'the link opens Money');
           moneyCookie = sessionCookie(tapped);
           assert.equal((await postForm(paymentsPath, {})).status, 410, 'the payments link works once');
 
-          const before = visible(await (await get('/app/money', moneyCookie)).text());
-          assert.match(before, /Connect a payment account so athletes can pay you when they book\./);
+          const before = visible(await (await get('/app/payments', moneyCookie)).text());
+          assert.match(before, /Connect a payment account so clients can pay you when they book\./);
           assert.match(before, /Coachatron keeps 5% of each payment/);
           assert.match(before, /I accept the Coachatron marketplace terms \(v1\)\./);
 
@@ -401,7 +401,7 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
             {
               product: 'coachatron',
               sellerKey: handle,
-              returnUrl: `${appBase}/app/money`,
+              returnUrl: `${appBase}/app/payments`,
               email: 'dana@example.com',
               profile: {
                 phone: COACH_PHONE,
@@ -412,7 +412,7 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
             },
           ]);
           assert.match(
-            visible(await (await get('/app/money', moneyCookie)).text()),
+            visible(await (await get('/app/payments', moneyCookie)).text()),
             /Finish setting up your payment account/,
             'between accepting and finishing, Money asks the coach to finish',
           );
@@ -436,9 +436,10 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
             1,
           );
 
-          const after = visible(await (await get('/app/money?seller=connected', moneyCookie)).text());
+          const after = visible(await (await get('/app/payments?seller=connected', moneyCookie)).text());
           assert.match(after, /Payments are connected\./, 'the return notice');
-          assert.match(after, /Payments connected\. Athletes pay you directly\. Coachatron keeps 5% of each payment\./);
+          assert.match(after, /Payments are connected\./);
+          assert.match(after, /Payouts go to your bank account\./);
           assert.match(after, /Payouts go to your bank account\./);
           assert.doesNotMatch(after, /marketplace terms/, 'the terms are not asked again');
 

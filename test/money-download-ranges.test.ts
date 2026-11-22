@@ -274,7 +274,7 @@ test('each state of a booking reads in plain words, with what paid for it, where
       await db.query('update coach set cancel_window_hours = 168 where id = $1', [seed.coach.id]);
       await cancel(await pay('Ed'));
       const fay = await pay('Fay');
-      assert.equal((await postForm(base, '/app/money/refund', cookie, { target: `b${fay}` })).headers.get('location'), '/app/money?notice=refund-refunded');
+      assert.equal((await postForm(base, '/app/money/refund', cookie, { target: `b${fay}` })).headers.get('location'), '/app/payments?notice=refund-refunded');
       const gia = await pay('Gia', 30000, { mode: 'package', package_id: String(packageId) });
       const hal = await pay('Hal', 12000, { mode: 'plan', plan_id: String(planId) });
       await seedBookedSession(db, seed.sessionId, 'Ivy', '+15551130098');

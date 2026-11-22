@@ -152,7 +152,7 @@ test('a paid drop-in moves to another time of the same session: same payment, a 
 
       const cookie = await coachCookie(db, seed.coach.id);
       assert.match(await getPage(base, `/app/sessions/${from}`, cookie), /<strong>Mia<\/strong> — <span class="muted">Moved to \w{3}, \w{3} \d{1,2}/);
-      assert.match(await getPage(base, `/app/sessions/${to}`, cookie), /Moved here by the parent from \w{3}, \w{3} \d{1,2}/);
+      assert.match(await getPage(base, `/app/sessions/${to}`, cookie), /Moved here by the client from \w{3}, \w{3} \d{1,2}/);
     });
 
     assert.deepEqual(await payment(db, b.id), { ...before, session_id: to });
@@ -589,7 +589,7 @@ test('Session detail says where a moved booking is now, once, and nothing when i
 
       const home = await getPage(base, `/app/sessions/${from}`, cookie);
       assert.match(home, /Booked \(1\)/);
-      assert.match(home, /Moved here by the parent from /);
+      assert.match(home, /Moved here by the client from /);
       assert.deepEqual(movedAwayLines(home), [], 'Mia is booked here, so she is not listed as moved away');
       assert.deepEqual(movedAwayLines(await getPage(base, `/app/sessions/${to}`, cookie)), [`Mia: ${await startsAt(db, from)}`]);
 
