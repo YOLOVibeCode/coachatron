@@ -7,10 +7,12 @@ import {
   parseContact,
   contactValue,
   findCoachByContact,
+  findCoachByPhone,
   findCoachHoldingEmail,
   emailTakenNotice,
   markEmailVerified,
   releaseUnprovedEmail,
+  setCoachEmailVerified,
   setCoachPhone,
   type Contact,
   createOtp,
@@ -54,10 +56,12 @@ import { keptOwnPlace, mountLocationRoutes, ownPlacesNote, placeFromForm, sessio
 import {
   SMS_CONSENT_GATED_SUBMIT_SCRIPT,
   coachNav,
+  CONTACT_HINT_SCRIPT,
   html,
   oneTimeCodeNote,
   page,
   raw,
+  signInPage,
   smsConsentCheckbox,
   type SafeHtml,
 } from '../lib/html.js';
@@ -127,6 +131,16 @@ import {
 } from '../domain/cascade.js';
 import { assistantPayRouter, renderAssistantPay, renderOwedToAssistants } from './assistantPay.js';
 import { encodeStartCookie, readStartText, START_COOKIE, START_COOKIE_MAX_AGE } from '../lib/startCookie.js';
+import {
+  readReturnPath,
+  readSigninPending,
+  SIGNIN_FLOW_COOKIE,
+  SIGNIN_RETURN_COOKIE,
+  SIGNIN_RETURN_TTL_SECONDS,
+  signReturnPath,
+  signSigninPending,
+  type SigninPending,
+} from '../domain/signinFlow.js';
 import {
   coachHasSchedule,
   discardDraft,
@@ -213,6 +227,13 @@ async function requireAuth(req: Request, res: Response, next: NextFunction): Pro
   const token = parseCookies(req.headers.cookie).cx_session;
   const coachId = token ? await getCoachBySessionToken(db, token) : null;
   if (!coachId) {
+    const cookies = parseCookies(req.headers.cookie);
+    const signed = signReturnPath(req.path);
+    if (signed) {
+      res.setHeader('Set-Cookie', serializeCookie(SIGNIN_RETURN_COOKIE, signed, SIGNIN_RETURN_TTL_SECONDS));
+    } else if (cookies[SIGNIN_RETURN_COOKIE]) {
+      res.setHeader('Set-Cookie', clearCookie(SIGNIN_RETURN_COOKIE));
+    }
     res.redirect(303, '/signin');
     return;
   }
@@ -222,21 +243,62 @@ async function requireAuth(req: Request, res: Response, next: NextFunction): Pro
 
 // ---- Screen 1: sign in ----
 
+function setSigninFlowCookie(pending: SigninPending): string {
+  return serializeCookie(SIGNIN_FLOW_COOKIE, signSigninPending(pending), 15 * 60);
+}
+
+function clearSigninFlowCookie(): string {
+  return clearCookie(SIGNIN_FLOW_COOKIE);
+}
+
+function readPending(req: Request): SigninPending | null {
+  return readSigninPending(parseCookies(req.headers.cookie)[SIGNIN_FLOW_COOKIE]);
+}
+
+async function finishSignIn(
+  req: Request,
+  res: Response,
+  coach: CoachRow,
+  opts: { linked?: boolean } = {},
+): Promise<void> {
+  const db = getDb();
+  const token = await createCoachSession(db, coach.id);
+  const cookies = [serializeCookie(SESSION_COOKIE, token, 30 * 24 * 60 * 60), clearSigninFlowCookie()];
+  const returnPath = readReturnPath(parseCookies(req.headers.cookie)[SIGNIN_RETURN_COOKIE]);
+  if (returnPath) cookies.push(clearCookie(SIGNIN_RETURN_COOKIE));
+  const startText = readStartText(req.headers.cookie);
+  if (startText) {
+    const result = await handleSetupMessage(db, coach, startText, 'web');
+    if (result.kind === 'draft') cookies.push(clearCookie(START_COOKIE));
+    res.setHeader('Set-Cookie', cookies);
+    const error = result.kind === 'cap' ? '&e=cap' : result.kind === 'error' ? '&e=read' : '';
+    res.redirect(303, `/app/schedule?setup=1${error}`);
+    return;
+  }
+  res.setHeader('Set-Cookie', cookies);
+  if (returnPath) {
+    res.redirect(303, returnPath);
+    return;
+  }
+  res.redirect(303, opts.linked ? '/app/schedule?linked=1' : '/app/schedule');
+}
+
 // One box: an email gets a code by email (works anywhere); a US or Canadian
 // mobile gets a text code. Text codes reach only +1 numbers (SPEC.md §10).
 function renderContactForm(value = '', error?: string, saved = false) {
-  return page(
-    'Sign in',
-    html`<h1>Coachatron</h1>
-      <p class="muted">${saved ? "Saved. Now your email or mobile. We'll send a code, then show your week." : 'Sign in or sign up with your email or mobile number.'}</p>
+  return signInPage(
+    'Sign in or sign up',
+    html`<h1>Sign in or sign up</h1>
+      <p class="muted">${saved ? "Saved. We'll send a code, then show your week." : 'No password — we email or text you a one-time code.'}</p>
       <form method="post" action="/signin/otp">
-        <label for="contact">Email or mobile number</label>
-        <input id="contact" name="contact" type="text" inputmode="email" autocomplete="username" autocapitalize="off" spellcheck="false" placeholder="you@example.com or (555) 555-0100" value="${value}" required />
-        ${oneTimeCodeNote()}
+        <label for="contact">Email or phone</label>
+        <input id="contact" name="contact" type="text" inputmode="email" autocomplete="username" autocapitalize="off" spellcheck="false" placeholder="you@example.com or +1 555 555 0100" value="${value}" required />
+        <p id="contact-hint" class="muted sms-once" aria-live="polite"></p>
         ${smsConsentCheckbox()}
         <button type="submit">Send code</button>
       </form>
-      ${error ? html`<p class="error">${error}</p>` : raw('')}`,
+      ${error ? html`<p class="error">${error}</p>` : raw('')}
+      ${CONTACT_HINT_SCRIPT}`,
   );
 }
 
@@ -372,7 +434,9 @@ coachRouter.post('/signin/otp', async (req, res) => {
     visitor: true,
   });
   if (outcome === 'sent') {
-    res.redirect(303, `/signin/verify?to=${encodeURIComponent(contactValue(contact))}`);
+    const consentQ =
+      contact.kind === 'phone' && smsConsentChecked(req.body) ? '&sms_consent=1' : '';
+    res.redirect(303, `/signin/verify?to=${encodeURIComponent(contactValue(contact))}${consentQ}`);
     return;
   }
   if (outcome === 'capped') {
@@ -393,7 +457,8 @@ coachRouter.get('/signin/verify', (req, res) => {
     res.redirect(303, '/signin');
     return;
   }
-  res.status(200).send(renderVerifyForm(contact, {}));
+  const smsConsent = req.query.sms_consent === '1';
+  res.status(200).send(renderVerifyForm(contact, {}, undefined, smsConsent));
 });
 
 // The browser knows the coach's timezone; a typed IANA name was a
@@ -404,41 +469,92 @@ const TZ_SCRIPT = raw(
 
 function renderVerifyForm(
   contact: Contact,
-  values: { code?: string; name?: string; email?: string; tz?: string },
+  values: { code?: string },
   error?: string,
+  smsConsent = false,
 ) {
   const to = contactValue(contact);
-  return page(
-    'Verify',
+  const consentField = contact.kind === 'phone' && smsConsent ? html`<input type="hidden" name="sms_consent" value="1" />` : raw('');
+  return signInPage(
+    'Enter your code',
     html`<h1>Enter your code</h1>
-      <p class="muted">We ${contact.kind === 'email' ? 'emailed' : 'texted'} a 6-digit code to ${to}.${contact.kind === 'email' ? ' Check spam if it is not there in a minute.' : ''}</p>
+      <p class="muted">Enter the 6-digit code we ${contact.kind === 'email' ? 'emailed' : 'texted'} to ${to}.${contact.kind === 'email' ? ' Check spam if it is not there in a minute.' : ''}</p>
       <form method="post" action="/signin/verify">
         <input type="hidden" name="to" value="${to}" />
         <label for="code">Code</label>
         <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" value="${values.code ?? ''}" required />
-
-        <p class="muted">New here? Just your name. Everything else can wait.</p>
-        <label for="name">Your name</label>
-        <input id="name" name="name" autocomplete="name" value="${values.name ?? ''}" />
-        ${contact.kind === 'phone'
-          ? html`<label for="email">Email (optional)</label>
-              <input id="email" name="email" type="email" autocomplete="email" value="${values.email ?? ''}" />`
-          : raw('')}
-        <input id="tz" name="tz" type="hidden" value="${values.tz ?? ''}" />
-
         <button type="submit">Continue</button>
       </form>
-      ${error ? raw(`<p class="error">${error}</p>`) : raw('')}
+      ${error ? html`<p class="error">${error}</p>` : raw('')}
+      <div class="signin-actions">
+        <form method="post" action="/signin/otp">
+          <input type="hidden" name="contact" value="${to}" />
+          ${consentField}
+          <button type="submit" class="ghost">Send a new code</button>
+        </form>
+        <a class="action ghost" href="/signin">Use a different email or phone</a>
+      </div>`,
+    { backHref: '/signin' },
+  );
+}
+
+function renderProfileForm(pending: SigninPending, values: { name?: string; extra?: string; tz?: string }, error?: string) {
+  const wantsEmail = pending.primary.kind === 'phone';
+  const hint = wantsEmail ? 'Adding your email lets you sign in with either one.' : 'Adding your mobile lets you sign in with either one.';
+  const extraLabel = wantsEmail ? 'Email (optional)' : 'Mobile (optional, US or Canada)';
+  const extraType = wantsEmail ? 'email' : 'tel';
+  const extraName = 'extra';
+  return signInPage(
+    'Finish signing up',
+    html`<h1>Almost done</h1>
+      <p class="muted">${hint}</p>
+      <form method="post" action="/signin/profile">
+        <label for="name">Your name</label>
+        <input id="name" name="name" autocomplete="name" value="${values.name ?? pending.name ?? ''}" required />
+        <label for="${extraName}">${extraLabel}</label>
+        <input id="${extraName}" name="${extraName}" type="${extraType}" autocomplete="${wantsEmail ? 'email' : 'tel'}" value="${values.extra ?? ''}" />
+        ${wantsEmail ? raw('') : smsConsentCheckbox()}
+        <input id="tz" name="tz" type="hidden" value="${values.tz ?? ''}" />
+        <button type="submit">Continue</button>
+        ${wantsEmail ? html`<button type="submit" class="ghost" name="skip" value="1">Skip for now</button>` : raw('')}
+      </form>
+      ${error ? html`<p class="error">${error}</p>` : raw('')}
       ${TZ_SCRIPT}`,
+    { backHref: `/signin/verify?to=${encodeURIComponent(contactValue(pending.primary))}${pending.smsConsent ? '&sms_consent=1' : ''}` },
+  );
+}
+
+function renderLinkForm(pending: SigninPending, values: { code?: string }, error?: string, sent = false) {
+  const target = pending.linkTarget!;
+  const label = contactValue(target);
+  const explain =
+    target.kind === 'email'
+      ? 'That email already has an account.'
+      : 'That mobile number already has an account.';
+  return signInPage(
+    'Link to your account',
+    html`<h1>Link your sign-in</h1>
+      <p class="muted">${explain} Enter the code we ${sent || target.kind === 'email' ? 'emailed' : 'texted'} to ${label} to show it is yours. Then we will add ${contactValue(pending.primary)} to that account.</p>
+      ${sent
+        ? html`<form method="post" action="/signin/link/verify">
+            <label for="code">Code</label>
+            <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" value="${values.code ?? ''}" required />
+            <button type="submit">Link and continue</button>
+          </form>`
+        : html`<form method="post" action="/signin/link">
+            <button type="submit">Send me a code</button>
+          </form>`}
+      ${error ? html`<p class="error">${error}</p>` : raw('')}
+      <div class="signin-actions">
+        <a class="action ghost" href="/signin/profile">Use a different email or phone</a>
+      </div>`,
+    { backHref: '/signin/profile' },
   );
 }
 
 coachRouter.post('/signin/verify', async (req, res) => {
   const contact = parseContact(contactField(req.body));
   const code = field(req.body, 'code');
-  const name = field(req.body, 'name');
-  const email = field(req.body, 'email');
-  const tz = field(req.body, 'tz');
   if (!contact) {
     res.redirect(303, '/signin');
     return;
@@ -446,76 +562,347 @@ coachRouter.post('/signin/verify', async (req, res) => {
 
   const db = getDb();
   if (!(await takeCodeCheck(db, req, contact))) {
-    res.status(429).send(renderVerifyForm(contact, { code, name, email, tz }, TOO_MANY_TRIES));
+    res.status(429).send(renderVerifyForm(contact, { code }, TOO_MANY_TRIES));
     return;
   }
   const check = await checkOtp(db, contact, code);
   if (!check.ok) {
-    res.status(401).send(renderVerifyForm(contact, { code, name, email, tz }, CODE_ERRORS[check.reason]));
+    res.status(401).send(renderVerifyForm(contact, { code }, CODE_ERRORS[check.reason]));
     return;
   }
   const otpId = check.id;
 
-  let coach: CoachRow | null = await findCoachByContact(db, contact);
-  if (!coach) {
-    // An email that only sits, unproved, on an account that signs in by
-    // text does not open that account.
-    const unproved = contact.kind === 'email' && (await findCoachHoldingEmail(db, contact.email)) !== null;
-    if (!name) {
-      res
-        .status(422)
-        .send(
-          renderVerifyForm(
-            contact,
-            { code, name, email, tz },
-            unproved
-              ? "That email isn't confirmed on an account yet. Sign in with your mobile, or enter your name to start a new account."
-              : 'Enter your name.',
-          ),
-        );
-      return;
-    }
-    // An optional email given on a phone join must not belong to another
-    // coach, and stays unproved until a code sent to it is entered.
-    const extraEmail = contact.kind === 'phone' ? normalizeEmail(email) : null;
-    const holder = extraEmail ? await findCoachHoldingEmail(db, extraEmail) : null;
-    if (holder) {
-      res.status(422).send(renderVerifyForm(contact, { code, name, email, tz }, emailTakenNotice(holder)));
-      return;
-    }
+  const coach: CoachRow | null = await findCoachByContact(db, contact);
+  if (coach) {
     if (!(await consumeOtp(db, otpId))) {
-      res.status(401).send(renderVerifyForm(contact, { code, name, email, tz }, CODE_ERRORS.none));
+      res.status(401).send(renderVerifyForm(contact, { code }, CODE_ERRORS.none));
       return;
     }
-    if (unproved) await releaseUnprovedEmail(db, contactValue(contact));
-    coach = await createCoach(db, {
-      phone: contact.kind === 'phone' ? contact.phone : null,
-      email: contact.kind === 'email' ? contact.email : (extraEmail ?? ''),
-      emailVerified: contact.kind === 'email',
-      name,
-      tz: isValidTimeZone(tz) ? tz : DEFAULT_TZ,
-    });
-  } else if (!(await consumeOtp(db, otpId))) {
-    res.status(401).send(renderVerifyForm(contact, { code, name, email, tz }, CODE_ERRORS.none));
+    if (contact.kind === 'phone' && check.smsConsent) await recordCodeConsent(db, req, contact.phone, '/signin/otp');
+    await finishSignIn(req, res, coach);
     return;
   }
-  if (contact.kind === 'phone' && check.smsConsent) await recordCodeConsent(db, req, contact.phone, '/signin/otp');
 
-  const token = await createCoachSession(db, coach.id);
-  const cookies = [serializeCookie(SESSION_COOKIE, token, 30 * 24 * 60 * 60)];
-  const startText = readStartText(req.headers.cookie);
-  if (startText) {
-    const result = await handleSetupMessage(db, coach, startText, 'web');
-    if (result.kind === 'draft') {
-      cookies.push(clearCookie(START_COOKIE));
-    }
-    res.setHeader('Set-Cookie', cookies);
-    const error = result.kind === 'cap' ? '&e=cap' : result.kind === 'error' ? '&e=read' : '';
-    res.redirect(303, `/app/schedule?setup=1${error}`);
+  if (!(await consumeOtp(db, otpId))) {
+    res.status(401).send(renderVerifyForm(contact, { code }, CODE_ERRORS.none));
     return;
   }
-  res.setHeader('Set-Cookie', cookies);
-  res.redirect(303, '/app/schedule');
+
+  const pending: SigninPending = {
+    primary: contact,
+    smsConsent: check.smsConsent,
+    mode: 'profile',
+  };
+  res.setHeader('Set-Cookie', setSigninFlowCookie(pending));
+  res.redirect(303, '/signin/profile');
+});
+
+function renderConfirmPhoneForm(pending: SigninPending, values: { code?: string }, error?: string) {
+  const phone = pending.confirmPhone!;
+  return signInPage(
+    'Confirm your mobile',
+    html`<h1>Confirm your mobile</h1>
+      <p class="muted">Enter the 6-digit code we texted to ${phone}.</p>
+      <form method="post" action="/signin/confirm-phone">
+        <label for="code">Code</label>
+        <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" value="${values.code ?? ''}" required />
+        <button type="submit">Continue</button>
+      </form>
+      ${error ? html`<p class="error">${error}</p>` : raw('')}
+      <div class="signin-actions">
+        <a class="action ghost" href="/signin/profile">Back</a>
+      </div>`,
+    { backHref: '/signin/profile' },
+  );
+}
+
+coachRouter.get('/signin/confirm-phone', (req, res) => {
+  const pending = readPending(req);
+  if (!pending?.confirmPhone || !pending.name) {
+    res.redirect(303, '/signin/profile');
+    return;
+  }
+  res.status(200).send(renderConfirmPhoneForm(pending, {}));
+});
+
+coachRouter.post('/signin/confirm-phone', async (req, res) => {
+  const pending = readPending(req);
+  if (!pending?.confirmPhone || !pending.name) {
+    res.redirect(303, '/signin/profile');
+    return;
+  }
+  const code = field(req.body, 'code');
+  const db = getDb();
+  const phoneContact: Contact = { kind: 'phone', phone: pending.confirmPhone };
+  if (!(await takeCodeCheck(db, req, phoneContact))) {
+    res.status(429).send(renderConfirmPhoneForm(pending, { code }, TOO_MANY_TRIES));
+    return;
+  }
+  const check = await checkOtp(db, phoneContact, code);
+  if (!check.ok) {
+    res.status(401).send(renderConfirmPhoneForm(pending, { code }, CODE_ERRORS[check.reason]));
+    return;
+  }
+  if (!(await consumeOtp(db, check.id))) {
+    res.status(401).send(renderConfirmPhoneForm(pending, { code }, CODE_ERRORS.none));
+    return;
+  }
+  const coach = await createCoach(db, {
+    phone: pending.confirmPhone,
+    email: pending.primary.kind === 'email' ? pending.primary.email : '',
+    emailVerified: pending.primary.kind === 'email',
+    name: pending.name,
+    tz: isValidTimeZone(pending.tz ?? '') ? pending.tz! : DEFAULT_TZ,
+  });
+  if (check.smsConsent) await recordCodeConsent(db, req, pending.confirmPhone, '/signin/profile');
+  await finishSignIn(req, res, coach);
+});
+
+coachRouter.get('/signin/profile', (req, res) => {
+  const pending = readPending(req);
+  if (!pending || pending.mode !== 'profile') {
+    res.redirect(303, '/signin');
+    return;
+  }
+  res.status(200).send(renderProfileForm(pending, {}));
+});
+
+async function attachPrimaryToExisting(
+  db: DbClient,
+  coachId: number,
+  pending: SigninPending,
+): Promise<'ok' | 'taken'> {
+  if (pending.primary.kind === 'phone') return setCoachPhone(db, coachId, pending.primary.phone);
+  return setCoachEmailVerified(db, coachId, pending.primary.email);
+}
+
+coachRouter.post('/signin/profile', async (req, res) => {
+  const pending = readPending(req);
+  if (!pending || pending.mode !== 'profile') {
+    res.redirect(303, '/signin');
+    return;
+  }
+  const name = field(req.body, 'name');
+  const tz = field(req.body, 'tz');
+  const skip = field(req.body, 'skip') === '1';
+  const rawExtra = skip ? '' : field(req.body, 'extra');
+  const values = { name, extra: rawExtra, tz };
+
+  if (!name) {
+    res.status(422).send(renderProfileForm(pending, values, 'Enter your name.'));
+    return;
+  }
+
+  const db = getDb();
+  let extraEmail: string | null = null;
+  let extraPhone: string | null = null;
+  if (rawExtra) {
+    const extra = parseContact(rawExtra);
+    if (!extra) {
+      res.status(422).send(renderProfileForm(pending, values, 'Enter a valid email or US/Canadian mobile number.'));
+      return;
+    }
+    if (extra.kind === 'phone') {
+      if (!canText(extra.phone)) {
+        res.status(422).send(renderProfileForm(pending, values, NOT_TEXTABLE));
+        return;
+      }
+      extraPhone = extra.phone;
+    } else {
+      extraEmail = extra.email;
+    }
+  }
+
+  if (extraEmail) {
+    const holder = await findCoachHoldingEmail(db, extraEmail);
+    if (holder) {
+      if (!holder.email_verified) {
+        res.status(422).send(renderProfileForm(pending, values, emailTakenNotice(holder)));
+        return;
+      }
+      const linkPending: SigninPending = {
+        ...pending,
+        mode: 'link',
+        name,
+        extra: rawExtra,
+        coachId: holder.id,
+        linkTarget: { kind: 'email', email: extraEmail },
+      };
+      res.setHeader('Set-Cookie', setSigninFlowCookie(linkPending));
+      res.redirect(303, '/signin/link');
+      return;
+    }
+  }
+
+  if (extraPhone) {
+    const holder = await findCoachByPhone(db, extraPhone);
+    if (holder) {
+      const linkPending: SigninPending = {
+        ...pending,
+        mode: 'link',
+        name,
+        tz,
+        extra: rawExtra,
+        coachId: holder.id,
+        linkTarget: { kind: 'phone', phone: extraPhone },
+      };
+      res.setHeader('Set-Cookie', setSigninFlowCookie(linkPending));
+      res.redirect(303, '/signin/link');
+      return;
+    }
+    if (pending.primary.kind === 'email') {
+      if (!smsConsentChecked(req.body)) {
+        res.status(422).send(renderProfileForm(pending, values, 'Check the box to receive texts, or skip adding a mobile for now.'));
+        return;
+      }
+      if (!(await takeRequest(db, SIGNIN_CODE_LIMITS, clientKey(req)))) {
+        res.status(429).send(renderProfileForm(pending, values, TOO_MANY_CODE_REQUESTS));
+        return;
+      }
+      if (await isOptedOut(db, extraPhone)) {
+        res.status(422).send(renderProfileForm(pending, values, optedOutAtSignIn()));
+        return;
+      }
+      const sent = await sendCode(db, { kind: 'phone', phone: extraPhone }, { coachId: null, smsConsent: true, visitor: true });
+      if (sent !== 'sent') {
+        const err =
+          sent === 'capped'
+            ? 'Too many codes for this number today. Try again tomorrow.'
+            : sent === 'busy'
+              ? TEXTS_BUSY
+              : SEND_FAILED;
+        res.status(sent === 'failed' ? 502 : 429).send(renderProfileForm(pending, values, err));
+        return;
+      }
+      const next: SigninPending = { ...pending, name, tz, confirmPhone: extraPhone, smsConsent: true };
+      res.setHeader('Set-Cookie', setSigninFlowCookie(next));
+      res.redirect(303, '/signin/confirm-phone');
+      return;
+    }
+  }
+
+  const unproved =
+    pending.primary.kind === 'email' &&
+    (await findCoachHoldingEmail(db, pending.primary.email)) !== null;
+  if (unproved && pending.primary.kind === 'email') {
+    await releaseUnprovedEmail(db, pending.primary.email);
+  }
+
+  const coach = await createCoach(db, {
+    phone: pending.primary.kind === 'phone' ? pending.primary.phone : extraPhone,
+    email: pending.primary.kind === 'email' ? pending.primary.email : (extraEmail ?? ''),
+    emailVerified: pending.primary.kind === 'email',
+    name,
+    tz: isValidTimeZone(tz) ? tz : DEFAULT_TZ,
+  });
+
+  if (pending.primary.kind === 'phone' && pending.smsConsent) {
+    await recordCodeConsent(db, req, pending.primary.phone, '/signin/otp');
+  }
+  if (extraPhone && smsConsentChecked(req.body)) {
+    await recordCodeConsent(db, req, extraPhone, '/signin/profile');
+  }
+
+  await finishSignIn(req, res, coach);
+});
+
+coachRouter.get('/signin/link', async (req, res) => {
+  const pending = readPending(req);
+  if (!pending || pending.mode !== 'link' || !pending.linkTarget || !pending.coachId) {
+    res.redirect(303, '/signin');
+    return;
+  }
+  const sent = await hasLiveOtp(getDb(), pending.linkTarget);
+  res.status(200).send(renderLinkForm(pending, {}, undefined, sent));
+});
+
+coachRouter.post('/signin/link', async (req, res) => {
+  const pending = readPending(req);
+  if (!pending || pending.mode !== 'link' || !pending.linkTarget || !pending.coachId) {
+    res.redirect(303, '/signin');
+    return;
+  }
+  const db = getDb();
+  const target = pending.linkTarget;
+  if (!(await takeRequest(db, SIGNIN_CODE_LIMITS, clientKey(req)))) {
+    res.status(429).send(renderLinkForm(pending, {}, TOO_MANY_CODE_REQUESTS));
+    return;
+  }
+  if (target.kind === 'phone' && (await isOptedOut(db, target.phone))) {
+    res.status(422).send(renderLinkForm(pending, {}, optedOutAtSignIn()));
+    return;
+  }
+  const outcome = await sendCode(db, target, {
+    coachId: pending.coachId,
+    smsConsent: target.kind === 'phone',
+    visitor: true,
+    text:
+      target.kind === 'phone'
+        ? (code) => `Coachatron: your code to link this mobile is ${code}. Expires in 10 minutes.`
+        : undefined,
+  });
+  if (outcome === 'sent') {
+    res.redirect(303, '/signin/link');
+    return;
+  }
+  const err =
+    outcome === 'capped'
+      ? `Too many codes for ${target.kind === 'email' ? 'this email' : 'this number'} today. Try again tomorrow.`
+      : outcome === 'busy'
+        ? target.kind === 'phone'
+          ? TEXTS_BUSY
+          : RELAY_BUSY
+        : SEND_FAILED;
+  const status = outcome === 'failed' ? 502 : 429;
+  res.status(status).send(renderLinkForm(pending, {}, err, false));
+});
+
+coachRouter.post('/signin/link/verify', async (req, res) => {
+  const pending = readPending(req);
+  if (!pending || pending.mode !== 'link' || !pending.linkTarget || !pending.coachId) {
+    res.redirect(303, '/signin');
+    return;
+  }
+  const code = field(req.body, 'code');
+  const db = getDb();
+  const target = pending.linkTarget;
+  if (!(await takeCodeCheck(db, req, target))) {
+    res.status(429).send(renderLinkForm(pending, { code }, TOO_MANY_TRIES, true));
+    return;
+  }
+  const check = await checkOtp(db, target, code);
+  if (!check.ok) {
+    res.status(401).send(renderLinkForm(pending, { code }, CODE_ERRORS[check.reason], true));
+    return;
+  }
+  if (!(await consumeOtp(db, check.id))) {
+    res.status(401).send(renderLinkForm(pending, { code }, CODE_ERRORS.none, true));
+    return;
+  }
+
+  const coach = await findCoachById(db, pending.coachId);
+  if (!coach) {
+    res.setHeader('Set-Cookie', clearSigninFlowCookie());
+    res.redirect(303, '/signin');
+    return;
+  }
+
+  const attach = await attachPrimaryToExisting(db, coach.id, pending);
+  if (attach === 'taken') {
+    res.status(422).send(renderLinkForm(pending, { code }, 'That account already uses this sign-in. Try a different contact.'));
+    return;
+  }
+
+  if (pending.primary.kind === 'phone' && pending.smsConsent) {
+    await recordCodeConsent(db, req, pending.primary.phone, '/signin/otp');
+  }
+
+  const refreshed = await findCoachById(db, coach.id);
+  if (!refreshed) {
+    res.redirect(303, '/signin');
+    return;
+  }
+  await finishSignIn(req, res, refreshed, { linked: true });
 });
 
 // Sign out: ends this browser's session on the server and clears the cookie.
@@ -1516,6 +1903,7 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
           ${req.query.published === '1' ? await ownPlacesNote(db, coachId) : raw('')}
           ${askCard}
           ${cascadeCards}
+          ${req.query.linked === '1' ? html`<p class="muted">That contact was added to your account. You can sign in with either one.</p>` : raw('')}
           ${assistant.reply
             ? html`<div class="card ask-reply">
                 <p>${assistant.reply.body}</p>

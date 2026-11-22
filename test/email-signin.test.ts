@@ -9,6 +9,7 @@ import { createCoach, createCoachSession, parseContact } from '../src/domain/aut
 import { checkOverflow } from '../src/domain/cascade.js';
 import { resetComplete, setComplete } from '../src/llm/complete.js';
 import type { DbClient } from '../src/db/client.js';
+import { cookieJar, finishNewCoachProfile, postVerify, signUpNewCoach } from './helpers/signin.js';
 
 function cookieFrom(res: Response, name: string): string | null {
   const header = (res.headers.getSetCookie?.() ?? []).find((c) => c.startsWith(`${name}=`));
@@ -66,7 +67,8 @@ test('a coach joins with just an email: code by email, no phone needed', async (
     const db = await freshDb();
     await withServer(async (base) => {
       const form = await (await fetch(`${base}/signin`)).text();
-      assert.match(form, /Email or mobile number/);
+      assert.match(form, /Email or phone/);
+      assert.match(form, /Back to home/);
       assert.match(form, /name="contact"/);
 
       const ask = await post(base, '/signin/otp', { contact: '  Dana@Example.com ' });
@@ -82,15 +84,12 @@ test('a coach joins with just an email: code by email, no phone needed', async (
       assert.doesNotMatch(sent.text, /https?:\/\//, 'a code, never a link');
 
       const verifyPage = await (await fetch(`${base}${ask.headers.get('location')}`)).text();
-      assert.match(verifyPage, /We emailed a 6-digit code to dana@example\.com/);
+      assert.match(verifyPage, /6-digit code.*dana@example\.com/);
+      assert.match(verifyPage, /Send a new code/);
       assert.doesNotMatch(verifyPage, /Email \(optional\)/);
 
-      const done = await post(base, '/signin/verify', {
-        to: 'dana@example.com',
-        code: codeIn(sent.subject),
-        name: 'Dana Keeper',
-        tz: 'America/Denver',
-      });
+      const verify = await postVerify(base, 'dana@example.com', codeIn(sent.subject));
+      const done = await finishNewCoachProfile(base, verify, { name: 'Dana Keeper', tz: 'America/Denver' });
       assert.equal(done.status, 303);
       const session = cookieFrom(done, 'cx_session');
       assert.ok(session);
@@ -148,7 +147,7 @@ test('a foreign mobile is pointed to email; codes are capped and single-use', as
       const wrong = await post(base, '/signin/verify', { to: 'cap@example.com', code: '000000', name: 'Cap' });
       assert.equal(wrong.status, 401);
       const code = codeIn(relay.emails[4].subject);
-      assert.equal((await post(base, '/signin/verify', { to: 'cap@example.com', code, name: 'Cap' })).status, 303);
+      assert.equal((await signUpNewCoach(base, 'cap@example.com', code, 'Cap')).status, 303);
       assert.equal((await post(base, '/signin/verify', { to: 'cap@example.com', code })).status, 401, 'a code works once');
     });
   });
@@ -161,10 +160,19 @@ test('a phone join cannot claim an email another coach already has', async () =>
     await withServer(async (base) => {
       await post(base, '/signin/otp', { contact: '5550007777', sms_consent: '1' });
       const code = /code is (\d{6})/.exec(relay.sms.at(-1)!.body)![1];
-      const res = await post(base, '/signin/verify', { to: '+15550007777', code, name: 'Other', email: 'DANA@example.com' });
-      assert.equal(res.status, 422);
-      assert.match(await res.text(), /already has an account/);
+      const verify = await postVerify(base, '+15550007777', code);
+      const jar = [cookieJar(verify)].filter(Boolean).join('; ');
+      const profile = await post(base, '/signin/profile', { name: 'Other', extra: 'DANA@example.com', tz: 'America/Chicago' }, jar);
+      assert.equal(profile.status, 303);
+      assert.match(profile.headers.get('location') ?? '', /\/signin\/link/);
+      const flowJar = [jar, cookieJar(profile)].filter(Boolean).join('; ');
+      await post(base, '/signin/link', {}, flowJar);
+      const linkCode = codeIn(relay.emails.at(-1)!.subject);
+      const linked = await post(base, '/signin/link/verify', { code: linkCode }, flowJar);
+      assert.equal(linked.status, 303);
       assert.equal(await count(db, 'coach'), 1);
+      const row = await db.query<{ phone: string | null }>('select phone from coach where email = lower($1)', ['dana@example.com']);
+      assert.equal(row.rows[0].phone, '+15550007777');
     });
   });
 });
@@ -186,14 +194,20 @@ test('the landing box plus an email join leads to a draft and Publish', async ()
         const start = await post(base, '/start', { text: 'Tuesdays at 6, an hour, 8 athletes, $35' });
         const startCookie = cookieFrom(start, 'cx_start')!;
         const signin = await (await fetch(`${base}/signin`, { headers: { cookie: startCookie } })).text();
-        assert.match(signin, /Saved\. Now your email or mobile/);
+        assert.match(signin, /Saved\. We/);
 
         await post(base, '/signin/otp', { contact: 'alex@example.com' }, startCookie);
-        const verify = await post(
+        const verifyStep = await post(
           base,
           '/signin/verify',
-          { to: 'alex@example.com', code: codeIn(relay.emails[0].subject), name: 'Alex Coach', tz: 'America/Chicago' },
+          { to: 'alex@example.com', code: codeIn(relay.emails[0].subject) },
           startCookie,
+        );
+        const verify = await post(
+          base,
+          '/signin/profile',
+          { name: 'Alex Coach', tz: 'America/Chicago' },
+          `${startCookie}; ${cookieJar(verifyStep)}`,
         );
         assert.equal(verify.headers.get('location'), '/app/schedule?setup=1');
         const session = cookieFrom(verify, 'cx_session')!;
