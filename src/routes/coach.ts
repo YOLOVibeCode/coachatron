@@ -90,6 +90,12 @@ import {
   type BookingPolicy,
 } from '../domain/policy.js';
 import { cancelGivesField, cancelGivesSummary, cardRefundsNote } from './cancelRefund.js';
+import {
+  getClientContactChannel,
+  parseClientContactChannel,
+  setClientContactChannel,
+  type ClientContactChannel,
+} from '../domain/clientContact.js';
 import { summarizeMoney } from '../domain/money.js';
 import { moneyDownloadRouter, renderDownloadBlock } from './moneyExport.js';
 import { namesList } from '../domain/bookingMessages.js';
@@ -2798,7 +2804,13 @@ coachRouter.post('/app/sessions/:id/cancel', requireAuth, async (req, res) => {
 
 /** The booking policy on the Pricing screen (SPEC.md §9.5): what each
  * rule does now, and a form to change the two numbers. */
-function renderPolicySection(policy: BookingPolicy, error?: string) {
+const CONTACT_CHANNEL_OPTIONS: Array<[ClientContactChannel, string]> = [
+  ['coachatron', 'Coachatron message (we text or email you)'],
+  ['email', 'My email'],
+  ['phone', 'My text number'],
+];
+
+function renderPolicySection(policy: BookingPolicy, contactChannel: ClientContactChannel, error?: string) {
   const hours = policy.cancelWindowHours;
   const window = hours === 0 ? 'up to the start' : `more than ${hours} ${hours === 1 ? 'hour' : 'hours'} before a session`;
   const children = policy.childrenPerBooking;
@@ -2819,6 +2831,15 @@ function renderPolicySection(policy: BookingPolicy, error?: string) {
         <label for="children_per_booking">Children per booking</label>
         <input id="children_per_booking" name="children_per_booking" type="number" min="1" max="${MAX_CHILDREN_PER_BOOKING}" required value="${children}" />
         ${cancelGivesField(policy)}
+        <label for="client_contact_channel">How clients reach you with a question</label>
+        <select id="client_contact_channel" name="client_contact_channel">
+          ${CONTACT_CHANNEL_OPTIONS.map(([value, label]) =>
+            value === contactChannel
+              ? html`<option value="${value}" selected>${label}</option>`
+              : html`<option value="${value}">${label}</option>`,
+          )}
+        </select>
+        <p class="muted">Your email and phone stay private until a client sends a message.</p>
         <button type="submit">Save policy</button>
       </form>
       ${error ? html`<p class="error">${error}</p>` : raw('')}
@@ -2831,6 +2852,7 @@ coachRouter.get('/app/pricing', requireAuth, async (_req, res) => {
   const packagesList = await getPackagesForCoach(db, coachId);
   const plansList = await getPlansForCoach(db, coachId);
   const policy = await getBookingPolicy(db, coachId);
+  const contactChannel = await getClientContactChannel(db, coachId);
 
   res.status(200).send(
     page(
@@ -2879,7 +2901,7 @@ coachRouter.get('/app/pricing', requireAuth, async (_req, res) => {
             <button type="submit">Create pack</button>
           </form>
         </details>
-        ${renderPolicySection(policy)}`,
+        ${renderPolicySection(policy, contactChannel)}`,
     ),
   );
 });
@@ -2892,7 +2914,12 @@ coachRouter.post('/app/pricing/policy', requireAuth, async (req, res) => {
     field(req.body, 'children_per_booking'),
     field(req.body, 'cancel_gives'),
   );
-  if (!policy) {
+  const channelRaw = field(req.body, 'client_contact_channel');
+  let channel = parseClientContactChannel(channelRaw);
+  if (!channel && channelRaw === '') {
+    channel = await getClientContactChannel(db, coachId);
+  }
+  if (!policy || !channel) {
     res.status(422).send(
       page(
         'Pricing',
@@ -2900,6 +2927,7 @@ coachRouter.post('/app/pricing/policy', requireAuth, async (req, res) => {
           <h1>Pricing & credits</h1>
           ${renderPolicySection(
             await getBookingPolicy(db, coachId),
+            (await getClientContactChannel(db, coachId)),
             `Use a window of 0 to ${MAX_CANCEL_WINDOW_HOURS} hours and 1 to ${MAX_CHILDREN_PER_BOOKING} children.`,
           )}
           <a class="action ghost" href="/app/pricing">Back</a>`,
@@ -2908,6 +2936,7 @@ coachRouter.post('/app/pricing/policy', requireAuth, async (req, res) => {
     return;
   }
   await setBookingPolicy(db, coachId, policy);
+  await setClientContactChannel(db, coachId, channel);
   res.redirect(303, '/app/pricing#policy');
 });
 

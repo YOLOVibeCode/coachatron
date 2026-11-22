@@ -10,6 +10,8 @@ import {
   hasLiveOtp,
   newOtpCode,
   normalizePhone,
+  parseContact,
+  contactValue,
   type CoachRow,
   type Contact,
 } from '../domain/auth.js';
@@ -52,6 +54,7 @@ import {
   BOOKING_MOVE_PER_BOOKING_LIMITS,
   bookingMoveKey,
   clientKey,
+  CLIENT_MESSAGE_LIMITS,
   CODE_CHECK_CONTACT_LIMITS,
   CODE_CHECK_IP_LIMITS,
   SIGNIN_CODE_LIMITS,
@@ -59,6 +62,16 @@ import {
   takeRequest,
   WAITLIST_LIMITS,
 } from '../domain/requestLimits.js';
+import {
+  getClientContactChannel,
+  sendClientQuestion,
+} from '../domain/clientContact.js';
+import {
+  coachMessageHead,
+  minDropInPriceCents,
+  renderPublicPolicyLines,
+  renderSessionPackSection,
+} from '../domain/publicCoachPage.js';
 import { canText, sendText, type SendOutcome } from '../domain/outbound.js';
 import { paymentsOpen } from '../domain/payments.js';
 import { deliverableEmail, namesList, sendBookingConfirmation } from '../domain/bookingMessages.js';
@@ -145,9 +158,12 @@ function bookingOpensSoon(coach: CoachRow, note?: string) {
   return page(
     'Booking opens soon',
     html`<h1>Booking opens soon</h1>
+      <p class="muted">Booking is not open yet. ${coach.name} has not turned on payments.</p>
       <p class="muted">${coach.name} is still setting up payments. Check back soon to book.</p>
+      <p class="muted"><a href="/c/${coach.handle}/message">Message ${coach.name}</a></p>
       ${note ? html`<p class="muted">${note}</p>` : raw('')}
       <a class="action" href="/c/${coach.handle}">See ${coach.name}'s sessions</a>`,
+    coachMessageHead(coach.handle, coach.name),
   );
 }
 
@@ -426,14 +442,29 @@ publicRouter.get('/c/:handle', async (req, res) => {
      limit 50`,
     [coach.id],
   );
-  const open = sessions.rows.some(needsPayment) ? await paymentsOpen(db, coach) : true;
+  const hasPaidSessions = sessions.rows.some(needsPayment);
+  const open = hasPaidSessions ? await paymentsOpen(db, coach) : true;
   // Families who already hold credits can still book with them.
   const creditsWork = !open && (await coachHasOpenCredits(db, coach.id));
+  const packages = await getPackagesForCoach(db, coach.id);
+  const plans = await getPlansForCoach(db, coach.id);
+  const policy = await getBookingPolicy(db, coach.id);
+  const dropIn = await minDropInPriceCents(db, coach.id);
+  const showCancel = hasPaidSessions;
 
   res.status(200).send(
     page(
       coach.name,
-      html`<h1>${coach.name}</h1>
+      html`<div class="public-top">
+          <h1>${coach.name}</h1>
+          <a class="my-bookings" href="/my">My bookings</a>
+        </div>
+        ${!open && hasPaidSessions
+          ? html`<div class="booking-closed-banner">
+              <p><strong>Booking is not open yet.</strong> This coach has not turned on payments.</p>
+              <p class="muted"><a href="/c/${coach.handle}/message">Message ${coach.name}</a></p>
+            </div>`
+          : raw('')}
         ${sessions.rows.length === 0
           ? html`<p class="muted">No open sessions right now.</p>`
           : sessions.rows.map((s) => {
@@ -451,18 +482,112 @@ publicRouter.get('/c/:handle', async (req, res) => {
                     : raw('')
                   : open || !needsPayment(s)
                     ? html`<a class="action" href="/c/${coach.handle}/sessions/${s.id}/book${bookQuery}">Book</a>`
-                    : html`<p class="muted">Booking opens soon</p>
+                    : html`<button type="button" class="action ghost" disabled>Not open</button>
                         ${creditsWork
                           ? html`<p class="muted"><a href="/c/${coach.handle}/sessions/${s.id}/book${bookQuery}">Have session credits? Book with them</a></p>`
                           : raw('')}`}
               </div>`;
             })}
+        ${renderSessionPackSection(packages, plans, dropIn)}
+        ${renderPublicPolicyLines(policy, showCancel)}
         <p class="muted">Booked before? <a href="/my">See all your sessions</a></p>`,
-      // A page opened with ?from= carries a booking's manage link, so it
-      // names no canonical address.
-      req.query.from === undefined ? { canonicalPath: `/c/${encodeURIComponent(coach.handle)}` } : {},
+      {
+        // A page opened with ?from= carries a booking's manage link, so it
+        // names no canonical address.
+        ...(req.query.from === undefined ? { canonicalPath: `/c/${encodeURIComponent(coach.handle)}` } : {}),
+        ...coachMessageHead(coach.handle, coach.name),
+      },
     ),
   );
+});
+
+const CLIENT_MESSAGE_MAX = 2000;
+const CLIENT_CONTACT_MAX = 120;
+
+function renderCoachMessageForm(
+  coach: CoachRow,
+  values: { contact?: string; message?: string } = {},
+  notice?: { kind: 'error' | 'ok'; text: string },
+) {
+  return page(
+    `Message ${coach.name}`,
+    html`<h1>Message ${coach.name}</h1>
+      <p class="muted">Ask about sessions, levels or anything else. ${coach.name} will see your note and how to reply.</p>
+      <form method="post" action="/c/${coach.handle}/message">
+        <label for="client-contact">Your phone or email</label>
+        <input id="client-contact" name="contact" type="text" autocomplete="email" value="${values.contact ?? ''}" required />
+        <label for="client-message">Your message</label>
+        <textarea id="client-message" name="message" rows="5" maxlength="${CLIENT_MESSAGE_MAX}" required>${values.message ?? ''}</textarea>
+        <div hidden aria-hidden="true">
+          <label for="client-website">Leave this empty</label>
+          <input id="client-website" name="website" tabindex="-1" autocomplete="off" />
+        </div>
+        <button type="submit">Send</button>
+      </form>
+      ${notice ? html`<p class="${notice.kind === 'error' ? 'error' : 'muted'}">${notice.text}</p>` : raw('')}
+      <a class="action ghost" href="/c/${coach.handle}">Back to sessions</a>`,
+  {
+    ...coachMessageHead(coach.handle, coach.name),
+  },
+  );
+}
+
+publicRouter.get('/c/:handle/message', async (req, res) => {
+  const db = getDb();
+  const coach = await findCoachByHandle(db, req.params.handle);
+  if (!coach) {
+    res.status(404).send(notFound());
+    return;
+  }
+  res.status(200).send(renderCoachMessageForm(coach));
+});
+
+publicRouter.post('/c/:handle/message', async (req, res) => {
+  const db = getDb();
+  const coach = await findCoachByHandle(db, req.params.handle);
+  if (!coach) {
+    res.status(404).send(notFound());
+    return;
+  }
+  if (field(req.body, 'website')) {
+    res.status(200).send(renderCoachMessageForm(coach, {}, { kind: 'ok', text: 'Message sent.' }));
+    return;
+  }
+  const typed = field(req.body, 'contact');
+  const message = field(req.body, 'message');
+  const values = { contact: typed, message };
+  const fail = (status: number, text: string) => {
+    res.status(status).send(renderCoachMessageForm(coach, values, { kind: 'error', text }));
+  };
+  if (!message || message.length > CLIENT_MESSAGE_MAX) {
+    fail(422, 'Enter a message.');
+    return;
+  }
+  if (typed.length > CLIENT_CONTACT_MAX) {
+    fail(422, 'Enter the phone number or email you want a reply on.');
+    return;
+  }
+  const contact = parseContact(typed);
+  if (!contact) {
+    fail(422, 'Enter a US or Canadian mobile number or an email address.');
+    return;
+  }
+  if (contact.kind === 'phone' && !canText(contact.phone)) {
+    fail(422, 'We can text US and Canadian mobile numbers only. Use email instead.');
+    return;
+  }
+  if (!(await takeRequest(db, CLIENT_MESSAGE_LIMITS, clientKey(req)))) {
+    fail(429, 'Too many messages from here. Try again later.');
+    return;
+  }
+  const channel = await getClientContactChannel(db, coach.id);
+  const reply = contactValue(contact);
+  const outcome = await sendClientQuestion(db, coach, channel, reply, message);
+  if (outcome !== 'sent') {
+    fail(502, "We couldn't deliver that just now. Try again in a minute.");
+    return;
+  }
+  res.status(200).send(renderCoachMessageForm(coach, {}, { kind: 'ok', text: 'Message sent.' }));
 });
 
 // ---- Screen 9: booking form ----
