@@ -98,20 +98,52 @@ export const POSTCARD_TOKENS_CSS = `
     min-height: 0;
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
+    padding-bottom: 12px;
   }
-  /* Sticky ask block stays above the virtual keyboard on small screens. */
-  .schedule-ask {
+  .banner-warn {
+    background: color-mix(in srgb, var(--alert) 12%, var(--card));
+    border: 1px solid var(--alert);
+    border-radius: 12px;
+    padding: 10px 12px;
+    margin: 10px 0;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--screen-ink);
+  }
+  .schedule-edit {
     flex-shrink: 0;
     position: sticky;
     bottom: 0;
     margin: 12px -16px -20px;
-    padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px));
+    padding: 8px 16px calc(8px + env(safe-area-inset-bottom, 0px));
     background: var(--screen);
     border-top: 1px solid var(--line);
   }
-  .schedule-ask form { margin: 0; }
-  .schedule-ask label { margin-top: 0; }
-  .schedule-ask button { margin-top: 10px; }
+  .schedule-edit-toggle {
+    list-style: none;
+    cursor: pointer;
+    display: block;
+    width: 100%;
+    text-align: center;
+    background: transparent;
+    color: var(--teal);
+    border: 1px solid var(--teal);
+    border-radius: 14px;
+    padding: 12px 16px;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 0;
+  }
+  .schedule-edit-toggle::-webkit-details-marker { display: none; }
+  .schedule-edit[open] .schedule-edit-toggle { margin-bottom: 10px; }
+  .schedule-edit form { margin: 0; }
+  .schedule-edit label { margin-top: 0; }
+  .schedule-edit button { margin-top: 10px; }
+  .setup-warnings { margin: 8px 0 0; padding-left: 1.2rem; font-family: ui-sans-serif, system-ui, sans-serif; font-size: 0.9rem; }
+  .setup-field-error { margin-top: 8px; margin-bottom: 0; }
+  .action.disabled, button:disabled.ghost { opacity: 0.45; pointer-events: none; cursor: default; }
   h1 { font-size: 1.5rem; margin: 0 0 6px; }
   h2 { font-size: 1.1rem; margin: 18px 0 8px; font-weight: 600; }
   .muted, p.muted { color: var(--screen-muted); font-family: ui-sans-serif, system-ui, sans-serif; font-size: 0.95rem; }
@@ -261,9 +293,9 @@ export const POSTCARD_TOKENS_CSS = `
       padding: 28px 24px;
       min-height: auto;
     }
-    .schedule-ask {
+    .schedule-edit {
       margin: 16px -24px -28px;
-      padding: 16px 24px;
+      padding: 12px 24px 16px;
       border-radius: 0 0 18px 18px;
     }
     .card { padding: 14px 16px; border-radius: 16px; }
@@ -271,9 +303,9 @@ export const POSTCARD_TOKENS_CSS = `
   @media (min-width: 1024px) {
     :root { --shell-max: min(720px, 100%); }
     .screen { padding: 32px 28px; }
-    .schedule-ask {
+    .schedule-edit {
       margin: 16px -28px -32px;
-      padding: 16px 28px;
+      padding: 12px 28px 16px;
     }
   }
 `;

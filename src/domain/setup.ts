@@ -65,7 +65,7 @@ export interface ExistingType {
 }
 
 export const SETUP_LIMITS = { types: 6, weekly: 40, packages: 4, plans: 3 };
-export const SETUP_MODEL_TIMEOUT_MS = 8000;
+export const SETUP_MODEL_TIMEOUT_MS = 12000;
 const DRAFT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_DURATION = 60;
 const PRIVATE_NAME = /private|1[- ]?on[- ]?1|one[- ]on[- ]one|lesson/i;
@@ -101,9 +101,13 @@ function timeLocal(value: unknown): string | null {
 
 /** Turns whatever the model returned into a plan the product trusts, plus
  * the questions it must ask before Publish. Pure: no model, no database. */
-export function validateSetupPlan(raw: unknown, existing: ExistingType[]): { plan: SetupPlan; questions: string[] } {
+export function validateSetupPlan(
+  raw: unknown,
+  existing: ExistingType[],
+): { plan: SetupPlan; questions: string[]; warnings: string[] } {
   const o = asRecord(raw);
   const questions: string[] = [];
+  const warnings: string[] = [];
 
   let coachTimezone: string | null = null;
   if (typeof o.coach_timezone === 'string' && o.coach_timezone.trim()) {
@@ -111,19 +115,30 @@ export function validateSetupPlan(raw: unknown, existing: ExistingType[]): { pla
     else questions.push('What city are your sessions in, for the time zone?');
   }
 
+  const rawTypes = asArray(o.session_types);
+  const rawWeekly = asArray(o.weekly);
+  const rawPackages = asArray(o.packages);
+  const rawPlans = asArray(o.plans);
+
   const types: SetupType[] = [];
   const keyToType = new Map<string, SetupType>();
-  for (const item of asArray(o.session_types)) {
+  for (const item of rawTypes) {
     const t = asRecord(item);
     const typeName = name(t.name);
-    if (!typeName) continue;
+    if (!typeName) {
+      warnings.push("Couldn't read a session type name.");
+      continue;
+    }
     const key = typeof t.key === 'string' && t.key ? t.key : typeName;
     const same = types.find((x) => x.name.toLowerCase() === typeName.toLowerCase());
     if (same) {
       keyToType.set(key, same);
       continue;
     }
-    if (types.length >= SETUP_LIMITS.types) continue;
+    if (types.length >= SETUP_LIMITS.types) {
+      warnings.push(`Only the first ${SETUP_LIMITS.types} session types are kept.`);
+      continue;
+    }
     const match = existing.find((e) => e.name.toLowerCase() === typeName.toLowerCase());
     const type: SetupType = match
       ? {
@@ -149,37 +164,57 @@ export function validateSetupPlan(raw: unknown, existing: ExistingType[]): { pla
   }
 
   const weekly: SetupSlot[] = [];
-  for (const item of asArray(o.weekly)) {
-    if (weekly.length >= SETUP_LIMITS.weekly) break;
+  for (const item of rawWeekly) {
+    if (weekly.length >= SETUP_LIMITS.weekly) {
+      warnings.push(`Only the first ${SETUP_LIMITS.weekly} weekly times are kept.`);
+      break;
+    }
     const w = asRecord(item);
     const type = typeof w.type_key === 'string' ? keyToType.get(w.type_key) : undefined;
     const weekday = intIn(w.weekday, 0, 6);
     const time = timeLocal(w.time_local);
-    if (!type || weekday === null || !time) continue;
+    if (!type || weekday === null || !time) {
+      warnings.push("Couldn't read a weekly time (check the day, time, or session type).");
+      continue;
+    }
     if (weekly.some((x) => x.type_key === type.key && x.weekday === weekday && x.time_local === time)) continue;
     const location = typeof w.location === 'string' && w.location.trim() ? w.location.trim().slice(0, 80) : null;
     weekly.push({ type_key: type.key, weekday, time_local: time, location });
   }
 
   const packages: SetupPackage[] = [];
-  for (const item of asArray(o.packages)) {
-    if (packages.length >= SETUP_LIMITS.packages) break;
+  for (const item of rawPackages) {
+    if (packages.length >= SETUP_LIMITS.packages) {
+      warnings.push(`Only the first ${SETUP_LIMITS.packages} packages are kept.`);
+      break;
+    }
     const p = asRecord(item);
     const packageName = name(p.name);
     const credits = intIn(p.credits, 1, 100);
     const price = intIn(p.price_cents, 100, 500000);
-    if (!packageName || credits === null || price === null) continue;
+    if (!packageName || credits === null || price === null) {
+      warnings.push("Couldn't read a session package (name, session count, or price).");
+      continue;
+    }
+    if (packages.some((x) => x.credits === credits && x.price_cents === price)) continue;
     packages.push({ name: packageName, credits, price_cents: price, expires_days: intIn(p.expires_days, 1, 730) });
   }
 
   const plans: SetupPlanOffer[] = [];
-  for (const item of asArray(o.plans)) {
-    if (plans.length >= SETUP_LIMITS.plans) break;
+  for (const item of rawPlans) {
+    if (plans.length >= SETUP_LIMITS.plans) {
+      warnings.push(`Only the first ${SETUP_LIMITS.plans} one-time packs are kept.`);
+      break;
+    }
     const p = asRecord(item);
     const planName = name(p.name);
     const price = intIn(p.price_cents, 100, 100000);
     const credits = intIn(p.credits_per_month, 1, 60);
-    if (!planName || price === null || credits === null) continue;
+    if (!planName || price === null || credits === null) {
+      warnings.push("Couldn't read a one-time pack.");
+      continue;
+    }
+    if (plans.some((x) => x.credits_per_month === credits && x.price_cents === price)) continue;
     plans.push({ name: planName, price_cents: price, credits_per_month: credits });
   }
 
@@ -193,9 +228,18 @@ export function validateSetupPlan(raw: unknown, existing: ExistingType[]): { pla
     questions.push('What days and times do you run each week?');
   }
 
+  const keptTypes = types.length;
+  if (rawTypes.length > keptTypes && !warnings.some((w) => w.startsWith('Only the first'))) {
+    warnings.push(`Only ${keptTypes} of ${rawTypes.length} session types could be read.`);
+  }
+  if (rawWeekly.length > weekly.length && !warnings.some((w) => w.includes('weekly times'))) {
+    warnings.push(`Only ${weekly.length} of ${rawWeekly.length} weekly times could be read.`);
+  }
+
   return {
     plan: { coach_timezone: coachTimezone, session_types: types, weekly, packages, plans },
     questions,
+    warnings: [...new Set(warnings)],
   };
 }
 
@@ -219,7 +263,11 @@ export function setupSystemPrompt(
     'Durations are minutes: "an hour" is 60, "an hour and a half" is 90.',
     'weekday: 0 Sunday, 1 Monday, 2 Tuesday, 3 Wednesday, 4 Thursday, 5 Friday, 6 Saturday.',
     'time_local is 24-hour HH:MM. A bare hour from 1 to 11 means pm unless the coach says morning or am.',
-    '"Tuesdays and Thursdays at 6" is two weekly entries. "Saturday 9am to noon" in 45-minute slots is 9:00, 9:45, 10:30, 11:15.',
+    '"Tuesdays and Thursdays at 6" is two weekly entries. "Saturday 9am, 10am and 11am" is three weekly entries.',
+    '"Saturday 9am to noon" in 45-minute slots is 9:00, 9:45, 10:30, 11:15.',
+    'One message may describe several session types (for example a group and privates). Give each its own session_types entry and matching weekly rows.',
+    '"$6 per student" is price_cents 600 for that session type. "$10 per session" is 1000.',
+    'A "10-session package" or "10-pack for $85" is packages[] with credits 10 and price_cents 8500, not plans[].',
     'Each weekly entry names its session type by key. Give every session type a short unique key.',
     'backup_pay_cents is what a backup coach is paid to run one session, if the coach says so.',
     'coach_timezone is an IANA zone only if the coach names a city or zone; otherwise null.',
@@ -293,7 +341,7 @@ export async function extractSetupPlan(
       rawMessage: text,
       layer: 'setup',
       outcome: 'error',
-      payload: { reason },
+      payload: { reason, text_chars: text.length },
     });
     return { kind: 'error' };
   }
@@ -305,6 +353,7 @@ export interface SetupDraft {
   id: number;
   plan: SetupPlan;
   questions: string[];
+  warnings: string[];
 }
 
 export async function loadExistingTypes(db: DbClient, coachId: number): Promise<ExistingType[]> {
@@ -317,15 +366,16 @@ export async function loadExistingTypes(db: DbClient, coachId: number): Promise<
 }
 
 export async function getOpenDraft(db: DbClient, coachId: number, now: Date): Promise<SetupDraft | null> {
-  const result = await db.query<{ id: number; plan: string; questions: string }>(
-    `select id, plan, questions from setup_draft
+  const result = await db.query<{ id: number; plan: string; questions: string; warnings: string | null }>(
+    `select id, plan, questions, warnings from setup_draft
      where coach_id = $1 and published_at is null and discarded_at is null and updated_at > $2
      order by id desc limit 1`,
     [coachId, new Date(now.getTime() - DRAFT_TTL_MS).toISOString()],
   );
   const row = result.rows[0];
   if (!row) return null;
-  return { id: row.id, plan: JSON.parse(row.plan) as SetupPlan, questions: JSON.parse(row.questions) as string[] };
+  const warnings = row.warnings ? (JSON.parse(row.warnings) as string[]) : [];
+  return { id: row.id, plan: JSON.parse(row.plan) as SetupPlan, questions: JSON.parse(row.questions) as string[] , warnings };
 }
 
 async function saveDraft(
@@ -335,20 +385,22 @@ async function saveDraft(
   text: string,
   plan: SetupPlan,
   questions: string[],
+  warnings: string[],
   now: Date,
 ): Promise<number> {
+  const warningsJson = JSON.stringify(warnings);
   if (existingDraftId !== null) {
     await db.query(
-      `update setup_draft set source_text = source_text || E'\\n' || $2, plan = $3, questions = $4, updated_at = $5
+      `update setup_draft set source_text = source_text || E'\\n' || $2, plan = $3, questions = $4, warnings = $5, updated_at = $6
        where id = $1`,
-      [existingDraftId, text, JSON.stringify(plan), JSON.stringify(questions), now.toISOString()],
+      [existingDraftId, text, JSON.stringify(plan), JSON.stringify(questions), warningsJson, now.toISOString()],
     );
     return existingDraftId;
   }
   const result = await db.query<{ id: number }>(
-    `insert into setup_draft (coach_id, source_text, plan, questions, created_at, updated_at)
-     values ($1, $2, $3, $4, $5, $5) returning id`,
-    [coachId, text, JSON.stringify(plan), JSON.stringify(questions), now.toISOString()],
+    `insert into setup_draft (coach_id, source_text, plan, questions, warnings, created_at, updated_at)
+     values ($1, $2, $3, $4, $5, $6, $6) returning id`,
+    [coachId, text, JSON.stringify(plan), JSON.stringify(questions), warningsJson, now.toISOString()],
   );
   return result.rows[0].id;
 }
@@ -368,9 +420,9 @@ export async function handleSetupMessage(
   const open = await getOpenDraft(db, coach.id, now);
   const extracted = await extractSetupPlan(db, coach, text, existing, open, now, channel);
   if (extracted.kind !== 'ok') return extracted;
-  const { plan, questions } = validateSetupPlan(extracted.raw, existing);
-  const id = await saveDraft(db, coach.id, open?.id ?? null, text, plan, questions, now);
-  return { kind: 'draft', draft: { id, plan, questions } };
+  const { plan, questions, warnings } = validateSetupPlan(extracted.raw, existing);
+  const id = await saveDraft(db, coach.id, open?.id ?? null, text, plan, questions, warnings, now);
+  return { kind: 'draft', draft: { id, plan, questions, warnings } };
 }
 
 export async function discardDraft(db: DbClient, coachId: number, draftId: number): Promise<void> {
@@ -470,8 +522,9 @@ export async function publishSetupPlan(
 
   for (const pack of plan.packages) {
     const dup = await db.query<{ id: number }>(
-      'select id from package where coach_id = $1 and lower(name) = lower($2) and active = true',
-      [coach.id, pack.name],
+      `select id from package where coach_id = $1 and active = true
+       and (lower(name) = lower($2) or (credits = $3 and price_cents = $4))`,
+      [coach.id, pack.name, pack.credits, pack.price_cents],
     );
     if (dup.rows.length > 0) continue;
     await createPackage(db, coach.id, pack.name, pack.credits, pack.price_cents, pack.expires_days ?? undefined);
@@ -479,8 +532,9 @@ export async function publishSetupPlan(
   }
   for (const offer of plan.plans) {
     const dup = await db.query<{ id: number }>(
-      'select id from plan where coach_id = $1 and lower(name) = lower($2) and active = true',
-      [coach.id, offer.name],
+      `select id from plan where coach_id = $1 and active = true
+       and (lower(name) = lower($2) or (credits_per_month = $3 and price_cents = $4))`,
+      [coach.id, offer.name, offer.credits_per_month, offer.price_cents],
     );
     if (dup.rows.length > 0) continue;
     await createPlan(db, coach.id, offer.name, offer.price_cents, offer.credits_per_month);
@@ -559,7 +613,12 @@ function zoneName(tz: string, now: Date): string {
   }
 }
 
-export function renderSetupPreview(plan: SetupPlan, coach: CoachRow, now: Date = new Date()): SafeHtml {
+export function renderSetupPreview(
+  plan: SetupPlan,
+  coach: CoachRow,
+  now: Date = new Date(),
+  warnings: string[] = [],
+): SafeHtml {
   const tz = plan.coach_timezone ?? coach.tz;
   const first = firstSession(plan, tz, now);
   return html`<div class="card setup-preview">
@@ -578,6 +637,9 @@ export function renderSetupPreview(plan: SetupPlan, coach: CoachRow, now: Date =
       (p) => html`<div class="meta"><span>${p.name}: ${p.credits_per_month} sessions for ${money(p.price_cents)}, one-time</span></div>`,
     )}
     ${first ? html`<p class="muted">First session: ${first}. Times in ${zoneName(tz, now)}.</p>` : raw('')}
+  ${warnings.length > 0
+    ? html`<ul class="setup-warnings">${warnings.map((w) => html`<li class="error">${w}</li>`)}</ul>`
+    : raw('')}
     <p class="muted">Your link: ${APP_BASE_URL.replace(/^https?:\/\//, '')}/c/${coach.handle}</p>
   </div>`;
 }

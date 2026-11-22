@@ -317,6 +317,7 @@ test('the page link stays on Schedule and Money in a box made to copy', async ()
       assert.match(schedule, new RegExp(`<input id="page-link" type="text" readonly value="${link}"`), '/app/schedule');
       assert.match(schedule, /Parents can(&#39;|')t book yet/);
       assert.match(schedule, /Parents can(&#39;|')t book until payments are set up\./);
+      assert.doesNotMatch(schedule, /<a class="action" href="sms:\?&amp;body=Book%20with%20me/);
       assert.match(schedule, /<a class="action" href="\/app\/money">Connect payments<\/a>/);
       assert.match(schedule, /<button type="button" class="ghost" disabled>Copy link<\/button>/);
     });

@@ -169,7 +169,7 @@ test('talk, refine, publish: nothing is written until Publish, and Publish runs 
     try {
       await withServer(async (base) => {
         const empty = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
-        assert.match(empty, /Tell me your week/);
+        assert.match(empty, /Edit schedule/);
         assert.match(empty, /<textarea/);
 
         const said = await post(base, '/app/setup', cookie, { text: 'Keeper group Tuesdays and Thursdays at 6...' });
@@ -178,7 +178,7 @@ test('talk, refine, publish: nothing is written until Publish, and Publish runs 
         assert.equal(await count(db, 'session'), 0, 'a draft writes nothing to the schedule');
 
         const preview = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
-        assert.match(preview, /Here&#39;s your week/);
+        assert.match(preview, /Edit schedule/);
         assert.match(preview, /Tue &amp; Thu 6:00pm · Field 3/);
         assert.match(preview, /<button type="submit">Publish<\/button>/);
 
@@ -211,6 +211,7 @@ test('talk, refine, publish: nothing is written until Publish, and Publish runs 
         assert.match(live, /Parents can(&#39;|')t book yet/);
         assert.match(live, /<a class="action" href="\/app\/money">Connect payments<\/a>/);
         assert.match(live, /<span class="action ghost" aria-disabled="true">Share your link<\/span>/);
+        assert.doesNotMatch(live, /<a class="action" href="sms:\?&amp;body=Book%20with%20me/);
 
         const publicPage = await (await fetch(`${base}/c/${coach.handle}`)).text();
         assert.match(publicPage, /Keeper Group/);
@@ -244,7 +245,7 @@ test('an open question blocks Publish until it is answered', async () => {
 
         await post(base, '/app/setup/discard', cookie, { id: draftId });
         const fresh = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
-        assert.match(fresh, /Tell me your week/);
+        assert.match(fresh, /Edit schedule/);
       });
     } finally {
       resetComplete();
@@ -260,10 +261,16 @@ test('a model failure or a spent budget falls back to the forms, never a 500', a
     setComplete(broken);
     try {
       await withServer(async (base) => {
-        const failed = await post(base, '/app/setup', cookie, { text: 'keeper group' });
+        const keeperText = 'keeper group tues and thurs at 6';
+        const failed = await post(base, '/app/setup', cookie, { text: keeperText });
         assert.equal(failed.headers.get('location'), '/app/schedule?setup=1&e=read');
-        const page = await (await fetch(`${base}/app/schedule?setup=1&e=read`, { headers: { cookie } })).text();
-        assert.match(page, /couldn&#39;t read that/);
+        const startCookie = failed.headers.get('set-cookie') ?? '';
+        assert.match(startCookie, /cx_start=/);
+        const mergedCookie = startCookie ? `${cookie}; ${startCookie.split(';')[0].trim()}` : cookie;
+        const page = await (await fetch(`${base}/app/schedule?setup=1&e=read`, { headers: { cookie: mergedCookie } })).text();
+        assert.match(page, /id="setup-form"/);
+        assert.match(page, /class="error setup-field-error">I couldn&#39;t read that/);
+        assert.match(page, new RegExp(`<textarea[^>]*>${keeperText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}</textarea>`));
         assert.match(page, /href="\/app\/session-types">Set up with a form instead/);
         assert.equal(await count(db, 'setup_draft'), 0);
 
@@ -274,6 +281,145 @@ test('a model failure or a spent budget falls back to the forms, never a 500', a
         const capped = await post(base, '/app/setup', cookie, { text: 'keeper group' });
         assert.equal(capped.headers.get('location'), '/app/schedule?setup=1&e=cap');
         assert.equal(broken.calls.length, callsBefore, 'the model is not called past the cap');
+      });
+    } finally {
+      resetComplete();
+    }
+  });
+});
+
+const JAM_TUTOR_TEXT =
+  'I tutor elementary students on Tuesdays and Thursdays at 4 PM. We work on multiplication, fractions, and word problems. Each group has up to 5 students, and sessions are 1 hour at $6 per student. I offer one-on-one high school tutoring on Saturdays at 9 AM, 10 AM, and 11 AM for algebra and geometry. Each session is 1 hour and costs $10, or $85 for a 10-session package.';
+
+const TUTOR_WEEK = {
+  coach_timezone: null,
+  session_types: [
+    {
+      key: 'elem',
+      name: 'Elementary group',
+      duration_min: 60,
+      capacity: 5,
+      price_cents: 600,
+      backup_pay_cents: null,
+    },
+    {
+      key: 'hs',
+      name: 'High school one-on-one',
+      duration_min: 60,
+      capacity: 1,
+      price_cents: 1000,
+      backup_pay_cents: null,
+    },
+  ],
+  weekly: [
+    { type_key: 'elem', weekday: 2, time_local: '16:00', location: null },
+    { type_key: 'elem', weekday: 4, time_local: '16:00', location: null },
+    { type_key: 'hs', weekday: 6, time_local: '09:00', location: null },
+    { type_key: 'hs', weekday: 6, time_local: '10:00', location: null },
+    { type_key: 'hs', weekday: 6, time_local: '11:00', location: null },
+  ],
+  packages: [{ name: '10-session package', credits: 10, price_cents: 8500, expires_days: null }],
+  plans: [],
+};
+
+test('Jam tutor week: two session types, times, and 10-pack reach Publish', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const { cookie } = await newCoach(db);
+    setComplete(fakeComplete(TUTOR_WEEK));
+    try {
+      await withServer(async (base) => {
+        const said = await post(base, '/app/setup', cookie, { text: JAM_TUTOR_TEXT });
+        assert.equal(said.status, 303);
+        assert.equal(said.headers.get('location'), '/app/schedule?setup=1');
+        const page = await (await fetch(`${base}/app/schedule?setup=1`, { headers: { cookie } })).text();
+        assert.match(page, /Elementary group/);
+        assert.match(page, /High school one-on-one/);
+        assert.match(page, /Tue &amp; Thu 4:00pm/);
+        assert.match(page, /Sat 9:00am/);
+        assert.match(page, /10-session package: 10 sessions for \$85/);
+        assert.match(page, /<button type="submit">Publish<\/button>/);
+      });
+    } finally {
+      resetComplete();
+    }
+  });
+});
+
+test('a second publish does not duplicate an identical session package', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const { coach, cookie } = await newCoach(db);
+    const dupPackWeek = {
+      ...structuredClone(WEEK),
+      packages: [{ name: 'Ten session bundle', credits: 10, price_cents: 30000, expires_days: null }],
+    };
+    setComplete(
+      fakeComplete((req) => {
+        const msg = (req as { messages: ChatMessage[] }).messages.at(-1)?.content ?? '';
+        return msg.includes('again') ? dupPackWeek : WEEK;
+      }),
+    );
+    try {
+      await withServer(async (base) => {
+        await post(base, '/app/setup', cookie, { text: 'week one' });
+        const draftId = String((await db.query<{ id: number }>('select id from setup_draft')).rows[0].id);
+        await post(base, '/app/setup/publish', cookie, { id: draftId });
+
+        await post(base, '/app/setup', cookie, { text: 'add the ten pack again' });
+        const draft2 = (await db.query<{ id: number }>('select id from setup_draft order by id desc')).rows[0];
+        await post(base, '/app/setup/publish', cookie, { id: String(draft2.id) });
+
+        const pricing = await (await fetch(`${base}/app/pricing`, { headers: { cookie } })).text();
+        const cardMatches = pricing.match(/10-session pack/g) ?? [];
+        assert.equal(
+          await count(db, 'package where coach_id = $1 and credits = 10 and price_cents = 30000', [coach.id]),
+          1,
+        );
+        assert.ok(cardMatches.length <= 1);
+      });
+    } finally {
+      resetComplete();
+    }
+  });
+});
+
+test('schedule without payments shows a banner and does not promote sharing', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const { cookie } = await newCoach(db);
+    setComplete(fakeComplete(WEEK));
+    try {
+      await withServer(async (base) => {
+        await post(base, '/app/setup', cookie, { text: 'keeper group' });
+        const draftId = String((await db.query<{ id: number }>('select id from setup_draft')).rows[0].id);
+        await post(base, '/app/setup/publish', cookie, { id: draftId });
+        const live = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
+        assert.match(live, /payments-banner/);
+        assert.match(live, /Parents can(&#39;|')t book yet/);
+        assert.match(live, /<button type="button" class="ghost" disabled>Copy link<\/button>/);
+        assert.match(live, /<span class="action ghost" aria-disabled="true">Share your link<\/span>/);
+        assert.doesNotMatch(live, /<a class="action" href="sms:\?/);
+        assert.match(live, /schedule-edit/);
+        assert.match(live, /Describe a whole new week/);
+      });
+    } finally {
+      resetComplete();
+    }
+  });
+});
+
+test('setup with an existing schedule says it adds, not replaces', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seeded = await seedCoachWithSession(db);
+    const cookie = `cx_session=${await createCoachSession(db, seeded.coach.id)}`;
+    setComplete(fakeComplete(WEEK));
+    try {
+      await withServer(async (base) => {
+        const page = await (await fetch(`${base}/app/schedule?setup=1`, { headers: { cookie } })).text();
+        assert.match(page, /adds to your current schedule/);
+        assert.match(page, /Edit schedule/);
       });
     } finally {
       resetComplete();
