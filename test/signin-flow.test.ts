@@ -23,6 +23,10 @@ test('sign-in pages show Back to home and code-step exits', async () => {
       assert.match(entry, /Sign in or sign up/);
       assert.match(entry, /Email or phone/);
       assert.match(entry, /Back to home[\s\S]*Back to home/);
+      assert.match(entry, /We will email a code to this address/);
+      assert.match(entry, /We will text a code to this phone number/);
+      assert.match(entry, /Enter an email address or a phone number with country code/);
+      assert.match(entry, /No password/);
 
       await post(base, '/signin/otp', { contact: '5559001001', sms_consent: '1' });
       const code = /code is (\d{6})/.exec(relay.sms[0].body)![1];
