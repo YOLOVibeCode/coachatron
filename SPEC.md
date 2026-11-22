@@ -713,10 +713,14 @@ message_log(id, to_phone, template, body, provider_id, sent_at, status)
 `credit.contact_phone` is the join key for a buyer, by design (§9.2). Normalize
 to E.164 on write.
 
-*(Numbers 0033–0043 include Slice 2 §8.2 (0033–0041) and public booking page fields:
-0042 coach public bio and sessions place, 0043 session listing note and hide-from-public.)*
+*(Numbers 0033–0044 are Slice 2, §8.2: 0033 refund policy, 0034 locations,
+0035 my-sessions link, 0036 assistant pay, 0037 calendar feed, 0038 payment
+receipt, 0039 setup draft warnings, 0040 texts consent prompt dismissed, 0041 one active
+session type name per coach, 0042 client contact channel on the public page,
+0043 coach public bio and sessions place, 0044 session listing note and
+hide-from-public.)*
 
-Added since the sketch (migrations 0013–0043): `request_limit` (fixed-window
+Added since the sketch (migrations 0013–0044): `request_limit` (fixed-window
 counts per client address, phone, or email) and `otp_code.attempts`;
 `coach.email_verified_at`; `coach_payments` (whether the coach can take
 charges, and the payment texts owed) and `payments_link`;
