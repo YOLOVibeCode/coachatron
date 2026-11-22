@@ -234,7 +234,7 @@ test('a coach never checked is asked once by the tick, which also learns they st
 
 // ---- the coach page and booking ----------------------------------------
 
-test('until payments work, the coach page says booking is closed and has no Book button', async () => {
+test('until payments work, the coach page says booking is not open and has no Book button', async () => {
   await withRelay(async () => {
     const db = await freshDb();
     const seed = await seedCoachWithSession(db, { paymentsReady: false });
@@ -242,9 +242,9 @@ test('until payments work, the coach page says booking is closed and has no Book
       const page = await (await fetch(`${base}/c/${seed.coach.handle}`)).text();
       assert.match(page, /Goalkeeper Group/);
       assert.match(page, /Booking is not open yet/);
-      assert.match(page, /Not open/);
-      assert.doesNotMatch(page, /<a class="action" href="[^"]+\/book">Book<\/a>/);
-      assert.doesNotMatch(page, /\/book"[^>]*>Book</);
+      assert.match(page, />Not open<\/button>/);
+      assert.doesNotMatch(page, /\/book"/);
+      assert.doesNotMatch(page, />Book</);
     });
   });
 });
@@ -363,8 +363,8 @@ test('a family with session credits can still book with them while payments are 
       const bookPath = `/c/${seed.coach.handle}/sessions/${seed.sessionId}/book`;
       const coachPage = await (await fetch(`${base}/c/${seed.coach.handle}`)).text();
       assert.match(coachPage, /Booking is not open yet/);
-      assert.doesNotMatch(coachPage, /<a class="action" href="[^"]+\/book">Book<\/a>/, 'no Book button');
-      assert.match(coachPage, /Have session credits\? Book with them/);
+      assert.doesNotMatch(coachPage, />Book</, 'no Book button');
+      assert.match(coachPage, new RegExp(`<a href="${bookPath}">Have session credits\\? Book with them</a>`));
 
       const formHtml = await (await fetch(`${base}${bookPath}`)).text();
       assert.match(formHtml, /only with session credits/);
@@ -435,7 +435,7 @@ test('booking opens as soon as the seller event says charges work', async () => 
       await postSellerEvent(base, { sellerKey: seed.coach.handle, chargesEnabled: true });
       const page = await (await fetch(`${base}/c/${seed.coach.handle}`)).text();
       assert.doesNotMatch(page, /Booking is not open yet/);
-      assert.match(page, /<a class="action" href="[^"]+\/book">Book<\/a>/);
+      assert.match(page, />Book</);
     });
   });
 });
@@ -469,7 +469,7 @@ test('while the relay cannot say whether a coach takes payments, booking waits, 
     await withServer(async (base) => {
       const coachPage = await (await fetch(`${base}/c/${seed.coach.handle}`)).text();
       assert.match(coachPage, /Booking is not open yet/);
-      assert.doesNotMatch(coachPage, /<a class="action" href="[^"]+\/book">Book<\/a>/);
+      assert.doesNotMatch(coachPage, />Book</);
       const bookPath = `/c/${seed.coach.handle}/sessions/${seed.sessionId}/book`;
       assert.match(await (await fetch(`${base}${bookPath}`)).text(), /Booking is not open yet/);
       const booked = await form(base, bookPath, { athlete_name: 'Mia Ortiz', contact_phone: '5550008888' });

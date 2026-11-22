@@ -118,7 +118,7 @@ interface SessionCard {
   name: string;
   detail: string;
   book: string | null;
-  /** Paid sessions while charges are off show a disabled Not open control. */
+  /** Disabled "Not open" in place of Book while payments are off. */
   notOpen: boolean;
 }
 
@@ -137,7 +137,7 @@ function sessionCards(html: string): SessionCard[] {
         name: typeName.includes(' · ') ? (metaLeft.split(' · ')[1] ?? typeName) : typeName,
         detail: spans[1] ?? '',
         book: /href="([^"]+\/book)"/.exec(chunk)?.[1] ?? null,
-        notOpen: /Not open/.test(visible(chunk)) && !/href="[^"]+\/book/.test(chunk),
+        notOpen: /<button[^>]*disabled[^>]*>Not open<\/button>/.test(chunk) || />Not open<\/button>/.test(chunk),
       };
     })
     .filter((c) => c.when.length > 0);
@@ -343,7 +343,7 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           }
         });
 
-        await step('4. until payments work, the coach page is closed and has no Pay', async () => {
+        await step('4. until payments work, the coach page shows "Not open" and no Pay', async () => {
           const pubHtml = await (await get(`/c/${handle}`)).text();
           assert.match(visible(pubHtml), /Booking is not open yet/);
           assert.match(visible(pubHtml), /has not turned on payments/);
