@@ -51,7 +51,7 @@ import {
   recordSellerStatus,
   type PaymentsStep,
 } from '../domain/payments.js';
-import { createWeeklySlots, deactivateSlot, listWeeklySlots, type WeeklySlot } from '../domain/scheduling.js';
+import { clearTypeSchedule, createWeeklySlots, deactivateSlot, listWeeklySlots, type WeeklySlot } from '../domain/scheduling.js';
 import { keptOwnPlace, mountLocationRoutes, ownPlacesNote, placeFromForm, sessionPlaceSection, typeLocationsSection, weeklyPlaceFields } from './locations.js';
 import {
   SMS_CONSENT_GATED_SUBMIT_SCRIPT,
@@ -1300,7 +1300,7 @@ async function renderSessionTypesPage(
       </div>
       <details>
         <summary class="ghost" style="margin-top:8px;font-family:ui-sans-serif,system-ui,sans-serif;font-size:0.9rem;color:var(--alert);cursor:pointer;">Delete</summary>
-        <p class="muted">Remove ${t.name}? Booked sessions stay on your schedule.</p>
+        <p class="muted">Remove ${t.name}? Its weekly times stop and its upcoming sessions with nobody booked are cancelled. A type with booked upcoming sessions can't be removed until you cancel them.</p>
         <form method="post" action="/app/session-types/${t.id}/delete">
           <button type="submit" class="ghost">Yes, remove this type</button>
         </form>
@@ -1517,6 +1517,7 @@ coachRouter.post('/app/session-types/:id/delete', requireAuth, async (req, res) 
     await sendSessionTypesPage(res, coachId, 422, { deleteBlockedId: typeId });
     return;
   }
+  await clearTypeSchedule(db, typeId, new Date());
   await db.query('update session_type set active = false where id = $1 and coach_id = $2', [typeId, coachId]);
   res.redirect(303, '/app/session-types');
 });
