@@ -24,6 +24,7 @@ import {
   deleteCoachSession,
   getCoachBySessionToken,
   findCoachById,
+  dismissTextsConsentPrompt,
   createCoach,
   getConnectRecipientKey,
   type CoachRow,
@@ -50,7 +51,16 @@ import {
 } from '../domain/payments.js';
 import { createWeeklySlots, deactivateSlot, listWeeklySlots, type WeeklySlot } from '../domain/scheduling.js';
 import { keptOwnPlace, mountLocationRoutes, ownPlacesNote, placeFromForm, sessionPlaceSection, typeLocationsSection, weeklyPlaceFields } from './locations.js';
-import { coachNav, html, oneTimeCodeNote, page, raw, smsConsentCheckbox, type SafeHtml } from '../lib/html.js';
+import {
+  SMS_CONSENT_GATED_SUBMIT_SCRIPT,
+  coachNav,
+  html,
+  oneTimeCodeNote,
+  page,
+  raw,
+  smsConsentCheckbox,
+  type SafeHtml,
+} from '../lib/html.js';
 import { cancelReach, cancelScheduledSession, dropInCreditNote, previewSessionCancel, type CancelReach } from '../domain/cancelSession.js';
 import { DEFAULT_TZ, formatClockLocal, formatCoachDollars, formatLocal, formatTimeRange, isValidTimeZone } from '../lib/time.js';
 import {
@@ -1082,7 +1092,9 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
       ? html`<p class="muted">Texts about your sessions will go to ${coach.phone}.</p>`
       : (await hasActiveConsent(db, coach.phone))
         ? raw('')
-        : renderTextsOnCard(phoneState)
+        : coach.texts_consent_prompt_dismissed_at
+          ? raw('')
+          : renderTextsOnCard(phoneState)
     : renderAddPhoneCard(
         typeof req.query.phone === 'string' ? req.query.phone : '',
         typeof req.query.to === 'string' ? req.query.to : '',
@@ -1239,11 +1251,15 @@ function renderTextsOnCard(state: string) {
   const notice = state === 'consent' ? PHONE_NOTICES.consent : null;
   return html`<div class="card">
     <p class="muted">Get a text when a session fills, and run your week by text.</p>
-    <form method="post" action="/app/phone/consent">
+    <form method="post" action="/app/phone/consent" class="sms-consent-gated">
       ${smsConsentCheckbox()}
-      <button type="submit" class="ghost">Turn on texts</button>
+      <button type="submit" class="ghost" disabled>Turn on texts</button>
+    </form>
+    <form method="post" action="/app/phone/consent/dismiss">
+      <button type="submit" class="ghost">Not now</button>
     </form>
     ${notice ? html`<p class="error">${notice}</p>` : raw('')}
+    <script>${raw(SMS_CONSENT_GATED_SUBMIT_SCRIPT)}</script>
   </div>`;
 }
 
@@ -1290,12 +1306,13 @@ const EMAIL_NOTICES: Record<string, string> = {
  * it a way to sign in. Until then only the mobile signs in. */
 function renderConfirmEmailCard(coach: CoachRow, state: string) {
   if (state === 'done' && coach.email_verified) {
-    return html`<p class="muted">You can sign in with ${coach.email} too.</p>`;
+    return html`<p class="muted"><strong>Email confirmed.</strong> You can sign in with ${coach.email} too.</p>`;
   }
   if (!coach.email || coach.email_verified) return raw('');
   const notice = Object.hasOwn(EMAIL_NOTICES, state) ? EMAIL_NOTICES[state] : null;
   if (state === 'sent' || state === 'wrong' || state === 'slow') {
     return html`<div class="card">
+      <h2>Also sign in with your email.</h2>
       <p>We emailed a code to ${coach.email}.</p>
       <form method="post" action="/app/email/verify">
         <label for="email-code">Code</label>
@@ -1306,7 +1323,8 @@ function renderConfirmEmailCard(coach: CoachRow, state: string) {
     </div>`;
   }
   return html`<div class="card">
-    <p class="muted">Confirm ${coach.email} to sign in with it too.</p>
+    <h2>Also sign in with your email.</h2>
+    <p class="muted">Confirm ${coach.email} with a code to use it as a second way in.</p>
     <form method="post" action="/app/email">
       <button type="submit" class="ghost">Email me a code</button>
     </form>
@@ -1411,6 +1429,18 @@ coachRouter.post('/app/phone/consent', requireAuth, async (req, res) => {
   // The coach's own number, proved when it was added to the account.
   await recordConsent(db, coach.phone, '/app/phone/consent', { ...consentMeta(req), numberVerified: true });
   res.redirect(303, '/app/schedule?phone=done');
+});
+
+coachRouter.post('/app/phone/consent/dismiss', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const coach = await findCoachById(db, coachId);
+  if (!coach?.phone || (await hasActiveConsent(db, coach.phone))) {
+    res.redirect(303, '/app/schedule');
+    return;
+  }
+  await dismissTextsConsentPrompt(db, coachId);
+  res.redirect(303, '/app/schedule');
 });
 
 coachRouter.post('/app/phone/verify', requireAuth, async (req, res) => {

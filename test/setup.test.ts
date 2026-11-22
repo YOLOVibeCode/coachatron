@@ -140,7 +140,16 @@ test('a real time zone is kept; a made-up one becomes a question', () => {
 
 test('the preview is written by the product from the plan', () => {
   const { plan } = validateSetupPlan(WEEK, []);
-  const coach = { id: 1, handle: 'dana-keeper', name: 'Dana', email: '', phone: '+1', tz: 'America/Chicago', connect_recipient_key: null };
+  const coach = {
+    id: 1,
+    handle: 'dana-keeper',
+    name: 'Dana',
+    email: '',
+    phone: '+1',
+    tz: 'America/Chicago',
+    connect_recipient_key: null,
+    texts_consent_prompt_dismissed_at: null,
+  };
   const preview = renderSetupPreview(plan, coach, new Date('2026-10-20T12:00:00Z')).value;
   assert.match(preview, /Keeper Group/);
   assert.match(preview, /60 min · 8 athletes · \$35 · backup pays \$80/);
