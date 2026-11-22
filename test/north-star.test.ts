@@ -118,8 +118,8 @@ interface SessionCard {
   name: string;
   detail: string;
   book: string | null;
-  /** "Booking opens soon" in place of Book. */
-  opensSoon: boolean;
+  /** Disabled "Not open" in place of Book while payments are off. */
+  notOpen: boolean;
 }
 
 /** The session cards on a coach's public page, as a parent sees them. */
@@ -134,7 +134,7 @@ function sessionCards(html: string): SessionCard[] {
         name: spans[0] ?? '',
         detail: spans[1] ?? '',
         book: /href="([^"]+\/book)"/.exec(chunk)?.[1] ?? null,
-        opensSoon: /Booking opens soon/.test(visible(chunk)),
+        notOpen: /<button[^>]*disabled[^>]*>Not open<\/button>/.test(chunk) || />Not open<\/button>/.test(chunk),
       };
     });
 }
@@ -339,13 +339,14 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           }
         });
 
-        await step('4. until payments work, the coach page shows "Booking opens soon" and no Pay', async () => {
+        await step('4. until payments work, the coach page shows "Not open" and no Pay', async () => {
           const pubHtml = await (await get(`/c/${handle}`)).text();
           const cards = sessionCards(pubHtml);
           assert.ok(cards.length >= 3);
+          assert.match(visible(pubHtml), /Booking is not open yet/);
           assert.ok(
-            cards.every((c) => c.opensSoon && c.book === null),
-            `every priced session says "Booking opens soon" and has no Book link: ${JSON.stringify(cards.slice(0, 3))}`,
+            cards.every((c) => c.notOpen && c.book === null),
+            `every priced session shows Not open and has no Book link: ${JSON.stringify(cards.slice(0, 3))}`,
           );
           const pubText = visible(pubHtml);
           assert.doesNotMatch(pubText, /\bPay\b/, 'nothing offers to pay');
@@ -359,7 +360,8 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           const bookPage = await get(bookPath);
           assert.equal(bookPage.status, 200);
           const bookHtml = await bookPage.text();
-          assert.match(visible(bookHtml), /Booking opens soon Dana Rivera is still setting up payments\./);
+          assert.match(visible(bookHtml), /has not turned on payments/);
+          assert.match(visible(bookHtml), /still setting up payments/);
           assert.doesNotMatch(bookHtml, /name="contact_phone"/, 'no booking form');
           assert.doesNotMatch(bookHtml, new RegExp(escapeRegExp(relay.url)), 'no link to the payment page');
 
@@ -417,7 +419,7 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
             'between accepting and finishing, Money asks the coach to finish',
           );
           const stillClosed = sessionCards(await (await get(`/c/${handle}`)).text());
-          assert.ok(stillClosed.every((c) => c.opensSoon), 'booking stays closed until charges work');
+          assert.ok(stillClosed.every((c) => c.notOpen), 'booking stays closed until charges work');
         });
 
         await step('6. when the seller event says charges work, the coach gets one "You can take payments now" text and booking opens', async () => {
@@ -448,7 +450,7 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           assert.doesNotMatch(live, /can't book until payments/, 'the schedule no longer warns about payments');
 
           const cards = sessionCards(await (await get(`/c/${handle}`)).text());
-          assert.ok(cards.every((c) => c.book && !c.opensSoon), 'every open session has a Book link now');
+          assert.ok(cards.every((c) => c.book && !c.notOpen), 'every open session has a Book link now');
         });
 
         await step('7. a parent books, pays on the signed buy link, gets a confirmation with the manage link, and the manage page shows the booking', async () => {

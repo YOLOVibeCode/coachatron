@@ -510,9 +510,15 @@ export function operatorLine(): SafeHtml {
   return html`<p class="operator">Coachatron is operated by Noctusoft, Inc. (<a href="https://noctusoft.com">https://noctusoft.com</a>)</p>`;
 }
 
-export function siteFooter(): SafeHtml {
+export function siteFooter(coachMessage?: { handle: string; name: string }): SafeHtml {
+  const message =
+    coachMessage === undefined
+      ? raw('')
+      : html`<a href="/c/${coachMessage.handle}/message">Message ${coachMessage.name}</a>
+    <span aria-hidden="true"> · </span>`;
   return html`<footer class="site-footer">
     ${operatorLine()}
+    ${message}
     <a href="/privacy">Privacy</a>
     <span aria-hidden="true"> · </span>
     <a href="/terms">Terms</a>
@@ -532,6 +538,8 @@ export interface PageHead {
    * is not indexed as a page of its own. Never set on a coach's screen or
    * on a page a private link opens. */
   canonicalPath?: string;
+  /** Adds a Message link in the footer on a coach's public pages. */
+  coachMessage?: { handle: string; name: string };
 }
 
 /** The <link rel="canonical"> line, or nothing when the page names no path
@@ -554,10 +562,16 @@ ${FAVICON_LINK}${canonicalLink(head)}
   .site-footer a { color: var(--teal); }
   .sms-once { font-size: 0.95rem; }
   .operator { font-size: 0.9rem; color: var(--screen-muted); }
+  .public-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 8px; }
+  .public-top h1 { margin: 0; flex: 1; }
+  .public-top .my-bookings { flex-shrink: 0; font-size: 0.95rem; font-weight: 600; color: var(--teal); text-decoration: none; padding-top: 4px; }
+  .booking-closed-banner { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-bottom: 14px; }
+  .pack-card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; margin-bottom: 10px; }
+  .pack-card .save { color: var(--teal); font-weight: 600; }
 </style>
 </head>
 <body>
-<div class="phone"><div class="screen">${body.value}${siteFooter().value}</div></div>
+<div class="phone"><div class="screen">${body.value}${siteFooter(head.coachMessage).value}</div></div>
 </body>
 </html>`;
 }
