@@ -234,14 +234,15 @@ test('a coach never checked is asked once by the tick, which also learns they st
 
 // ---- the coach page and booking ----------------------------------------
 
-test('until payments work, the coach page says booking opens soon and has no Book button', async () => {
+test('until payments work, the coach page says booking is not open and has no Book button', async () => {
   await withRelay(async () => {
     const db = await freshDb();
     const seed = await seedCoachWithSession(db, { paymentsReady: false });
     await withServer(async (base) => {
       const page = await (await fetch(`${base}/c/${seed.coach.handle}`)).text();
       assert.match(page, /Goalkeeper Group/);
-      assert.match(page, /Booking opens soon/);
+      assert.match(page, /Booking is not open yet/);
+      assert.match(page, />Not open<\/button>/);
       assert.doesNotMatch(page, /\/book"/);
       assert.doesNotMatch(page, />Book</);
     });
@@ -300,7 +301,7 @@ test('a free session stays bookable while payments are not set up', async () => 
     await withServer(async (base) => {
       const page = await (await fetch(`${base}/c/${seed.coach.handle}`)).text();
       assert.match(page, new RegExp(`href="/c/${seed.coach.handle}/sessions/${seed.sessionId}/book">Book<`));
-      assert.doesNotMatch(page, /Booking opens soon/);
+      assert.doesNotMatch(page, /Booking is not open yet/);
       const booked = await form(base, `/c/${seed.coach.handle}/sessions/${seed.sessionId}/book`, {
         athlete_name: 'Mia Ortiz',
         contact_phone: '5550008888',
@@ -361,7 +362,7 @@ test('a family with session credits can still book with them while payments are 
     await withServer(async (base) => {
       const bookPath = `/c/${seed.coach.handle}/sessions/${seed.sessionId}/book`;
       const coachPage = await (await fetch(`${base}/c/${seed.coach.handle}`)).text();
-      assert.match(coachPage, /Booking opens soon/);
+      assert.match(coachPage, /Booking is not open yet/);
       assert.doesNotMatch(coachPage, />Book</, 'no Book button');
       assert.match(coachPage, new RegExp(`<a href="${bookPath}">Have session credits\\? Book with them</a>`));
 
@@ -430,10 +431,10 @@ test('booking opens as soon as the seller event says charges work', async () => 
     const db = await freshDb();
     const seed = await seedCoachWithSession(db, { paymentsReady: false });
     await withServer(async (base) => {
-      assert.match(await (await fetch(`${base}/c/${seed.coach.handle}`)).text(), /Booking opens soon/);
+      assert.match(await (await fetch(`${base}/c/${seed.coach.handle}`)).text(), /Booking is not open yet/);
       await postSellerEvent(base, { sellerKey: seed.coach.handle, chargesEnabled: true });
       const page = await (await fetch(`${base}/c/${seed.coach.handle}`)).text();
-      assert.doesNotMatch(page, /Booking opens soon/);
+      assert.doesNotMatch(page, /Booking is not open yet/);
       assert.match(page, />Book</);
     });
   });
@@ -448,7 +449,7 @@ test('a coach whose readiness was never saved is looked up once, then the saved 
     relay.enableCharges('coachatron', ready.coach.handle);
     await withServer(async (base) => {
       assert.match(await (await fetch(`${base}/c/${ready.coach.handle}`)).text(), />Book</);
-      assert.match(await (await fetch(`${base}/c/${notReady.coach.handle}`)).text(), /Booking opens soon/);
+      assert.match(await (await fetch(`${base}/c/${notReady.coach.handle}`)).text(), /Booking is not open yet/);
       assert.equal(relay.statusChecks, 2);
       await fetch(`${base}/c/${ready.coach.handle}`);
       await fetch(`${base}/c/${notReady.coach.handle}`);
@@ -467,7 +468,7 @@ test('while the relay cannot say whether a coach takes payments, booking waits, 
     relay.statusDown = true;
     await withServer(async (base) => {
       const coachPage = await (await fetch(`${base}/c/${seed.coach.handle}`)).text();
-      assert.match(coachPage, /Booking opens soon/);
+      assert.match(coachPage, /Booking is not open yet/);
       assert.doesNotMatch(coachPage, />Book</);
       const bookPath = `/c/${seed.coach.handle}/sessions/${seed.sessionId}/book`;
       assert.match(await (await fetch(`${base}${bookPath}`)).text(), /Booking opens soon/);

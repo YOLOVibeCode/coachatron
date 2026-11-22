@@ -70,6 +70,12 @@ export function bookingMoveKey(bookingId: number): string {
   return `booking:${bookingId}`;
 }
 
+/** A parent messaging a coach from the public page, from one address. */
+export const CLIENT_MESSAGE_LIMITS: LimitRule[] = [
+  { bucket: 'client-msg-ip-hour', windowMs: HOUR, max: 5 },
+  { bucket: 'client-msg-ip-day', windowMs: DAY, max: 15 },
+];
+
 /** The landing page's week box, from one address. */
 export const START_BOX_LIMITS: LimitRule[] = [{ bucket: 'start-ip-10m', windowMs: 10 * MINUTE, max: 30 }];
 

@@ -29,6 +29,18 @@ import {
   type BookingPolicy,
 } from '../domain/policy.js';
 import { cancelGivesField } from './cancelRefund.js';
+import {
+  getClientContactChannel,
+  parseClientContactChannel,
+  setClientContactChannel,
+  type ClientContactChannel,
+} from '../domain/clientContact.js';
+
+const CONTACT_CHANNEL_OPTIONS: Array<[ClientContactChannel, string]> = [
+  ['coachatron', 'Coachatron message (we text or email you)'],
+  ['email', 'My email'],
+  ['phone', 'My text number'],
+];
 
 const PACKAGE_EXPIRY_PRESETS = [
   { value: '', label: 'Never' },
@@ -284,7 +296,7 @@ function planMetaLine(p: PlanRow): string {
   return `${sessions} · ${formatCoachDollars(p.price_cents)} · ${per} per session · Sessions do not expire`;
 }
 
-function renderPolicySection(policy: BookingPolicy, state: PricingViewState): SafeHtml {
+function renderPolicySection(policy: BookingPolicy, contactChannel: ClientContactChannel, state: PricingViewState): SafeHtml {
   const hours = policy.cancelWindowHours;
   const window =
     hours === 0 ? 'up to the start' : `more than ${hours} ${hours === 1 ? 'hour' : 'hours'} before a session`;
@@ -315,6 +327,15 @@ function renderPolicySection(policy: BookingPolicy, state: PricingViewState): Sa
           <label for="children_per_booking">Children per booking</label>
           <input id="children_per_booking" name="children_per_booking" type="number" inputmode="numeric" min="1" max="${MAX_CHILDREN_PER_BOOKING}" required value="${children}" />
           ${cancelGivesField(policy)}
+          <label for="client_contact_channel">How clients reach you with a question</label>
+          <select id="client_contact_channel" name="client_contact_channel">
+            ${CONTACT_CHANNEL_OPTIONS.map(([value, label]) =>
+              value === contactChannel
+                ? html`<option value="${value}" selected>${label}</option>`
+                : html`<option value="${value}">${label}</option>`,
+            )}
+          </select>
+          <p class="muted">Your email and phone stay private until a client sends a message.</p>
           <div class="btn-row">
             <button type="submit">Save policy</button>
             <a class="action ghost" href="/app/pricing#policy">Cancel</a>
@@ -330,6 +351,7 @@ async function renderPricingPage(coachId: number, state: PricingViewState = {}):
   const packagesList = await getPackagesForCoach(db, coachId);
   const plansList = await getPlansForCoach(db, coachId);
   const policy = await getBookingPolicy(db, coachId);
+  const contactChannel = await getClientContactChannel(db, coachId);
 
   const packageCards = packagesList.map((p) => {
     const editing = state.openEditPackageId === p.id;
@@ -429,7 +451,7 @@ async function renderPricingPage(coachId: number, state: PricingViewState = {}):
           state.planCreate?.errors,
         )}
       </details>
-      ${renderPolicySection(policy, state)}
+      ${renderPolicySection(policy, contactChannel, state)}
       ${PRICING_PER_SESSION_SCRIPT}`,
   );
 }
@@ -455,7 +477,12 @@ export function registerPricingRoutes(router: Router, requireAuth: (req: Request
       bodyField(req.body, 'children_per_booking'),
       bodyField(req.body, 'cancel_gives'),
     );
-    if (!parsed) {
+    const channelRaw = bodyField(req.body, 'client_contact_channel');
+    let channel = parseClientContactChannel(channelRaw);
+    if (!channel && channelRaw === '') {
+      channel = await getClientContactChannel(db, coachId);
+    }
+    if (!parsed || !channel) {
       await sendPricing(res, coachId, 422, {
         openPolicyEdit: true,
         policyError: `Use a window of 0 to ${MAX_CANCEL_WINDOW_HOURS} hours and 1 to ${MAX_CHILDREN_PER_BOOKING} children.`,
@@ -463,6 +490,7 @@ export function registerPricingRoutes(router: Router, requireAuth: (req: Request
       return;
     }
     await setBookingPolicy(db, coachId, parsed);
+    await setClientContactChannel(db, coachId, channel);
     res.redirect(303, '/app/pricing?policy=saved#policy');
   });
 
