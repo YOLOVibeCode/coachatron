@@ -384,7 +384,7 @@ test('a second publish does not duplicate an identical session package', async (
           1,
         );
         const pricing = await (await fetch(`${base}/app/pricing`, { headers: { cookie } })).text();
-        assert.equal((pricing.match(/<strong>Ten session bundle<\/strong>/g) ?? []).length, 1);
+        assert.equal((pricing.match(/<strong>10-pack<\/strong>/g) ?? []).length, 1);
       });
     } finally {
       resetComplete();
