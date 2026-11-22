@@ -14,7 +14,7 @@ import { cancelPromise, type CancelRefundState, type InTimeCancel } from '../dom
 // ---- Pricing (screen 5): the coach's choice ----
 
 const CHOICES: Array<[CancelGives, string]> = [
-  ['credit', 'A session credit'],
+  ['credit', 'A credit for another session'],
   ['refund', 'A refund to their card'],
 ];
 
@@ -27,7 +27,7 @@ export function cancelGivesField(policy: Pick<BookingPolicy, 'cancelGives'>): Sa
         value === policy.cancelGives ? html`<option value="${value}" selected>${label}</option>` : html`<option value="${value}">${label}</option>`,
       )}
     </select>
-    <p class="muted">For a session paid by card. A refund sends the whole payment back to the parent's card: Coachatron's ${APP_FEE_BPS / 100}% fee is returned with it, and Stripe keeps its card processing fee. Bookings already made keep the choice they were made under.</p>`;
+    <p class="muted">For a drop-in paid by card. A credit stays on the parent's account for a future session. A refund returns the full payment to their card, including Coachatron's ${APP_FEE_BPS / 100}% fee; the card company keeps its own processing fee. Bookings already made keep whichever choice was in place when they paid.</p>`;
 }
 
 /** What the policy card says a paid drop-in cancelled in time becomes. */
