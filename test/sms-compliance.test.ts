@@ -260,6 +260,11 @@ test('a coach who signed in by text without the box can turn texts on later', as
     await withServer(async (base) => {
       const schedule = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
       assert.match(schedule, /action="\/app\/phone\/consent"/);
+      assert.match(schedule, /class="sms-consent-gated"/);
+      assert.match(schedule, /Turn on texts<\/button>/);
+      assert.match(schedule, /<button type="submit" class="ghost" disabled>Turn on texts<\/button>/);
+      assert.match(schedule, /action="\/app\/phone\/consent\/dismiss"/);
+      assert.match(schedule, /Not now/);
 
       const post = (body: Record<string, string>) =>
         fetch(`${base}/app/phone/consent`, {
@@ -272,6 +277,26 @@ test('a coach who signed in by text without the box can turn texts on later', as
       assert.equal(await hasActiveConsent(db, phone), false);
       assert.equal((await post({ sms_consent: '1' })).headers.get('location'), '/app/schedule?phone=done');
       assert.equal(await hasActiveConsent(db, phone), true);
+    });
+  });
+});
+
+test('a coach can dismiss the turn-on-texts card until they opt in', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db);
+    const phone = seed.coach.phone as string;
+    await db.query('delete from sms_consent where phone = $1', [phone]);
+    const cookie = `cx_session=${await createCoachSession(db, seed.coach.id)}`;
+    await withServer(async (base) => {
+      const dismiss = await fetch(`${base}/app/phone/consent/dismiss`, {
+        method: 'POST',
+        headers: { cookie },
+        redirect: 'manual',
+      });
+      assert.equal(dismiss.status, 303);
+      const hidden = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
+      assert.doesNotMatch(hidden, /action="\/app\/phone\/consent"/);
     });
   });
 });

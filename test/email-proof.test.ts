@@ -90,7 +90,8 @@ test('a coach confirms a typed email with an emailed code, then signs in with it
       await giveAWeek(db, coachId);
 
       const schedule = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
-      assert.match(schedule, /Confirm sam@example\.com to sign in with it too/);
+      assert.match(schedule, /Also sign in with your email/);
+      assert.match(schedule, /Confirm sam@example\.com with a code to use it as a second way in/);
       assert.match(schedule, /action="\/app\/email"/);
 
       const sent = await post(base, '/app/email', {}, cookie);
@@ -105,6 +106,7 @@ test('a coach confirms a typed email with an emailed code, then signs in with it
       assert.equal(right.headers.get('location'), '/app/schedule?email=done');
       assert.equal((await findCoachById(db, coachId))?.email_verified, true);
       const done = await (await fetch(`${base}/app/schedule?email=done`, { headers: { cookie } })).text();
+      assert.match(done, /Email confirmed/);
       assert.match(done, /You can sign in with sam@example\.com too/);
       assert.doesNotMatch(done, /action="\/app\/email"/);
 
