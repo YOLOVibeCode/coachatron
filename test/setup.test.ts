@@ -208,8 +208,9 @@ test('talk, refine, publish: nothing is written until Publish, and Publish runs 
 
         const live = await (await fetch(`${base}/app/schedule?published=1`, { headers: { cookie } })).text();
         assert.match(live, /You're live/);
+        assert.match(live, /Parents can(&#39;|')t book yet/);
         assert.match(live, /<a class="action" href="\/app\/money">Connect payments<\/a>/);
-        assert.match(live, /banner-warn/);
+        assert.match(live, /<span class="action ghost" aria-disabled="true">Share your link<\/span>/);
         assert.doesNotMatch(live, /<a class="action" href="sms:\?&amp;body=Book%20with%20me/);
 
         const publicPage = await (await fetch(`${base}/c/${coach.handle}`)).text();
@@ -394,9 +395,10 @@ test('schedule without payments shows a banner and does not promote sharing', as
         const draftId = String((await db.query<{ id: number }>('select id from setup_draft')).rows[0].id);
         await post(base, '/app/setup/publish', cookie, { id: draftId });
         const live = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
-        assert.match(live, /class="banner-warn">Parents can(&#39;|')t book until payments are set up/);
-        assert.match(live, /Copy link<\/button>/);
-        assert.match(live, /Share your link/);
+        assert.match(live, /payments-banner/);
+        assert.match(live, /Parents can(&#39;|')t book yet/);
+        assert.match(live, /<button type="button" class="ghost" disabled>Copy link<\/button>/);
+        assert.match(live, /<span class="action ghost" aria-disabled="true">Share your link<\/span>/);
         assert.doesNotMatch(live, /<a class="action" href="sms:\?/);
         assert.match(live, /schedule-edit/);
         assert.match(live, /Describe a whole new week/);
