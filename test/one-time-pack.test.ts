@@ -64,7 +64,16 @@ test('the setup preview shows a plan as a one-time pack', () => {
     },
     [],
   );
-  const coach = { id: 1, handle: 'dana', name: 'Dana', email: '', phone: '+1', tz: 'America/Chicago', connect_recipient_key: null };
+  const coach = {
+    id: 1,
+    handle: 'dana',
+    name: 'Dana',
+    email: '',
+    phone: '+1',
+    tz: 'America/Chicago',
+    connect_recipient_key: null,
+    texts_consent_prompt_dismissed_at: null,
+  };
   const preview = renderSetupPreview(plan, coach, new Date('2026-10-20T12:00:00Z')).value;
   assert.match(preview, /Four pack: 4 sessions for \$120, one-time/);
   assert.doesNotMatch(preview, RECURRING);
