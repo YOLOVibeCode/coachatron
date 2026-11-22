@@ -363,6 +363,25 @@ export const POSTCARD_TOKENS_CSS = `
   }
   .coach-nav a { color: var(--screen-muted); text-decoration: none; padding: 6px 0; }
   .coach-nav a[aria-current="page"] { color: var(--teal); font-weight: 600; }
+  .sms-consent {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    margin: 12px 0;
+    font-size: 0.95rem;
+    color: var(--screen-muted);
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    cursor: pointer;
+  }
+  .sms-consent input[type="checkbox"] {
+    width: auto;
+    min-width: var(--touch-min);
+    min-height: var(--touch-min);
+    flex-shrink: 0;
+    margin: 0;
+    accent-color: var(--teal);
+  }
+  .sms-consent a { color: var(--teal); }
   @media (min-width: 768px) {
     :root { --shell-max: min(640px, 100%); }
     body {
@@ -417,6 +436,10 @@ export function smsConsentCheckbox(): SafeHtml {
     Text me booking confirmations, reminders, and session updates from Coachatron. Message frequency varies. Message and data rates may apply. Reply STOP to opt out, HELP for help. Consent is not a condition of purchase. See our <a href="/terms#sms">SMS Terms</a> and <a href="/privacy">Privacy Policy</a>.
   </label>`;
 }
+
+/** Enables submit on forms that require the consent box first (schedule “Turn on texts”). */
+export const SMS_CONSENT_GATED_SUBMIT_SCRIPT =
+  "document.querySelectorAll('form.sms-consent-gated').forEach(function(f){var c=f.querySelector('input[name=sms_consent]');var b=f.querySelector('button[type=submit]');if(!c||!b)return;function sync(){b.disabled=!c.checked;}sync();c.addEventListener('change',sync);});";
 
 /** Short disclosure beside the landing-page text option (approved program copy). */
 export function landingSmsDisclosure(): SafeHtml {
@@ -484,8 +507,6 @@ ${FAVICON_LINK}${canonicalLink(head)}
 <style>${POSTCARD_TOKENS_CSS}
   .site-footer { margin-top: 24px; font-size: 0.9rem; }
   .site-footer a { color: var(--teal); }
-  .sms-consent { display: block; margin: 12px 0; font-size: 0.95rem; color: var(--screen-muted); }
-  .sms-consent input { margin-right: 8px; }
   .sms-once { font-size: 0.95rem; }
   .operator { font-size: 0.9rem; color: var(--screen-muted); }
 </style>
