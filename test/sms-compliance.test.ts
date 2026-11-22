@@ -235,7 +235,13 @@ test('a mobile sign-in code needs no box; the box records consent once the code 
       assert.equal(checked.status, 303);
       assert.equal(await hasActiveConsent(db, '+15550008889'), false, 'not until the code proves the number');
       const code = /code is (\d{6})/.exec(relay.sms.at(-1)!.body)![1];
-      assert.equal((await post('/signin/verify', { to: '+15550008889', code, name: 'Box Ticked' })).status, 303);
+      const verify = await post('/signin/verify', { to: '+15550008889', code });
+      assert.equal(verify.status, 303);
+      const pending = verify.headers.getSetCookie?.().find((c) => c.startsWith('cx_signin='))?.split(';')[0];
+      assert.equal(
+        (await post('/signin/profile', { name: 'Box Ticked', tz: 'America/Chicago' }, pending ?? '')).status,
+        303,
+      );
       assert.equal(await hasActiveConsent(db, '+15550008889'), true);
       const proof = await db.query<{ source: string }>("select source from sms_consent where phone = '+15550008889'");
       assert.equal(proof.rows[0].source, '/signin/otp');

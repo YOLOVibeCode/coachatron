@@ -310,8 +310,76 @@ export function landingSmsDisclosure(): SafeHtml {
 /** Shown by a phone field that sends a code the person asks for. That one
  * text needs no box; the box is only for the texts that keep coming. */
 export function oneTimeCodeNote(): SafeHtml {
-  return html`<p class="muted sms-once">If you enter a mobile, we'll text a one-time code to it. Message and data rates may apply. Texts after that are optional: check the box below only if you want them.</p>`;
+  return html`<p class="muted sms-once">No password. We send a one-time code. Include a country code on phone numbers (for example +1). We text codes only to US and Canadian mobile numbers.</p>`;
 }
+
+const SIGNIN_PAGE_CSS = `
+  .signin-top { margin: 0 0 16px; font-size: 0.95rem; }
+  .signin-top a, .signin-home-bottom a { color: var(--teal); }
+  .signin-home-bottom { margin-top: 20px; font-size: 0.95rem; text-align: center; }
+  .signin-back { margin-top: 16px; }
+  .signin-actions { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; align-items: stretch; }
+  .signin-actions form { margin: 0; }
+  .signin-actions .ghost { display: block; text-align: center; }
+  #contact-hint { min-height: 1.4em; }
+`;
+
+export type SignInChromeOptions = { backHref?: string };
+
+/** Coach sign-in substeps: home links in the header and below the card. */
+export function signInPage(title: string, main: SafeHtml, chrome: SignInChromeOptions = {}): string {
+  const back = chrome.backHref;
+  const body = html`<header class="signin-top">
+      <a href="/">Back to home</a>
+    </header>
+    <div class="signin-card">${main}</div>
+    ${back ? html`<p class="signin-back"><a class="action ghost" href="${back}">Back</a></p>` : raw('')}
+    <p class="signin-home-bottom"><a href="/">Back to home</a></p>`;
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+${FAVICON_LINK}
+<title>${escapeHtml(title)} — Coachatron</title>
+<style>${POSTCARD_TOKENS_CSS}
+  ${SIGNIN_PAGE_CSS}
+  .site-footer { margin-top: 24px; font-size: 0.9rem; }
+  .site-footer a { color: var(--teal); }
+  .sms-consent { display: block; margin: 12px 0; font-size: 0.95rem; color: var(--screen-muted); }
+  .sms-consent input { margin-right: 8px; }
+  .sms-once { font-size: 0.95rem; }
+  .operator { font-size: 0.9rem; color: var(--screen-muted); }
+</style>
+</head>
+<body>
+<div class="phone"><div class="screen">${body.value}${siteFooter().value}</div></div>
+</body>
+</html>`;
+}
+
+export const CONTACT_HINT_SCRIPT = raw(`<script>
+(function(){
+  var input=document.getElementById('contact');
+  var hint=document.getElementById('contact-hint');
+  if(!input||!hint)return;
+  function up(){
+    var v=input.value.trim();
+    if(!v){hint.textContent='';return;}
+    if(v.indexOf('@')!==-1){
+      hint.textContent='We will email a code to this address.';
+      return;
+    }
+    if(/^[\\d\\s()+.-]+$/.test(v)&&/[\\d]/.test(v)){
+      hint.textContent='We will text a code to this phone number (US or Canada +1 only).';
+      return;
+    }
+    hint.textContent='Enter an email address or a phone number with country code.';
+  }
+  input.addEventListener('input',up);
+  up();
+})();
+</script>`);
 
 /** Who runs Coachatron, in the footer and at the top of the legal pages, so
  * a reviewer can tie the site to the business behind it. */

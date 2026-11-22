@@ -67,20 +67,27 @@ async function signInWithStart(
   startCookie: string,
   profile: Record<string, string>,
 ): Promise<Response> {
+  const phone = `+1${digits}`;
   await fetch(`${base}/signin/otp`, {
     method: "POST",
     headers: { "content-type": "application/json", cookie: startCookie },
-    body: JSON.stringify({ phone: digits, sms_consent: "1" }),
+    body: JSON.stringify({ contact: digits, sms_consent: "1" }),
     redirect: "manual",
   });
-  const phone = `+1${digits}`;
   const code = /code is (\d{6})/.exec(
     relay.sms.filter((m) => m.to === phone).at(-1)!.body,
   )![1];
-  return fetch(`${base}/signin/verify`, {
+  const verify = await fetch(`${base}/signin/verify`, {
     method: "POST",
     headers: { "content-type": "application/json", cookie: startCookie },
-    body: JSON.stringify({ phone, code, ...profile }),
+    body: JSON.stringify({ to: phone, code }),
+    redirect: "manual",
+  });
+  const flow = joinCookies(startCookie, cookieNamed(verify, "cx_signin"));
+  return fetch(`${base}/signin/profile`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie: flow },
+    body: JSON.stringify({ name: profile.name, tz: profile.tz, extra: profile.email }),
     redirect: "manual",
   });
 }
@@ -189,7 +196,7 @@ test("typed journey: landing box, phone, draft, Publish, live link", async () =>
         assert.ok(startCookie);
 
         const signin = await (await fetch(`${base}/signin`, { headers: { cookie: startCookie! } })).text();
-        assert.match(signin, /Saved\. Now your email or mobile/);
+        assert.match(signin, /Saved\. We/);
 
         const verify = await signInWithStart(
           base,
