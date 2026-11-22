@@ -717,7 +717,7 @@ to E.164 on write.
 0035 my-sessions link, 0036 assistant pay, 0037 calendar feed, 0038 payment
 receipt; 0039 setup draft warnings.)*
 
-Added since the sketch (migrations 0013–0039): `request_limit` (fixed-window
+Added since the sketch (migrations 0013–0040): `request_limit` (fixed-window
 counts per client address, phone, or email) and `otp_code.attempts`;
 `coach.email_verified_at`; `coach_payments` (whether the coach can take
 charges, and the payment texts owed) and `payments_link`;

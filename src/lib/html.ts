@@ -251,8 +251,66 @@ export const POSTCARD_TOKENS_CSS = `
   }
   .error { color: var(--alert); font-family: ui-sans-serif, system-ui, sans-serif; font-size: 0.9rem; margin-top: 8px; }
   .ask-reply p { margin: 0 0 8px; font-family: ui-sans-serif, system-ui, sans-serif; }
-  .btn-row { display: flex; gap: 8px; }
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: stretch; }
   .btn-row button, .btn-row .action { margin-top: 8px; flex: 1; }
+  .btn-row details.type-edit { flex: 1; min-width: 0; }
+  .btn-row details.type-edit summary { margin-top: 8px; }
+  details.type-create > summary,
+  details.type-edit > summary.action {
+    list-style: none;
+    cursor: pointer;
+  }
+  details.type-create > summary::-webkit-details-marker,
+  details.type-edit > summary::-webkit-details-marker { display: none; }
+  details.type-create { margin-top: 12px; }
+  details.type-create > summary {
+    display: block;
+    width: 100%;
+    text-align: center;
+    background: transparent;
+    color: var(--teal);
+    border: 1px solid var(--teal);
+    border-radius: 14px;
+    padding: 12px 16px;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 1rem;
+    font-weight: 600;
+  }
+  details.type-create[open] > summary { margin-bottom: 8px; }
+  details.type-optional { margin: 12px 0; }
+  details.type-optional > summary {
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--screen-ink);
+    cursor: pointer;
+  }
+  .weekday-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 8px 0;
+  }
+  .weekday-row input[type="checkbox"] {
+    width: var(--touch-min);
+    min-width: var(--touch-min);
+    min-height: var(--touch-min);
+    flex-shrink: 0;
+    margin: 0;
+  }
+  .weekday-row .weekday-name {
+    flex: 0 0 2.6rem;
+    margin: 0;
+    font-weight: 600;
+    color: var(--screen-ink);
+    font-size: 0.95rem;
+  }
+  .weekday-row input[type="time"] {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+  }
+  .type-card-actions { margin-top: 10px; }
   .page-link label { margin-top: 0; }
   button.ghost { background: transparent; color: var(--teal); border: 1px solid var(--teal); }
   a.card { display: block; color: inherit; text-decoration: none; }

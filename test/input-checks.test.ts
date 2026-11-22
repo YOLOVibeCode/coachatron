@@ -66,7 +66,7 @@ test('numbers past what the forms accept get the form message, and ordinary ones
         assert.equal(res.status, 422, `${path} ${JSON.stringify(body)} answered ${res.status}`);
       }
       const message = await (await fetch(`${base}/app/session-types`, form({ ...goodType, capacity: '0' }, cookie))).text();
-      assert.match(message, /1–1000 athletes/);
+      assert.match(message, /1–1000 spots/);
 
       const saved: Array<[string, Record<string, string>]> = [
         ['/app/session-types', { ...goodType, capacity: '99', price_dollars: '19.99' }],
@@ -138,7 +138,7 @@ test('a capacity below what a session already has booked is refused, and the typ
       const path = `/app/session-types/${seed.sessionTypeId}/edit`;
       const low = await fetch(`${base}${path}`, form({ ...goodType, capacity: '4', price_dollars: '40' }, cookie));
       assert.equal(low.status, 422);
-      assert.match(await low.text(), /already has 6 booked\. Set the capacity to at least 6/);
+      assert.match(await low.text(), /already has 6 booked\. Set spots to at least 6/);
       const row = await db.query<{ capacity: number; price_cents: number }>('select capacity, price_cents from session_type where id = $1', [
         seed.sessionTypeId,
       ]);
