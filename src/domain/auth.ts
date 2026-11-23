@@ -206,10 +206,29 @@ export interface CoachRow {
   tz: string;
   connect_recipient_key: string | null;
   texts_consent_prompt_dismissed_at: string | null;
+  public_bio: string | null;
+  sessions_place: string | null;
 }
 
 const COACH_COLUMNS =
-  'id, handle, name, email, email_verified_at is not null as email_verified, phone, tz, connect_recipient_key, texts_consent_prompt_dismissed_at';
+  'id, handle, name, email, email_verified_at is not null as email_verified, phone, tz, connect_recipient_key, texts_consent_prompt_dismissed_at, public_bio, sessions_place';
+
+export const PUBLIC_PAGE_LIMITS = {
+  bioChars: 500,
+  placeChars: 120,
+} as const;
+
+export async function updateCoachPublicPage(
+  db: DbClient,
+  coachId: number,
+  input: { publicBio: string | null; sessionsPlace: string | null },
+): Promise<void> {
+  await db.query('update coach set public_bio = $2, sessions_place = $3 where id = $1', [
+    coachId,
+    input.publicBio,
+    input.sessionsPlace,
+  ]);
+}
 
 export function getConnectRecipientKey(coach: Pick<CoachRow, 'handle' | 'connect_recipient_key'>): string {
   return coach.connect_recipient_key ?? coach.handle;
@@ -358,6 +377,8 @@ export async function createCoach(db: DbClient, input: NewCoachInput): Promise<C
     tz: input.tz,
     connect_recipient_key: handle,
     texts_consent_prompt_dismissed_at: null,
+    public_bio: null,
+    sessions_place: null,
   };
 }
 

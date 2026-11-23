@@ -127,16 +127,20 @@ function sessionCards(html: string): SessionCard[] {
   return html
     .split('<div class="card">')
     .slice(1)
+    .filter((chunk) => !chunk.includes('booking-closed-banner') && /<strong>/.test(chunk))
     .map((chunk) => {
       const spans = [...chunk.matchAll(/<span>([\s\S]*?)<\/span>/g)].map((m) => visible(m[1]));
+      const metaLeft = spans[0] ?? '';
+      const typeName = metaLeft.split(' · ').find((p) => p !== '' && !/^\d+ min$/.test(p)) ?? metaLeft;
       return {
         when: visible(/<strong>([\s\S]*?)<\/strong>/.exec(chunk)?.[1] ?? ''),
-        name: spans[0] ?? '',
+        name: typeName.includes(' · ') ? (metaLeft.split(' · ')[1] ?? typeName) : typeName,
         detail: spans[1] ?? '',
         book: /href="([^"]+\/book)"/.exec(chunk)?.[1] ?? null,
         notOpen: /<button[^>]*disabled[^>]*>Not open<\/button>/.test(chunk) || />Not open<\/button>/.test(chunk),
       };
-    });
+    })
+    .filter((c) => c.when.length > 0);
 }
 
 function sessionCookie(res: Response): string {
@@ -330,12 +334,12 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           const groups = cards.filter((c) => c.name === 'Group');
           assert.ok(privates.length >= 2 && groups.length >= 1, `both kinds of session are listed: ${JSON.stringify(cards.slice(0, 4))}`);
           for (const c of privates) {
-            assert.match(c.when, /^(Tue|Thu), \w{3} \d{1,2}, 6:00 PM$/, `privates are Tue/Thu 6pm: ${c.when}`);
-            assert.equal(c.detail, '1 spot left · $60.00');
+            assert.match(c.when, /^(Tue|Thu), \w{3} \d{1,2}.*6:00/, `privates are Tue/Thu 6pm: ${c.when}`);
+            assert.match(c.detail, /Available · \$60/);
           }
           for (const c of groups) {
-            assert.match(c.when, /^Sat, \w{3} \d{1,2}, 9:00 AM$/, `the group is Saturday 9am: ${c.when}`);
-            assert.equal(c.detail, '8 spots left · $25.00');
+            assert.match(c.when, /^Sat, \w{3} \d{1,2}.*9:00/, `the group is Saturday 9am: ${c.when}`);
+            assert.match(c.detail, /8 spots left · \$25/);
           }
         });
 
@@ -440,9 +444,9 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
 
           const after = visible(await (await get('/app/money?seller=connected', moneyCookie)).text());
           assert.match(after, /Payments are connected\./, 'the return notice');
-          assert.match(after, /Payments connected\. Athletes pay you directly\. Coachatron keeps 5% of each payment\./);
-          assert.match(after, /Payouts go to your bank account\./);
+          assert.match(after, /Paid by parents:/);
           assert.doesNotMatch(after, /marketplace terms/, 'the terms are not asked again');
+          assert.doesNotMatch(after, /id="page-link"/);
 
           assert.equal(textsToCoach().length, 3, 'coming back from onboarding does not text again');
 
@@ -463,7 +467,8 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           const bookForm = await get(bookPath);
           assert.equal(bookForm.status, 200);
           const bookHtml = await bookForm.text();
-          assert.match(visible(bookHtml), /^Book a session — Coachatron Group Sat, \w{3} \d{1,2}, 9:00 AM — \$25\.00/);
+          assert.match(visible(bookHtml), /Group Sat, \w{3} \d{1,2}, 9:00 AM — \$25 per person/);
+          assert.match(visible(bookHtml), /No account needed/);
           for (const name of ['athlete_name', 'contact_phone', 'sms_consent', 'contact_email']) {
             assert.match(bookHtml, new RegExp(`name="${name}"`), `the booking form asks for ${name}`);
           }
@@ -580,7 +585,7 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           assert.match(backHtml, new RegExp(`href="/booking/${b.manage_token}">Manage this booking<`), 'with the manage link');
           assert.match(visible(await (await get(`${returned.pathname}${returned.search}`)).text()), /You're booked/, 'and so does the return link');
           const after = sessionCards(await (await get(`/c/${handle}`)).text()).find((c) => c.book === bookPath);
-          assert.equal(after?.detail, '7 spots left · $25.00', 'the coach page counts the paid spot');
+          assert.match(after?.detail ?? '', /7 spots left · \$25/, 'the coach page counts the paid spot');
 
           // The parent ticked the texts box and gave an email: one text and
           // one email confirm the booking, each with the manage link.

@@ -29,6 +29,8 @@ import {
   dismissTextsConsentPrompt,
   createCoach,
   getConnectRecipientKey,
+  PUBLIC_PAGE_LIMITS,
+  updateCoachPublicPage,
   type CoachRow,
 } from '../domain/auth.js';
 import {
@@ -55,8 +57,10 @@ import { clearTypeSchedule, createWeeklySlots, deactivateSlot, listWeeklySlots, 
 import { keptOwnPlace, mountLocationRoutes, ownPlacesNote, placeFromForm, sessionPlaceSection, typeLocationsSection, weeklyPlaceFields } from './locations.js';
 import {
   SMS_CONSENT_GATED_SUBMIT_SCRIPT,
-  coachNav,
+  coachHeader,
   CONTACT_HINT_SCRIPT,
+  PLATFORM_FEE_DISCLOSURE,
+  SESSION_CREDITS_EXPLANATION,
   html,
   oneTimeCodeNote,
   page,
@@ -1314,7 +1318,7 @@ async function renderSessionTypesPage(
 
   return page(
     'Session types',
-    html`${coachNav('types')}
+    html`${coachHeader('types')}
       <h1>Session types</h1>
       ${createdBanner}
       ${typeCards}
@@ -1417,7 +1421,7 @@ coachRouter.get('/app/session-types/:id/edit', requireAuth, async (req, res) => 
   res.status(200).send(
     page(
       'Locations',
-      html`${coachNav('types')}
+      html`${coachHeader('types')}
         <h1>${t.name}</h1>
         <p class="muted">${formatTypeMeta(t.duration_min, t.capacity, t.price_cents)}</p>
         <p class="muted"><a href="/app/session-types">Back to session types</a></p>
@@ -1554,7 +1558,7 @@ function renderWeeklyTimes(
   const typeLine = `${type.name} · ${formatTypeMeta(type.duration_min, type.capacity, type.price_cents)}`;
   return page(
     'Weekly times',
-    html`${coachNav('types')}
+    html`${coachHeader('types')}
       <h1>Weekly times</h1>
       <p class="muted">${typeLine}. Sessions stay on your calendar 8 weeks ahead.</p>
       ${kept > 0
@@ -1793,7 +1797,7 @@ function renderSetupScreen(
   const submit = !draft ? 'Set it up' : questions.length > 0 ? 'Answer' : 'Update';
   return page(
     'Edit schedule',
-    html`${coachNav('schedule')}
+    html`${coachHeader('schedule')}
       <h1>Edit schedule</h1>
       ${hasSchedule
         ? html`<p class="muted">Set it up adds to your current schedule. Tap Publish when the preview looks right.</p>`
@@ -1882,6 +1886,21 @@ type PageLinkOpts = {
  * select or copy, and a way to text it. On Schedule the main action is
  * sharing it, or, until payments work, the next payments step. Money has
  * its own. */
+function renderPublicPageEditCard(coach: CoachRow, error?: string): SafeHtml {
+  return html`<details class="public-page-edit"${error ? raw(' open') : raw('')}>
+    <summary>Your booking page</summary>
+    <p class="muted">Parents see this on ${coachPageUrl(coach.handle).replace(/^https?:\/\//, '')}.</p>
+    <form method="post" action="/app/schedule/public-page">
+      <label for="public_bio">What you teach and who it is for</label>
+      <textarea id="public_bio" name="public_bio" maxlength="${PUBLIC_PAGE_LIMITS.bioChars}" rows="3">${coach.public_bio ?? ''}</textarea>
+      <label for="sessions_place">Where sessions happen (online or a place)</label>
+      <input id="sessions_place" name="sessions_place" maxlength="${PUBLIC_PAGE_LIMITS.placeChars}" value="${coach.sessions_place ?? ''}" />
+      <button type="submit">Save</button>
+    </form>
+    ${error ? html`<p class="error">${error}</p>` : raw('')}
+  </details>`;
+}
+
 function renderPageLinkCard(coach: CoachRow, opts: PageLinkOpts) {
   const layout = opts.layout ?? 'card';
   const sharingOpen = opts.sharingOpen ?? true;
@@ -1915,6 +1934,34 @@ function renderPageLinkCard(coach: CoachRow, opts: PageLinkOpts) {
     ${paymentsInCard && opts.main !== 'share' && opts.main !== 'none' ? paymentsStepCard(opts.main) : raw('')}
   </div>`;
 }
+
+coachRouter.post('/app/schedule/public-page', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const coach = await findCoachById(db, coachId);
+  if (!coach) {
+    res.redirect(303, '/signin');
+    return;
+  }
+  const bioRaw = typeof req.body.public_bio === 'string' ? req.body.public_bio.trim() : '';
+  const placeRaw = typeof req.body.sessions_place === 'string' ? req.body.sessions_place.trim() : '';
+  if (bioRaw.length > PUBLIC_PAGE_LIMITS.bioChars || placeRaw.length > PUBLIC_PAGE_LIMITS.placeChars) {
+    res.status(422).send(
+      page(
+        'Schedule',
+        html`${coachHeader('schedule')}
+          <h1>Coming up</h1>
+          ${renderPublicPageEditCard(coach, 'Keep the description shorter.')}`,
+      ),
+    );
+    return;
+  }
+  await updateCoachPublicPage(db, coachId, {
+    publicBio: bioRaw === '' ? null : bioRaw,
+    sessionsPlace: placeRaw === '' ? null : placeRaw,
+  });
+  res.redirect(303, '/app/schedule');
+});
 
 coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
   const db = getDb();
@@ -1992,7 +2039,7 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
     page(
       'Schedule',
       html`<div class="screen-main">
-          ${coachNav('schedule')}
+          ${coachHeader('schedule')}
           <h1>Coming up</h1>
           ${paymentsBanner}
           ${req.query.published === '1' ? await ownPlacesNote(db, coachId) : raw('')}
@@ -2023,6 +2070,7 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
               )}
           ${calendar}
           ${live}
+          ${renderPublicPageEditCard(coach)}
           <p><a class="action ghost" href="/app/schedule?setup=1">Add more by talking</a></p>
           ${phoneCard}
           ${emailCard}
@@ -2462,6 +2510,11 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
     }
   }
   
+  const listingRow = await db.query<{ hide_from_public: boolean; listing_note: string | null }>(
+    'select hide_from_public, listing_note from session where id = $1',
+    [sessionId],
+  );
+  const listing = listingRow.rows[0];
   const reach = session.status === 'cancelled' ? await cancelReach(db, sessionId) : null;
   const confirmId = Number(typeof req.query.refund === 'string' ? req.query.refund : '');
   const confirm =
@@ -2473,7 +2526,7 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
   res.status(200).send(
     page(
       session.name,
-      html`${coachNav('schedule')}
+      html`${coachHeader('schedule')}
         <h1>${session.name}</h1>
         <p class="muted">${formatLocal(session.starts_at_utc, session.tz)}</p>
         ${notice ? html`<div class="card"><p>${notice}</p></div>` : raw('')}
@@ -2520,6 +2573,15 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
             </ul>`}
         
         ${await sessionPlaceSection(db, coachId, sessionId, req.query)}
+        ${session.status === 'scheduled' && new Date(session.starts_at_utc) >= new Date()
+          ? html`<h2>Public page</h2>
+              <form method="post" action="/app/sessions/${sessionId}/listing">
+                <label><input type="checkbox" name="hide_from_public" value="1"${listing?.hide_from_public ? raw(' checked') : raw('')} /> Hide from your booking page</label>
+                <label for="listing_note">Note for parents on this date (optional)</label>
+                <input id="listing_note" name="listing_note" maxlength="80" value="${listing?.listing_note ?? ''}" placeholder="e.g. Holiday — no session" />
+                <button type="submit" class="ghost">Save listing</button>
+              </form>`
+          : raw('')}
         <h2>Action</h2>
         ${session.status === 'scheduled' && new Date(session.starts_at_utc) >= new Date()
           ? html`<a class="action" href="/app/sessions/${sessionId}/cancel">Cancel session</a>`
@@ -2528,6 +2590,29 @@ coachRouter.get('/app/sessions/:id', requireAuth, async (req, res) => {
         <a class="action" href="/app/schedule">Back to schedule</a>`,
     ),
   );
+});
+
+coachRouter.post('/app/sessions/:id/listing', requireAuth, async (req, res) => {
+  const db = getDb();
+  const coachId = res.locals.coachId as number;
+  const sessionId = Number(req.params.id);
+  const session = await loadSessionForCoach(db, coachId, sessionId);
+  if (!session) {
+    res.status(404).send(page('Not found', html`<h1>Not found</h1>`));
+    return;
+  }
+  const hide = field(req.body, 'hide_from_public') === '1';
+  const noteRaw = field(req.body, 'listing_note').trim();
+  if (noteRaw.length > 80) {
+    res.redirect(303, `/app/sessions/${sessionId}`);
+    return;
+  }
+  await db.query('update session set hide_from_public = $2, listing_note = $3 where id = $1', [
+    sessionId,
+    hide,
+    noteRaw === '' ? null : noteRaw,
+  ]);
+  res.redirect(303, `/app/sessions/${sessionId}`);
 });
 
 interface MoveRow {
@@ -2842,7 +2927,7 @@ coachRouter.get('/app/sessions/:id/cancel', requireAuth, async (req, res) => {
   res.status(200).send(
     page(
       'Cancel session',
-      html`${coachNav('schedule')}
+      html`${coachHeader('schedule')}
         <h1>Cancel session</h1>
         <p>Cancel ${when}? ${preview.textable} ${preview.textable === 1 ? 'athlete' : 'athletes'} will get a text.</p>
         ${untextable > 0
@@ -2946,8 +3031,9 @@ coachRouter.get('/app/pricing', requireAuth, async (_req, res) => {
   res.status(200).send(
     page(
       'Pricing',
-      html`${coachNav('pricing')}
+      html`${coachHeader('pricing')}
         <h1>Pricing & credits</h1>
+        <p class="muted">${SESSION_CREDITS_EXPLANATION}</p>
         <h2>Session packages</h2>
         ${packagesList.length === 0
           ? html`<p class="muted">No packages yet.</p>`
@@ -3012,7 +3098,7 @@ coachRouter.post('/app/pricing/policy', requireAuth, async (req, res) => {
     res.status(422).send(
       page(
         'Pricing',
-        html`${coachNav('pricing')}
+        html`${coachHeader('pricing')}
           <h1>Pricing & credits</h1>
           ${renderPolicySection(
             await getBookingPolicy(db, coachId),
@@ -3094,7 +3180,7 @@ coachRouter.get('/app/roster', requireAuth, async (_req, res) => {
   res.status(200).send(
     page(
       'Roster',
-      html`${coachNav('roster')}
+      html`${coachHeader('roster')}
         <h1>Overflow roster</h1>
         ${members.length === 0
           ? html`<p class="muted">No roster members yet.</p>`
@@ -3206,42 +3292,51 @@ const RETURN_NOTICES: Record<string, string> = {
   failed: 'Payments were not connected. Try again.',
 };
 
-function renderPaymentsCard(state: PaymentsState, notice: string | null, error: string | null) {
+function netAfterPlatformFee(grossCents: number): number {
+  return Math.round((grossCents * (10000 - APP_FEE_BPS)) / 10000);
+}
+
+function renderPaymentsStatusCompact(state: PaymentsState, notice: string | null, error: string | null) {
   const feePercent = `${APP_FEE_BPS / 100}%`;
-  const body =
-    state.kind === 'connected'
-      ? html`<p><strong>Payments connected.</strong></p>
-          ${state.testOnly ? html`<p class="error">${TEST_ONLY_PAYMENTS}</p>` : raw('')}
-          <p class="muted">Athletes pay you directly. Coachatron keeps ${feePercent} of each payment.</p>
-          <p class="muted">
-            ${state.payoutsEnabled
-              ? 'Payouts go to your bank account.'
-              : 'Payouts are paused until your bank details are complete.'}
-          </p>
-          <form method="post" action="/app/money/payments">
-            <button type="submit">Update payout details</button>
-          </form>`
-      : state.kind === 'unavailable'
-        ? html`<p class="muted">Payments status is unavailable right now. Try again in a minute.</p>`
-        : state.kind === 'finish'
-          ? html`<p class="muted">Finish setting up your payment account so athletes can pay you.</p>
+  if (state.kind === 'connected') {
+    if (!notice && !error && !state.testOnly && state.payoutsEnabled) return raw('');
+    return html`<div class="card payments-banner">
+        ${notice ? html`<p>${notice}</p>` : raw('')}
+        ${state.testOnly ? html`<p class="error">${TEST_ONLY_PAYMENTS}</p>` : raw('')}
+        ${!state.payoutsEnabled
+          ? html`<p class="muted">Payouts are paused until your bank details are complete.</p>
               <form method="post" action="/app/money/payments">
-                <button type="submit">${FINISH_CONNECTING_PAYMENTS}</button>
+                <button type="submit" class="ghost">Update payout details</button>
               </form>`
-          : html`<p class="muted">Connect a payment account so athletes can pay you when they book.</p>
-              <ul class="muted">
-                <li>You are the merchant. Payments settle to your own account; Coachatron never holds them.</li>
-                <li>Coachatron keeps ${feePercent} of each payment, on top of card processing.</li>
-                <li>You refund a payment here or on its session; Coachatron's fee is returned with the refund. A card dispute is charged to your payment account.</li>
-              </ul>
-              <form method="post" action="/app/money/payments">
-                <label><input type="checkbox" name="agree" value="1" /> I accept the Coachatron marketplace terms (${SELLER_AGREEMENT_VERSION}).</label>
-                <button type="submit">${CONNECT_PAYMENTS}</button>
-              </form>`;
-  return html`<h2>Payments</h2>
-    <div class="card">
+          : raw('')}
+        ${error ? html`<p class="error">${error}</p>` : raw('')}
+      </div>`;
+  }
+  if (state.kind === 'unavailable') {
+    return html`<div class="card payments-banner">
+        <p class="muted">Payments status is unavailable right now. Try again in a minute.</p>
+        ${error ? html`<p class="error">${error}</p>` : raw('')}
+      </div>`;
+  }
+  if (state.kind === 'finish') {
+    return html`<div class="card payments-banner">
+        <p><strong>Parents can't book yet</strong></p>
+        <p class="muted">Finish setting up your payment account so athletes can pay you.</p>
+        ${notice ? html`<p>${notice}</p>` : raw('')}
+        <form method="post" action="/app/money/payments">
+          <button type="submit" class="action">${FINISH_CONNECTING_PAYMENTS}</button>
+        </form>
+        ${error ? html`<p class="error">${error}</p>` : raw('')}
+      </div>`;
+  }
+  return html`<div class="card payments-banner">
+      <p><strong>Parents can't book yet</strong></p>
+      <p class="muted">Connect a payment account so athletes can pay you when they book. Coachatron keeps ${feePercent} of each payment.</p>
       ${notice ? html`<p>${notice}</p>` : raw('')}
-      ${body}
+      <form method="post" action="/app/money/payments">
+        <label><input type="checkbox" name="agree" value="1" /> I accept the Coachatron marketplace terms (${SELLER_AGREEMENT_VERSION}).</label>
+        <button type="submit" class="action">${CONNECT_PAYMENTS}</button>
+      </form>
       ${error ? html`<p class="error">${error}</p>` : raw('')}
     </div>`;
 }
@@ -3359,40 +3454,42 @@ async function renderMoney(
   // Format dollars for display
   const formatDollars = (cents: number) => `$${(cents / 100).toFixed(2)}`;
 
+  const receiveCents = netAfterPlatformFee(summary.collectedThisWeekCents);
+
   res.status(opts.status ?? 200).send(
     page(
-      'Money',
-      html`${coachNav('money')}
-        <h1>Money</h1>
+      'Payments',
+      html`${coachHeader('money')}
+        <h1>Payments</h1>
         ${confirm ? renderRefundConfirm(confirm, { action: '/app/money/refund', keepHref: '/app/money', hidden: { target: confirmTarget } }) : raw('')}
-        ${renderPaymentsCard(payments, opts.notice ?? null, opts.error ?? null)}
-        ${renderPaymentAttention(attention, refunds, needing)}
-        ${renderDisputes(disputes)}
-        ${renderPageLinkCard(coach, { main: 'none' })}
         <h2>This week</h2>
-        <p class="money-figure">${formatDollars(summary.collectedThisWeekCents)}</p>
-        <p class="muted">Collected (gross): ${formatDollars(summary.collectedThisWeekCents)}</p>
-        <p class="muted"><strong>${summary.bookedThisWeekCount} sessions booked</strong> — Value: ${formatDollars(summary.bookedThisWeekCents)}</p>
-        ${summary.refundedThisWeekCount > 0
-          ? html`<p class="muted">Refunded: ${formatDollars(summary.refundedThisWeekCents)} (${summary.refundedThisWeekCount} ${summary.refundedThisWeekCount === 1 ? 'payment' : 'payments'}). Refunded bookings are not counted above.</p>`
-          : raw('')}
-        <h2>Credits</h2>
         <div class="card">
-          <p><strong>${summary.outstandingCreditCount} credits outstanding</strong></p>
+          <p class="money-figure" aria-label="Paid by parents">${formatDollars(summary.collectedThisWeekCents)}</p>
+          <p><strong>Paid by parents:</strong> ${formatDollars(summary.collectedThisWeekCents)}</p>
+          <p><strong>You receive, after fees:</strong> ${formatDollars(receiveCents)}</p>
+          <p class="muted">${PLATFORM_FEE_DISCLOSURE}</p>
+          <p><strong>Sessions booked:</strong> ${summary.bookedThisWeekCount} — ${formatDollars(summary.bookedThisWeekCents)}</p>
+          ${summary.refundedThisWeekCount > 0
+            ? html`<p class="muted">Refunded: ${formatDollars(summary.refundedThisWeekCents)} (${summary.refundedThisWeekCount} ${summary.refundedThisWeekCount === 1 ? 'payment' : 'payments'}). Refunded bookings are not counted above.</p>`
+            : raw('')}
+        </div>
+        <h2>Session credits held by parents</h2>
+        <div class="card">
+          <p><strong>${summary.outstandingCreditCount}</strong></p>
+          <p class="muted">${SESSION_CREDITS_EXPLANATION}</p>
         </div>
         ${await renderOwedToAssistants(db, coach.id)}
-        <h2>Next week</h2>
+        <h2>If every spot next week is booked</h2>
         <div class="card">
-          <p><strong>${summary.nextWeekCount} sessions projected</strong></p>
-          <p class="muted">Value: ${formatDollars(summary.nextWeekCents)}</p>
+          <p><strong>${summary.nextWeekCount} sessions</strong> — ${formatDollars(summary.nextWeekCents)}</p>
+          <p class="muted">Based on your scheduled spots and session prices today. This is not money received.</p>
         </div>
+        ${renderPaymentAttention(attention, refunds, needing)}
+        ${renderDisputes(disputes)}
+        ${renderPaymentsStatusCompact(payments, opts.notice ?? null, opts.error ?? null)}
         ${renderRecentPayments(recent, refunds, checks)}
         ${renderRefunds(refundList.filter((r) => !needsAttention(r)))}
-        ${renderDownloadBlock(coach.tz)}
-        <a class="action" href="/app/schedule">Back to schedule</a>
-        <form method="post" action="/signout">
-          <button type="submit" class="ghost">Sign out</button>
-        </form>`,
+        ${renderDownloadBlock(coach.tz)}`,
     ),
   );
 }
