@@ -4,7 +4,7 @@ import { freshDb } from './helpers/db.js';
 import { withServer } from './helpers/server.js';
 import { withRelay } from './helpers/relay.js';
 import { seedCoachWithSession, seedPackage, seedPlan } from './helpers/fixtures.js';
-import { createCoachSession } from '../src/domain/auth.js';
+import { createCoachSession, updateCoachPublicPage } from '../src/domain/auth.js';
 
 test('GET /c/:handle shows packs, policy, My bookings, and hides coach contact details', async () => {
   const db = await freshDb();
@@ -111,5 +111,60 @@ test('one-time packs appear in the Session packs section', async () => {
     const html = await (await fetch(`${base}/c/${seed.coach.handle}`)).text();
     assert.match(html, /Credits do not expire/);
     assert.match(html, /4 sessions/);
+  });
+});
+
+test('public coach page shows the closed banner, coach copy, filters and week paging together', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { paymentsReady: false, priceCents: 3500, capacity: 1 });
+    await updateCoachPublicPage(db, seed.coach.id, {
+      publicBio: 'Elementary reading coach.',
+      sessionsPlace: 'Online',
+    });
+    await seedPackage(db, seed.coach.id, 5, 15000);
+    await withServer(async (base) => {
+      const path = `/c/${seed.coach.handle}`;
+      const html = await (await fetch(`${base}${path}`)).text();
+      assert.match(html, /Booking is not open yet/);
+      assert.match(html, /has not turned on payments/);
+      assert.match(html, new RegExp(`<a href="${path}/message">Message `));
+      assert.doesNotMatch(html, /Ask a question/);
+      assert.match(html, />Not open<\/button>/);
+      assert.doesNotMatch(html, /Booking opens soon/);
+      assert.match(html, /<a class="my-bookings" href="\/my">My bookings<\/a>/);
+      assert.match(html, /Elementary reading coach/);
+      assert.match(html, /Sessions: Online/);
+      assert.match(html, /Times are in /);
+      assert.match(html, /<h2>Session packs<\/h2>/);
+      assert.match(html, /Save \$5 per session/);
+      assert.match(html, /Cancel free up to 24 hours before/);
+      assert.match(html, /<h2 class="day-heading">/);
+      assert.match(html, /Available/);
+      assert.match(html, /60 min/);
+      assert.match(html, new RegExp(`href="${path}\\?week=1">Show next week<`));
+
+      const nextWeek = await (await fetch(`${base}${path}?week=1`)).text();
+      assert.match(nextWeek, /No open sessions in this week/, "tomorrow's session is not in next week");
+      assert.match(nextWeek, new RegExp(`href="${path}">Show this week<`));
+
+      const groups = await (await fetch(`${base}${path}?type=group`)).text();
+      assert.match(groups, /No open sessions in this week/, 'a one-on-one session is not a group');
+      assert.match(groups, /Booking is not open yet/, 'the banner does not depend on the sessions shown');
+      const oneOnOne = await (await fetch(`${base}${path}?type=one_on_one`)).text();
+      assert.match(oneOnOne, />Not open<\/button>/);
+    });
+  });
+});
+
+test('coach can hide a session from the public page', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db, { paymentsReady: true });
+    await db.query('update session set hide_from_public = true where id = $1', [seed.sessionId]);
+    await withServer(async (base) => {
+      const html = await (await fetch(`${base}/c/${seed.coach.handle}`)).text();
+      assert.match(html, /No open sessions in this week/);
+    });
   });
 });
