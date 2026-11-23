@@ -380,12 +380,12 @@ test('a second publish does not duplicate an identical session package', async (
         await post(base, '/app/setup/publish', cookie, { id: String(draft2.id) });
 
         const pricing = await (await fetch(`${base}/app/pricing`, { headers: { cookie } })).text();
-        const cardMatches = pricing.match(/10-session pack/g) ?? [];
+        const removeButtons = pricing.match(/Yes, remove this package/g) ?? [];
         assert.equal(
           await count(db, 'package where coach_id = $1 and credits = 10 and price_cents = 30000', [coach.id]),
           1,
         );
-        assert.ok(cardMatches.length <= 1);
+        assert.ok(removeButtons.length <= 1, 'at most one session-package card on pricing');
       });
     } finally {
       resetComplete();

@@ -2,7 +2,7 @@ import type { DbClient } from '../db/client.js';
 import type { CoachRow } from './auth.js';
 import { reserveModelCall } from './modelBudget.js';
 import { logAssistant } from './assistantPending.js';
-import { createPackage, createPlan } from './pricing.js';
+import { createPackage, createPlan, findActivePackageDuplicate, findActivePlanDuplicate } from './pricing.js';
 import { addCalendarDays, createWeeklySlots, zonedParts, zonedTimeToUtc, type WeeklySlot } from './scheduling.js';
 import { complete } from '../llm/complete.js';
 import { SETUP_JSON_SCHEMA } from '../llm/setupSchema.js';
@@ -521,22 +521,28 @@ export async function publishSetupPlan(
   }
 
   for (const pack of plan.packages) {
-    const dup = await db.query<{ id: number }>(
-      `select id from package where coach_id = $1 and active = true
-       and (lower(name) = lower($2) or (credits = $3 and price_cents = $4))`,
-      [coach.id, pack.name, pack.credits, pack.price_cents],
-    );
-    if (dup.rows.length > 0) continue;
+    if (
+      await findActivePackageDuplicate(db, coach.id, {
+        name: pack.name,
+        credits: pack.credits,
+        priceCents: pack.price_cents,
+      })
+    ) {
+      continue;
+    }
     await createPackage(db, coach.id, pack.name, pack.credits, pack.price_cents, pack.expires_days ?? undefined);
     counts.packages += 1;
   }
   for (const offer of plan.plans) {
-    const dup = await db.query<{ id: number }>(
-      `select id from plan where coach_id = $1 and active = true
-       and (lower(name) = lower($2) or (credits_per_month = $3 and price_cents = $4))`,
-      [coach.id, offer.name, offer.credits_per_month, offer.price_cents],
-    );
-    if (dup.rows.length > 0) continue;
+    if (
+      await findActivePlanDuplicate(db, coach.id, {
+        name: offer.name,
+        creditsPerMonth: offer.credits_per_month,
+        priceCents: offer.price_cents,
+      })
+    ) {
+      continue;
+    }
     await createPlan(db, coach.id, offer.name, offer.price_cents, offer.credits_per_month);
     counts.plans += 1;
   }
