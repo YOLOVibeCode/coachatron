@@ -99,7 +99,7 @@ test('journey 1: coach signs in, creates a session type, generates a week, gets 
       assert.equal(publicRes.status, 200);
       const publicHtml = await publicRes.text();
       assert.match(publicHtml, /Goalkeeper Group/);
-      assert.match(publicHtml, /\$35\.00/);
+      assert.match(publicHtml, /\$35/);
     });
   });
 });

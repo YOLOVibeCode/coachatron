@@ -88,7 +88,8 @@ test('a package nobody has drawn on is refunded from Money and its unused credit
       const money = await getPage(base, '/app/payments', cookie);
       assert.match(money, /Recent payments/);
       assert.ok(money.includes(`/app/payments?refund=b${bookingId}#refund`), 'a Refund link on Money');
-      assert.match(money, /9 credits outstanding/);
+      assert.match(money, /Session credits held by clients/);
+      assert.match(money, /<p><strong>9<\/strong><\/p>/);
 
       const confirm = await getPage(base, `/app/payments?refund=b${bookingId}`, cookie);
       assert.match(confirm, /Refund \$300\?/);
@@ -100,7 +101,7 @@ test('a package nobody has drawn on is refunded from Money and its unused credit
       assert.equal(relay.refunds.length, 1);
 
       const after = await getPage(base, '/app/payments?notice=refund-refunded', cookie);
-      assert.match(after, /0 credits outstanding/);
+      assert.match(after, /<p><strong>0<\/strong><\/p>/);
       assert.match(after, /Refunded \$300\. The spot is free again\. 9 unused session credits were withdrawn\./);
     });
     assert.equal(await creditLeft(db, (await db.query<{ id: number }>("select id from booking where charge_id = 'ns_pay_pkg'")).rows[0].id), 0);
@@ -406,7 +407,7 @@ test('Money leaves a refunded booking out of booked and collected, and shows wha
       await postForm(base, '/app/money/refund', cookie, { target: `b${gone}` });
       const after = await getPage(base, '/app/payments', cookie);
       assert.match(after, /Paid by clients:<\/strong> \$35\.00/);
-      assert.match(after, /Sessions booked:<\/strong> 1/);
+      assert.match(after, /Sessions booked:<\/strong> 1 — \$35\.00/);
       assert.match(after, /Refunded: \$35\.00 \(1 payment\)\. Refunded bookings are not counted above\./);
       assert.equal(await bookingStatus(db, kept), 'booked');
     });

@@ -15,10 +15,10 @@ import {
   type RangePreset,
 } from '../domain/moneyExport.js';
 import { isOverLimit, takeRequest } from '../domain/requestLimits.js';
-import { html, page, type SafeHtml } from '../lib/html.js';
+import { coachHeader, html, page, raw, type SafeHtml } from '../lib/html.js';
 import { DEFAULT_TZ, isValidTimeZone } from '../lib/time.js';
 
-/** The Download block on Money (screen 7) and the two files behind it: the
+/** The Download block on Payments (screen 7) and the two files behind it: the
  * coach's payments and bookings as CSV, for a range of days in the coach's
  * timezone (src/domain/moneyExport.ts). No screen of its own. */
 
@@ -32,31 +32,98 @@ const PRESET_WORDS: Record<RangePreset, string> = {
   'last-year': 'Last year',
 };
 
+const DOWNLOAD_FORM_SCRIPT = raw(`<script>
+(function(){
+  var form=document.getElementById('download_form');
+  var range=document.getElementById('download_range');
+  var custom=document.getElementById('download_custom');
+  var feedback=document.getElementById('download_feedback');
+  if(!form||!range||!custom)return;
+  function syncCustom(){
+    var on=range.value==='${CUSTOM_RANGE}';
+    custom.hidden=!on;
+    if(!on){var f=document.getElementById('download_from');var t=document.getElementById('download_to');if(f)f.value='';if(t)t.value='';}
+  }
+  range.addEventListener('change',syncCustom);
+  syncCustom();
+  form.addEventListener('submit',function(ev){
+    var sub=ev.submitter;
+    if(!sub||sub.type!=='submit')return;
+    var action=sub.getAttribute('formaction')||form.getAttribute('action')||'';
+    if(action.indexOf('/download/')===-1)return;
+    ev.preventDefault();
+    if(feedback)feedback.textContent='Working…';
+    var data=new FormData(form);
+    var params=new URLSearchParams();
+    data.forEach(function(v,k){params.append(k,v);});
+    if(range.value!=='${CUSTOM_RANGE}'){params.delete('from');params.delete('to');}
+    var url=action+(action.indexOf('?')===-1?'?':'&')+params.toString();
+    fetch(url,{credentials:'same-origin'}).then(function(res){
+      var ct=(res.headers.get('content-type')||'').toLowerCase();
+      if(res.ok&&ct.indexOf('text/csv')!==-1){
+        return res.text().then(function(text){
+          var lines=text.replace(/^\uFEFF/,'').trim().split(/\\r?\\n/).filter(function(l){return l.length;});
+          if(lines.length<=1){
+            if(feedback)feedback.textContent='Nothing in that range for those dates.';
+            return;
+          }
+          var disp=res.headers.get('content-disposition')||'';
+          var m=/filename="([^"]+)"/.exec(disp);
+          var name=m?m[1]:'download.csv';
+          var blob=new Blob([text],{type:'text/csv;charset=utf-8'});
+          var a=document.createElement('a');
+          a.href=URL.createObjectURL(blob);
+          a.download=name;
+          a.click();
+          URL.revokeObjectURL(a.href);
+          if(feedback)feedback.textContent='Downloaded '+name+'.';
+        });
+      }
+      return res.text().then(function(text){
+        var title=(/<h1>([^<]*)<\\/h1>/.exec(text)||[])[1];
+        var msg=(/<p class="muted">([^<]*)<\\/p>/.exec(text)||[])[1];
+        if(feedback)feedback.textContent=(title&&msg)?title+': '+msg:'That download did not work.';
+      });
+    }).catch(function(){if(feedback)feedback.textContent='That download did not work. Try again.';});
+  });
+})();
+</script>`);
+
 function coachZone(tz: string): string {
   return isValidTimeZone(tz) ? tz : DEFAULT_TZ;
 }
 
-/** The block on Money: one range and two buttons. A plain GET form, so each
- * button asks for a file and works without scripts. Both buttons are
- * outlined: the screen keeps its one filled action. */
+/** The block on Payments: one range and two buttons. Script handles custom
+ * dates, feedback, and the file save; without JS the GET form still works. */
 export function renderDownloadBlock(tz: string, now: Date = new Date()): SafeHtml {
   const zone = coachZone(tz);
   return html`<h2 id="download">Download</h2>
     <div class="card download">
-      <p class="muted">Your payments and bookings as spreadsheet files (CSV), for your bookkeeping and taxes. Payments are listed by the day they were paid, bookings by the day of the session. Amounts are what clients paid, before fees. A part-refund made outside Coachatron appears in the file but not in Payments totals.</p>
-      <form method="get" action="${PAYMENTS_PATH}">
+      <p class="muted">Download your payments and bookings as CSV files for your records.</p>
+      <form id="download_form" method="get" action="${PAYMENTS_PATH}">
         <label for="download_range">Range</label>
         <select id="download_range" name="range">
           ${RANGE_PRESETS.map((preset) => html`<option value="${preset}">${PRESET_WORDS[preset]} (${presetRange(preset, zone, now).words})</option>`)}
           <option value="${CUSTOM_RANGE}">Custom dates</option>
         </select>
-        <label for="download_from">From (for custom dates)</label>
-        <input id="download_from" name="from" type="date" />
-        <label for="download_to">To (for custom dates, up to ${MAX_CUSTOM_DAYS} days)</label>
-        <input id="download_to" name="to" type="date" />
-        <button type="submit" class="ghost">Download payments</button>
-        <button type="submit" class="ghost" formaction="${BOOKINGS_PATH}">Download bookings</button>
+        <div id="download_custom" class="download-custom" hidden>
+          <label for="download_from">From</label>
+          <input id="download_from" name="from" type="date" />
+          <label for="download_to">To (up to ${MAX_CUSTOM_DAYS} days)</label>
+          <input id="download_to" name="to" type="date" />
+        </div>
+        <div class="download-btn-wrap">
+          <button type="submit" class="ghost">Download payments</button>
+          <p class="muted download-btn-desc">What clients paid, listed by the day they paid.</p>
+        </div>
+        <div class="download-btn-wrap">
+          <button type="submit" class="ghost" formaction="${BOOKINGS_PATH}">Download bookings</button>
+          <p class="muted download-btn-desc">Who booked what, listed by the day of the session.</p>
+        </div>
+        <p id="download_feedback" class="muted" role="status"></p>
+        <p class="muted download-refund-note">A part-refund made outside Coachatron appears in the file but not in Payments totals.</p>
       </form>
+      ${DOWNLOAD_FORM_SCRIPT}
     </div>`;
 }
 
@@ -65,7 +132,8 @@ function refusal(res: Response, status: number, title: string, message: string):
   res.status(status).send(
     page(
       title,
-      html`<h1>${title}</h1>
+      html`${coachHeader('payments')}
+        <h1>${title}</h1>
         <p class="muted">${message}</p>
         <a class="action" href="/app/payments#download">Back to Payments</a>`,
     ),

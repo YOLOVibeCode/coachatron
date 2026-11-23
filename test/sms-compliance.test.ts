@@ -365,6 +365,7 @@ test('every public page links /sms and names the operator in the footer', async 
     for (const path of ['/', '/signin', '/privacy', '/terms', '/sms']) {
       const html = await (await fetch(`${base}${path}`)).text();
       assert.match(html, /href="\/sms"/, path);
+      assert.match(html, /mailto:support@coachatron\.com">Contact</, path);
       const footer = html.slice(html.lastIndexOf('<footer class="site-footer">'));
       assert.ok(footer.includes(OPERATOR), path);
     }

@@ -23,6 +23,7 @@ test('signing out ends that session on the server and clears the cookie', async 
     const elsewhere = await createCoachSession(db, seed.coach.id);
     await withServer(async (base) => {
       const money = await (await fetch(`${base}/app/payments`, { headers: { cookie: `cx_session=${here}` } })).text();
+      assert.match(money, /<details class="coach-account">/);
       assert.match(money, /<form method="post" action="\/signout">/);
       assert.match(money, />Sign out</);
 

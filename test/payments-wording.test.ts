@@ -42,7 +42,7 @@ test('Schedule and Money name each payments step with the same words', async () 
       };
 
       // Not started.
-      assert.match(await screen('/app/payments'), /<button type="submit">Connect payments<\/button>/);
+      assert.match(await screen('/app/payments'), /<button type="submit" class="action">Connect payments<\/button>/);
       let schedule = await screen('/app/schedule');
       assert.match(schedule, /Clients can(&#39;|')t book yet/);
       assert.match(schedule, /<a class="action" href="\/app\/payments">Connect payments<\/a>/);
@@ -60,7 +60,7 @@ test('Schedule and Money name each payments step with the same words', async () 
         redirect: 'manual',
       });
       assert.equal(started.status, 303);
-      assert.match(await screen('/app/payments'), /<button type="submit">Finish connecting payments<\/button>/);
+      assert.match(await screen('/app/payments'), /<button type="submit" class="action">Finish connecting payments<\/button>/);
       schedule = await screen('/app/schedule');
       assert.match(schedule, /<a class="action" href="\/app\/payments">Finish connecting payments<\/a>/);
       assert.doesNotMatch(schedule, />Connect payments</);

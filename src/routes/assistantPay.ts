@@ -1,6 +1,6 @@
 import { Router, type Response } from 'express';
 import { getDb, type DbClient } from '../db/client.js';
-import { coachNav, html, page, raw, type SafeHtml } from '../lib/html.js';
+import { coachHeader, html, page, raw, type SafeHtml } from '../lib/html.js';
 import { dollarsToCents, rowId } from '../lib/input.js';
 import { formatCoachDollars, formatConfirmWhen } from '../lib/time.js';
 import {
@@ -72,7 +72,7 @@ function refuse(res: Response, status: number, message: string, backHref: string
   res.status(status).send(
     page(
       'Roster',
-      html`${coachNav('roster')}
+      html`${coachHeader('roster')}
         <h1>Assistant pay</h1>
         <p class="error">${message}</p>
         <a class="action" href="${backHref}">Back</a>`,

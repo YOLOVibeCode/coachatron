@@ -569,13 +569,13 @@ test('Money shows one line for what assistants are owed, only above zero, and it
       const money = async () => (await fetch(`${base}/app/payments`, { headers: { cookie } })).text();
       const figures = (page: string) => [
         /Paid by clients:<\/strong> \$[\d.]+/.exec(page)?.[0],
-        /Sessions booked:<\/strong> \d+/.exec(page)?.[0],
+        /Sessions booked:<\/strong> \d+ — \$[\d.]+/.exec(page)?.[0],
       ];
 
       const upcoming = await money();
       assert.doesNotMatch(upcoming, /You owe assistants/, 'nothing is owed for an upcoming session');
       const before = figures(upcoming);
-      assert.deepEqual(before, ['Paid by clients:</strong> $0.00', 'Sessions booked:</strong> 0']);
+      assert.deepEqual(before, ['Paid by clients:</strong> $0.00', 'Sessions booked:</strong> 0 — $0.00']);
 
       await happened(db, seed.sessionId);
       const owed = await money();

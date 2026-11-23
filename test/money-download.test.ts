@@ -638,7 +638,8 @@ test('a range the product does not take gets the branded 400 page, and is not co
         assert.match(page, /no more than 366 days apart/);
         assert.ok(page.includes('choose &quot;Custom dates&quot;') || page.includes('choose "Custom dates"'), 'tells the coach to choose Custom dates');
         if (/range=(this-month|last-year)&from/.test(query)) assert.ok(page.includes('Custom dates'), 'says to choose Custom dates');
-        assert.ok(page.includes('href="/app/payments#download"'), 'a way back to Money');
+        assert.ok(page.includes('href="/app/payments#download"'), 'a way back to Payments');
+        assert.match(page, /Back to Payments/);
       }
     }
     const counted = await db.query<{ n: string }>('select count(*)::text as n from request_limit');
@@ -739,9 +740,9 @@ test('Money has a Download block: one range, custom dates, and a button for each
     assert.equal(res.headers.get('cache-control'), 'no-store');
     const money = await res.text();
     const block = money.slice(money.indexOf('<h2 id="download">Download</h2>'));
-    assert.ok(block.startsWith('<h2 id="download">Download</h2>'), 'the block is on Money');
-    assert.match(block, /<form method="get" action="\/app\/money\/download\/payments\.csv">/);
-    assert.ok(block.includes('A part-refund made outside Coachatron appears in the file but not in Payments totals.'), 'says where a part-refund shows');
+    assert.ok(block.startsWith('<h2 id="download">Download</h2>'), 'the block is on Payments');
+    assert.match(block, /<form id="download_form" method="get" action="\/app\/money\/download\/payments\.csv">/);
+    assert.ok(block.includes("A part-refund made outside Coachatron appears in the file but not in Payments totals."), 'says where a part-refund shows');
     assert.match(block, /<label for="download_range">Range<\/label>\s*<select id="download_range" name="range">/);
     assert.deepEqual(
       [...block.matchAll(/<option value="([^"]+)">/g)].map((m) => m[1]),
@@ -750,11 +751,17 @@ test('Money has a Download block: one range, custom dates, and a button for each
     // Each range is named with the days it covers, in the coach's timezone.
     const words = [before, new Date()].map((now) => `<option value="last-month">Last month (${presetRange('last-month', TZ, now).words})</option>`);
     assert.ok(words.some((w) => block.includes(w)), 'last month is named');
-    assert.match(block, /<label for="download_from">[^<]+<\/label>\s*<input id="download_from" name="from" type="date" \/>/);
-    assert.match(block, /<label for="download_to">[^<]+<\/label>\s*<input id="download_to" name="to" type="date" \/>/);
+    assert.match(block, /<div id="download_custom" class="download-custom" hidden>/);
+    assert.match(block, /<label for="download_from">From<\/label>\s*<input id="download_from" name="from" type="date" \/>/);
+    assert.match(block, /<label for="download_to">To \(up to 366 days\)<\/label>\s*<input id="download_to" name="to" type="date" \/>/);
     assert.match(block, /<button type="submit" class="ghost">Download payments<\/button>/);
+    assert.ok(block.includes('What clients paid, listed by the day they paid.'));
     assert.match(block, /<button type="submit" class="ghost" formaction="\/app\/money\/download\/bookings\.csv">Download bookings<\/button>/);
-    assert.equal(/<script/i.test(block.slice(0, block.indexOf('</form>'))), false, 'the form needs no script');
+    assert.ok(block.includes('Who booked what, listed by the day of the session.'));
+    assert.match(block, /<p id="download_feedback" class="muted" role="status"><\/p>/);
+    assert.match(block, /<script>/);
+    assert.ok(block.includes('Nothing in that range for those dates.'));
+    assert.ok(block.includes('Downloaded '));
   });
 });
 
