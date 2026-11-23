@@ -103,7 +103,7 @@ test('the confirm screen and the notice say it is late, and the confirm sends no
     await startAt(db, seed.sessionId, new Date(Date.now() + 72 * HOUR), zoneAt(23));
     await seedBookedSession(db, seed.sessionId, 'Ada Lane', '+15550000001');
     const cookie = `cx_session=${await createCoachSession(db, seed.coach.id)}`;
-    const note = 'It is late; parents will see the new place on their booking page and in their reminder.';
+    const note = 'It is late; clients will see the new place on their booking page and in their reminder.';
     await withServer(async (base) => {
       const detail = `${base}/app/sessions/${seed.sessionId}`;
       assert.ok((await (await fetch(`${detail}?place=${places[1].id}`, { headers: { cookie } })).text()).includes(note));

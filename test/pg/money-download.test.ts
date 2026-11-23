@@ -51,7 +51,7 @@ test('the payments and bookings files read the same on Postgres: times, amounts,
       // A payment nobody can match to a booking is kept for the coach its seller names.
       await postStorePaid(base, { userId: 'booking:999999:dropin', amountCents: 4100, paymentId: 'ns_pg_kept', sellerKey: getConnectRecipientKey(seed.coach), occurredAt: paid.kept });
       const cookie = await coachCookie(db(), seed.coach.id);
-      assert.equal((await postForm(base, '/app/money/refund', cookie, { target: `b${refunded}` })).headers.get('location'), '/app/money?notice=refund-refunded');
+      assert.equal((await postForm(base, '/app/money/refund', cookie, { target: `b${refunded}` })).headers.get('location'), '/app/payments?notice=refund-refunded');
       assert.equal((await postPaymentEvent(base, { type: 'marketplace.purchase.disputed', paymentId: 'ns_pg_pkg', disputeId: 'ns_pg_dsp', amountCents: 30000 })).status, 200);
 
       const session = await sessionTypeName(db(), seed.sessionTypeId);

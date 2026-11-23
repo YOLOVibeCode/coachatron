@@ -69,18 +69,17 @@ test('the Pricing screen offers the choice next to the window and the children l
   await withServer(async (base) => {
     const cookie = await coachCookie(db, seed.coach.id);
     const before = await getPage(base, '/app/pricing', cookie);
-    assert.match(before, /<label for="cancel_gives">When a parent cancels in time<\/label>/);
-    assert.match(before, /<option value="credit" selected>A session credit<\/option>/);
+    assert.match(before, /<label for="cancel_gives">When a client cancels in time<\/label>/);
+    assert.match(before, /<option value="credit" selected>A credit for another session<\/option>/);
     assert.match(before, /<option value="refund">A refund to their card<\/option>/);
-    assert.match(before, /Coachatron's 5% fee is returned with it, and Stripe keeps its card processing fee/);
-    assert.match(before, /gets their credit back \(a paid drop-in becomes a session credit\)/);
+    assert.match(before, /card company keeps its own processing fee/);
+    assert.match(before, /A paid drop-in becomes a session credit/);
 
     const saved = await form(base, '/app/pricing/policy', cookie, { cancel_window_hours: '24', children_per_booking: '2', cancel_gives: 'refund' });
     assert.equal(saved.status, 303);
     const after = await getPage(base, '/app/pricing', cookie);
     assert.match(after, /<option value="refund" selected>A refund to their card<\/option>/);
-    assert.match(after, /gets their credit back \(a paid drop-in is refunded to their card\)/);
-    assert.match(after, /children paid for together are refunded once each of their bookings is cancelled in time/);
+    assert.match(after, /A paid drop-in is refunded to their card/);
 
     // A choice the form does not offer is the form's own message, and saves nothing.
     const bad = await form(base, '/app/pricing/policy', cookie, { cancel_window_hours: '48', children_per_booking: '3', cancel_gives: 'cash' });
@@ -97,7 +96,7 @@ test('the Pricing screen offers the choice next to the window and the children l
 
     const back = await form(base, '/app/pricing/policy', cookie, { cancel_window_hours: '48', children_per_booking: '3', cancel_gives: 'credit' });
     assert.equal(back.status, 303);
-    assert.match(await getPage(base, '/app/pricing', cookie), /<option value="credit" selected>A session credit<\/option>/);
+    assert.match(await getPage(base, '/app/pricing', cookie), /<option value="credit" selected>A credit for another session<\/option>/);
   });
 });
 
@@ -178,13 +177,13 @@ test('a cancel in time under "a refund" sends the payment back through the coach
       assert.equal(relay.refundCalls, 1);
 
       // Money lists it with the other refunds, marked as the parent's cancel.
-      const money = await getPage(base, '/app/money', cookie);
+      const money = await getPage(base, '/app/payments', cookie);
       assert.match(money, /<h2>Refunds<\/h2>/);
-      assert.match(money, /Alex<\/strong> · \$35 · Refunded \(parent cancelled in time\)/);
-      assert.match(money, /The parent cancelled in time, and your booking policy refunds that to their card\. Refunded \$35\. The parent was told by text and email\./);
+      assert.match(money, /Alex<\/strong> · \$35 · Refunded \(client cancelled in time\)/);
+      assert.match(money, /The client cancelled in time, and your booking policy refunds that to their card\. Refunded \$35\. The client was told by text and email\./);
       assert.doesNotMatch(money, /Payments to resolve/);
       assert.doesNotMatch(money, /session credit was withdrawn/);
-      assert.match(await getPage(base, `/app/sessions/${seed.sessionId}`, cookie), /Paid \$35 · Drop-in · Refunded \(parent cancelled in time\)/);
+      assert.match(await getPage(base, `/app/sessions/${seed.sessionId}`, cookie), /Paid \$35 · Drop-in · Refunded \(client cancelled in time\)/);
     });
 
     // The one notice: the refund's own, by text and by email. It says
@@ -221,7 +220,7 @@ test('while the refund is on its way the parent holds no credit and hears nothin
       assert.equal(refundTexts(relay).length, 0);
       assert.equal(refundEmails(relay, EMAIL).length, 0);
       assert.equal((await refundOf(db, 'ns_pay_pending'))?.status, 'pending');
-      assert.match(await getPage(base, '/app/money', cookie), /Alex<\/strong> · \$35 · Refund sent \(parent cancelled in time\)/);
+      assert.match(await getPage(base, '/app/payments', cookie), /Alex<\/strong> · \$35 · Refund sent \(client cancelled in time\)/);
 
       const event = await postPaymentEvent(base, {
         type: 'marketplace.purchase.refunded',
@@ -276,20 +275,20 @@ test('a refund that fails later gives the parent the credit and says so on the m
       assert.equal(refundTexts(relay).length, 0, 'no refund notice for a refund that did not happen');
 
       // The coach sees it under "Payments to resolve", with the usual retry.
-      const money = await getPage(base, '/app/money', cookie);
+      const money = await getPage(base, '/app/payments', cookie);
       assert.match(money, /Payments to resolve/);
       assert.match(
         money,
-        /The parent cancelled in time, and your booking policy refunds that to their card\. The refund of \$35 did not go through\. The booking stays cancelled, and the parent holds a session credit for it instead\./,
+        /The client cancelled in time, and your booking policy refunds that to their card\. The refund of \$35 did not go through\. The booking stays cancelled, and the client holds a session credit for it instead\./,
       );
-      assert.ok(money.includes(`/app/money?refund=b${bookingId}#refund`), 'a way to try again');
+      assert.ok(money.includes(`/app/payments?refund=b${bookingId}#refund`), 'a way to try again');
 
       // The coach's retry is the same refund, under a new key, and tells the
       // parent once, now naming the credit they had been given.
       relay.refunds[0].status = 'failed';
       relay.refundStatus = 'succeeded';
       const again = await postForm(base, '/app/money/refund', cookie, { target: `b${bookingId}` });
-      assert.equal(again.headers.get('location'), '/app/money?notice=refund-refunded');
+      assert.equal(again.headers.get('location'), '/app/payments?notice=refund-refunded');
       assert.equal(relay.refunds.length, 2);
       assert.equal(relay.refunds[1].idempotencyKey, refundIdempotencyKey('ns_pay_fails', 2));
       assert.equal(await bookingStatus(db, bookingId), 'refunded');
@@ -324,7 +323,7 @@ test('a relay refusal leaves the cancel standing as a session credit and lists t
       const row = await refundOf(db, 'ns_pay_refused');
       assert.deepEqual({ status: row?.status, code: row?.error_code, by: row?.cancel_booking_id }, { status: 'failed', code: 'NOT_FOUND', by: bookingId });
 
-      const money = await getPage(base, '/app/money', cookie);
+      const money = await getPage(base, '/app/payments', cookie);
       assert.match(money, /Payments to resolve/);
       assert.match(money, /The refund of \$35 did not go through\. Stripe has no record of this payment for your account\./);
       assert.match(money, /Try the refund again/);
@@ -354,7 +353,7 @@ test('payments not answering keeps the credit held; the tick sends the same requ
         { status: 'requested', code: 'unavailable' },
       );
       assert.match(await managePage(base, first.token), /We are sending your refund of \$35/);
-      assert.match(await getPage(base, '/app/money', first.cookie), /could not be confirmed yet and is still being tried/);
+      assert.match(await getPage(base, '/app/payments', first.cookie), /could not be confirmed yet and is still being tried/);
 
       // Too soon: the tick leaves it. Ten minutes on, it sends it again.
       assert.deepEqual(await runTick(db, new Date()), []);
@@ -403,9 +402,9 @@ test('payments not answering keeps the credit held; the tick sends the same requ
       assert.equal((await refundOf(db, 'ns_pay_slow'))?.status, 'requested', 'never marked failed');
       assert.deepEqual(await creditOf(db, third.bookingId), { remaining: 1, held: true, withdrawn: false }, 'the credit stays held');
       assert.match(await managePage(base, third.token), /We are sending your refund/);
-      const money = await getPage(base, '/app/money', third.cookie);
+      const money = await getPage(base, '/app/payments', third.cookie);
       assert.match(money, /Payments to resolve/);
-      assert.match(money, /could not be confirmed yet and is still being tried\. The parent's session credit stays held until it is\./);
+      assert.match(money, /could not be confirmed yet and is still being tried\. The client's session credit stays held until it is\./);
       // The relay answers at last, with the original result: one refund.
       relay.refundError = null;
       await db.query("update refund set requested_at = now() - interval '61 minutes' where payment_ref = 'ns_pay_slow'");

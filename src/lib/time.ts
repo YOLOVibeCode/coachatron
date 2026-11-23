@@ -81,6 +81,50 @@ export function formatCoachDollars(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
+export function formatDurationMin(durationMin: number): string {
+  return `${durationMin} min`;
+}
+
+/** Short zone label, e.g. "CST" or "GMT+8". */
+export function formatTimeZoneShort(tz: string, now: Date = new Date()): string {
+  if (Number.isNaN(now.getTime())) return tz;
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'short' }).formatToParts(now);
+  return parts.find((p) => p.type === 'timeZoneName')?.value ?? tz;
+}
+
+/** Public session row: optional year outside the current calendar year in `tz`. */
+export function formatPublicSessionWhen(isoUtc: string, tz: string, now: Date = new Date()): string {
+  const date = new Date(isoUtc);
+  if (Number.isNaN(date.getTime())) return NOT_A_TIME;
+  const nowYear = new Intl.DateTimeFormat('en-US', { timeZone: tz, year: 'numeric' }).format(now);
+  const showYear = new Intl.DateTimeFormat('en-US', { timeZone: tz, year: 'numeric' }).format(date) !== nowYear;
+  const when = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    ...(showYear ? { year: 'numeric' } : {}),
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(date);
+  return `${when} ${formatTimeZoneShort(tz, date)}`;
+}
+
+/** Day heading for grouped session lists, e.g. "Friday, Jan 3". */
+export function formatPublicDayHeading(isoUtc: string, tz: string, now: Date = new Date()): string {
+  const date = new Date(isoUtc);
+  if (Number.isNaN(date.getTime())) return NOT_A_TIME;
+  const nowYear = new Intl.DateTimeFormat('en-US', { timeZone: tz, year: 'numeric' }).format(now);
+  const opts: Intl.DateTimeFormatOptions = {
+    timeZone: tz,
+    weekday: 'long',
+    month: 'short',
+    day: 'numeric',
+    ...(new Intl.DateTimeFormat('en-US', { timeZone: tz, year: 'numeric' }).format(date) !== nowYear ? { year: 'numeric' } : {}),
+  };
+  return new Intl.DateTimeFormat('en-US', opts).format(date);
+}
+
 export function clipSms(text: string, max = 160): string {
   const t = text.trim();
   if (t.length <= max) return t;

@@ -200,21 +200,21 @@ export async function ownPlacesNote(db: DbClient, coachId: number): Promise<Safe
 
 // ---- Screen 3: where one session is, and moving it ----
 
-const LATE_NOTE = 'It is late; parents will see the new place on their booking page and in their reminder.';
+const LATE_NOTE = 'It is late; clients will see the new place on their booking page and in their reminder.';
 
 function reachSentence(reach: PlaceChangeReach, text: string, late: boolean): SafeHtml {
   const { parents, textable } = reach;
   if (parents === 0) return html`<p class="muted">Nobody is booked, so nobody is texted.</p>`;
   if (late) return html`<p class="muted">${LATE_NOTE}</p>`;
   if (textable === 0) {
-    return html`<p class="muted">${parents === 1 ? '1 parent is booked and does not get texts' : `${parents} parents are booked and do not get texts`}, so nothing is sent. They see the new place on their booking page.</p>`;
+    return html`<p class="muted">${parents === 1 ? '1 client is booked and does not get texts' : `${parents} clients are booked and do not get texts`}, so nothing is sent. They see the new place on their booking page.</p>`;
   }
   const lead =
     textable === parents
       ? parents === 1
-        ? '1 parent is booked and gets this text:'
-        : `${parents} parents are booked and get this text:`
-      : `${parents} parents are booked. ${textable} of them ${textable === 1 ? 'gets' : 'get'} this text:`;
+        ? '1 client is booked and gets this text:'
+        : `${parents} clients are booked and get this text:`
+      : `${parents} clients are booked. ${textable} of them ${textable === 1 ? 'gets' : 'get'} this text:`;
   const rest = parents - textable;
   return html`<p class="muted">${lead} "${text}"${rest > 0 ? ` The ${rest === 1 ? 'other sees' : 'others see'} the new place on their booking page.` : ''}</p>`;
 }
@@ -227,7 +227,7 @@ function placedNotice(state: string): string | null {
   const parents = Number(match[2]);
   if (parents === 0) return 'Location changed.';
   if (match[3]) return `Location changed. ${LATE_NOTE}`;
-  return `Location changed. Texted ${texted} of ${count(parents, 'parent', 'parents')}.${texted < parents ? ' The rest see the new place on their booking page.' : ''}`;
+  return `Location changed. Texted ${texted} of ${count(parents, 'client', 'clients')}.${texted < parents ? ' The rest see the new place on their booking page.' : ''}`;
 }
 
 /** Session detail's "Where": the session's place, and for a session still

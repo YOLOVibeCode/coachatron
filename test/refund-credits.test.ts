@@ -120,7 +120,7 @@ test('the credits of a package whose refund is on its way cannot be booked with,
       const cookie = await coachCookie(db, seed.coach.id);
       relay.refundStatus = 'pending';
       const sent = await postForm(base, '/app/money/refund', cookie, { target: `b${purchaseId}` });
-      assert.equal(sent.headers.get('location'), '/app/money?notice=refund-pending');
+      assert.equal(sent.headers.get('location'), '/app/payments?notice=refund-pending');
 
       // While Stripe confirms, the parent tries to book with one of its credits.
       const key = await startCreditBooking(base, db, seed.coach.handle, later, 'Alex');
@@ -145,8 +145,8 @@ test('the credits of a package whose refund is on its way cannot be booked with,
 
       // A credit is used now, so a second try is not sent, and says why.
       const retry = await postForm(base, '/app/money/refund', cookie, { target: `b${purchaseId}` });
-      assert.equal(retry.headers.get('location'), `/app/money?refund=b${purchaseId}#refund`);
-      assert.match(await getPage(base, `/app/money?refund=b${purchaseId}`, cookie), /1 of the 5 sessions this payment bought was used/);
+      assert.equal(retry.headers.get('location'), `/app/payments?refund=b${purchaseId}#refund`);
+      assert.match(await getPage(base, `/app/payments?refund=b${purchaseId}`, cookie), /1 of the 5 sessions this payment bought was used/);
     });
     assert.equal(relay.refundCalls, 1);
     assert.equal((await refundRow(db, 'ns_pay_held')).status, 'failed');
@@ -317,10 +317,10 @@ test('a booking paid with a session credit says so on Session detail, with a lin
 
       const detail = await getPage(base, `/app/sessions/${later}`, cookie);
       assert.match(detail, /This booking used a session credit\. To refund it, refund the payment the credit came from\./);
-      assert.ok(detail.includes(`/app/money?refund=b${purchaseId}#refund`), 'a link to the payment the credit came from');
+      assert.ok(detail.includes(`/app/payments?refund=b${purchaseId}#refund`), 'a link to the payment the credit came from');
       assert.match(detail, /See the payment the credit came from/);
 
-      const source = await getPage(base, `/app/money?refund=b${purchaseId}`, cookie);
+      const source = await getPage(base, `/app/payments?refund=b${purchaseId}`, cookie);
       assert.match(source, /1 of the 5 sessions this payment bought was used/);
     });
     assert.equal(relay.refundCalls, 0);
@@ -349,7 +349,7 @@ test('a refund for a session that already happened marks the booking refunded an
 
       await postForm(base, `/app/sessions/${seed.sessionId}/bookings/${bookingId}/refund`, cookie);
       assert.equal(await bookingStatus(db, bookingId), 'refunded');
-      const money = await getPage(base, '/app/money', cookie);
+      const money = await getPage(base, '/app/payments', cookie);
       assert.match(money, /Refunded \$35\./);
       assert.doesNotMatch(money, /The spot is free again/);
     });

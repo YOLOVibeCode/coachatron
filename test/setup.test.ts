@@ -217,8 +217,8 @@ test('talk, refine, publish: nothing is written until Publish, and Publish runs 
 
         const live = await (await fetch(`${base}/app/schedule?published=1`, { headers: { cookie } })).text();
         assert.match(live, /You're live/);
-        assert.match(live, /Parents can(&#39;|')t book yet/);
-        assert.match(live, /<a class="action" href="\/app\/money">Connect payments<\/a>/);
+        assert.match(live, /Clients can(&#39;|')t book yet/);
+        assert.match(live, /<a class="action" href="\/app\/payments">Connect payments<\/a>/);
         assert.match(live, /<span class="action ghost" aria-disabled="true">Share your link<\/span>/);
         assert.doesNotMatch(live, /<a class="action" href="sms:\?&amp;body=Book%20with%20me/);
 
@@ -380,12 +380,12 @@ test('a second publish does not duplicate an identical session package', async (
         await post(base, '/app/setup/publish', cookie, { id: String(draft2.id) });
 
         const pricing = await (await fetch(`${base}/app/pricing`, { headers: { cookie } })).text();
-        const cardMatches = pricing.match(/10-session pack/g) ?? [];
+        const removeButtons = pricing.match(/Yes, remove this package/g) ?? [];
         assert.equal(
           await count(db, 'package where coach_id = $1 and credits = 10 and price_cents = 30000', [coach.id]),
           1,
         );
-        assert.ok(cardMatches.length <= 1);
+        assert.ok(removeButtons.length <= 1, 'at most one session-package card on pricing');
       });
     } finally {
       resetComplete();
@@ -405,7 +405,7 @@ test('schedule without payments shows a banner and does not promote sharing', as
         await post(base, '/app/setup/publish', cookie, { id: draftId });
         const live = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
         assert.match(live, /payments-banner/);
-        assert.match(live, /Parents can(&#39;|')t book yet/);
+        assert.match(live, /Clients can(&#39;|')t book yet/);
         assert.match(live, /<button type="button" class="ghost" disabled>Copy link<\/button>/);
         assert.match(live, /<span class="action ghost" aria-disabled="true">Share your link<\/span>/);
         assert.doesNotMatch(live, /<a class="action" href="sms:\?/);

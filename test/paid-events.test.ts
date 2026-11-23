@@ -33,7 +33,7 @@ async function attention(db: DbClient) {
 
 async function moneyPage(base: string, db: DbClient, coachId: number): Promise<string> {
   const cookie = `cx_session=${await createCoachSession(db, coachId)}`;
-  return (await fetch(`${base}/app/money`, { headers: { cookie } })).text();
+  return (await fetch(`${base}/app/payments`, { headers: { cookie } })).text();
 }
 
 function captureErrors(t: TestContext): () => string[] {
@@ -222,8 +222,8 @@ test('a payment for a session the coach cancelled becomes credit with that coach
       await postStorePaid(base, { userId: pack.userId, amountCents: 30000, paymentId: 'ch_pack_late' });
 
       const money = await moneyPage(base, db, seed.coach.id);
-      assert.match(money, /The parent now has 1 session credit with you and was told\./);
-      assert.match(money, /The parent now has 10 session credits with you and was told\./);
+      assert.match(money, /The client now has 1 session credit with you and was told\./);
+      assert.match(money, /The client now has 10 session credits with you and was told\./);
       const back = await (await fetch(`${base}/c/${seed.coach.handle}/checkout/${dropIn.key}`)).text();
       assert.match(back, /This booking was cancelled/);
     });

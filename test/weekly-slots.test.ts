@@ -128,9 +128,28 @@ test('weekly times screen: add with a location, list, remove; schedule links eac
       assert.match(page, /<button type="submit" disabled>Choose a day and time<\/button>/);
       assert.match(page, /weekly-times-form/);
       // Shown on a 12-hour clock, like every other screen; the inputs stay 24-hour.
+      assert.match(page, /<ul class="weekly-chips"/);
+      assert.match(page, new RegExp(`<a href="/app/session-types/${seed.sessionTypeId}/slots/\\d+/remove" aria-label="Remove Tue 6:00pm">`));
+      assert.doesNotMatch(page, /<form method="post" action="[^"]*\/slots\/\d+\/remove"/, 'removing starts with a confirmation, not a one-tap post');
+      assert.match(page, /<div class="weekday-times" data-day="6" data-label="Sat">/);
+      assert.match(page, /\+ Add another time/);
       assert.match(page, /Tue 6:00pm · Field 3/);
       assert.match(page, /Thu 6:00pm · Field 3/);
       assert.doesNotMatch(page, /18:00/);
+
+      const confirmRemove = await (
+        await fetch(`${base}/app/session-types/${seed.sessionTypeId}/slots/${slots.rows[0].id}/remove`, {
+          headers: { cookie },
+        })
+      ).text();
+      assert.match(confirmRemove, /Remove weekly time\?/);
+      assert.match(confirmRemove, /nobody booked are cancelled/);
+      assert.match(confirmRemove, /already have bookings stay on your schedule/);
+      assert.equal(
+        (await db.query('select id from weekly_slot where session_type_id = $1 and active', [seed.sessionTypeId])).rows.length,
+        2,
+        'opening the confirmation removes nothing',
+      );
 
       const schedule = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
       assert.match(schedule, /href="\/app\/sessions\/\d+"/);
@@ -199,10 +218,22 @@ test('weekly times take a clock time from 00:00 to 23:59, and a time already the
       const placed = await db.query<{ location_text: string | null }>('select distinct location_text from session where weekly_slot_id is not null');
       assert.deepEqual(placed.rows, [{ location_text: 'Field 3' }]);
 
-      // The same time again, with the same place or none, changes nothing and is fine.
-      assert.equal((await post({ day_2: '1', time_2: '18:00', location: 'Field 3' })).status, 303);
-      assert.equal((await post({ day_2: '1', time_2: '18:00' })).status, 303);
+      for (const again of [{ day_2: '1', time_2: '18:00', location: 'Field 3' }, { day_2: '1', time_2: '18:00' }]) {
+        const dup = await post(again);
+        assert.equal(dup.status, 422);
+        assert.match(await dup.text(), /Tue 6:00pm is already a weekly time, so nothing was added\./);
+      }
       assert.equal((await slotRows()).length, 1);
+
+      // Saturday at 9, 10 and 11, as on Tell me your week; a time entered twice counts once.
+      assert.equal((await post({ day_6: '1', time_6: '09:00', time_6_1: '10:00', time_6_2: '11:00', time_6_3: '10:00' })).status, 303);
+      assert.deepEqual(
+        (await slotRows()).filter((r) => r.weekday === 6).map((r) => r.time_local.slice(0, 5)).sort(),
+        ['09:00', '10:00', '11:00'],
+      );
+      // Extra times on a day that is not ticked are ignored.
+      assert.equal((await post({ day_1: '1', time_1: '07:00', time_5_1: '08:00' })).status, 303);
+      assert.equal((await slotRows()).filter((r) => r.weekday === 5).length, 0);
     });
   });
 });

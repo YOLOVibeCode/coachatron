@@ -2,7 +2,7 @@
  * template that escapes interpolated values by default, plus a `raw()`
  * escape hatch for pre-built markup. */
 
-import { SMS_BRAND, SMS_PURPOSE } from '../config.js';
+import { APP_FEE_BPS, SMS_BRAND, SMS_PURPOSE, SUPPORT_EMAIL } from '../config.js';
 import { canonicalUrl } from './siteHost.js';
 
 export function escapeHtml(value: unknown): string {
@@ -287,7 +287,7 @@ export const POSTCARD_TOKENS_CSS = `
   }
   .weekday-row {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 8px;
     margin: 8px 0;
   }
@@ -304,16 +304,69 @@ export const POSTCARD_TOKENS_CSS = `
     font-weight: 600;
     color: var(--screen-ink);
     font-size: 0.95rem;
+    line-height: var(--touch-min);
+    cursor: pointer;
   }
   .weekday-row input[type="time"] {
     flex: 1;
     min-width: 0;
     margin: 0;
   }
+  .weekday-times { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+  .weekday-row:not(:has(input[type="checkbox"]:checked)) .weekday-times { display: none; }
+  .weekday-time { display: flex; gap: 8px; }
+  .weekday-add, .weekday-remove { width: auto; margin: 0; padding: 8px 12px; font-size: 0.9rem; align-self: flex-start; }
+  .weekly-chips { list-style: none; display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; padding: 0; }
+  .weekly-chip {
+    display: inline-flex;
+    align-items: center;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding-left: 12px;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 0.9rem;
+  }
+  .weekly-chip a {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: var(--touch-min);
+    min-height: var(--touch-min);
+    color: var(--teal);
+    text-decoration: none;
+    font-size: 1.2rem;
+  }
   .type-card-actions { margin-top: 10px; }
   .payments-banner { margin-bottom: 12px; }
   .payments-banner p { margin: 0 0 8px; }
   .payments-banner .action { margin-top: 8px; }
+  .coach-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
+  }
+  .coach-header .coach-nav { margin-bottom: 0; flex: 1 1 auto; }
+  .coach-account {
+    flex: 0 0 auto;
+    font-size: 0.9rem;
+  }
+  .coach-account > summary {
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-weight: 600;
+    color: var(--screen-muted);
+    cursor: pointer;
+    list-style: none;
+  }
+  .coach-account > summary::-webkit-details-marker { display: none; }
+  .coach-account form { margin: 8px 0 0; }
+  .download-custom[hidden] { display: none; }
+  .download-btn-wrap { margin: 12px 0 0; }
+  .download-btn-desc { margin: 4px 0 0; font-size: 0.85rem; }
+  #download_feedback { min-height: 1.4em; margin-top: 12px; }
+  .download-refund-note { margin-top: 12px; font-size: 0.85rem; }
   .page-link-compact { margin-bottom: 10px; }
   .page-link-share-note { margin-top: 6px; font-size: 0.85rem; }
   button[disabled], .action[aria-disabled="true"] {
@@ -387,14 +440,14 @@ export const POSTCARD_TOKENS_CSS = `
   }
 `;
 
-export type CoachNavKey = 'schedule' | 'types' | 'pricing' | 'roster' | 'money';
+export type CoachNavKey = 'schedule' | 'types' | 'pricing' | 'roster' | 'payments';
 
 const COACH_NAV: Array<[CoachNavKey, string, string]> = [
   ['schedule', '/app/schedule', 'Schedule'],
   ['types', '/app/session-types', 'Types'],
-  ['pricing', '/app/pricing', 'Pricing'],
   ['roster', '/app/roster', 'Roster'],
-  ['money', '/app/money', 'Money'],
+  ['pricing', '/app/pricing', 'Pricing'],
+  ['payments', '/app/payments', 'Payments'],
 ];
 
 /** Plain links across the coach screens. Muted text, not buttons, so each
@@ -406,6 +459,27 @@ export function coachNav(active?: CoachNavKey): SafeHtml {
     )}
   </nav>`;
 }
+
+/** Sign out on coach screens. */
+export function coachAccountMenu(): SafeHtml {
+  return html`<details class="coach-account">
+    <summary>Account</summary>
+    <form method="post" action="/signout">
+      <button type="submit" class="ghost">Sign out</button>
+    </form>
+  </details>`;
+}
+
+/** Top bar: main nav and account menu. */
+export function coachHeader(active: CoachNavKey): SafeHtml {
+  return html`<div class="coach-header">${coachNav(active)}${coachAccountMenu()}</div>`;
+}
+
+export const SESSION_CREDITS_EXPLANATION =
+  'Session credits are sessions clients paid for but have not used yet.';
+
+export const PLATFORM_FEE_DISCLOSURE =
+  `Coachatron keeps ${APP_FEE_BPS / 100}% of each payment, plus the card company's processing fee from your account.`;
 
 export function smsConsentCheckbox(): SafeHtml {
   return html`<label class="sms-consent">
@@ -433,8 +507,76 @@ export function landingSmsDisclosure(): SafeHtml {
 /** Shown by a phone field that sends a code the person asks for. That one
  * text needs no box; the box is only for the texts that keep coming. */
 export function oneTimeCodeNote(): SafeHtml {
-  return html`<p class="muted sms-once">If you enter a mobile, we'll text a one-time code to it. Message and data rates may apply. Texts after that are optional: check the box below only if you want them.</p>`;
+  return html`<p class="muted sms-once">No password. We send a one-time code. Include a country code on phone numbers (for example +1). We text codes only to US and Canadian mobile numbers.</p>`;
 }
+
+const SIGNIN_PAGE_CSS = `
+  .signin-top { margin: 0 0 16px; font-size: 0.95rem; }
+  .signin-top a, .signin-home-bottom a { color: var(--teal); }
+  .signin-home-bottom { margin-top: 20px; font-size: 0.95rem; text-align: center; }
+  .signin-back { margin-top: 16px; }
+  .signin-actions { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; align-items: stretch; }
+  .signin-actions form { margin: 0; }
+  .signin-actions .ghost { display: block; text-align: center; }
+  #contact-hint { min-height: 1.4em; }
+`;
+
+export type SignInChromeOptions = { backHref?: string };
+
+/** Coach sign-in substeps: home links in the header and below the card. */
+export function signInPage(title: string, main: SafeHtml, chrome: SignInChromeOptions = {}): string {
+  const back = chrome.backHref;
+  const body = html`<header class="signin-top">
+      <a href="/">Back to home</a>
+    </header>
+    <div class="signin-card">${main}</div>
+    ${back ? html`<p class="signin-back"><a class="action ghost" href="${back}">Back</a></p>` : raw('')}
+    <p class="signin-home-bottom"><a href="/">Back to home</a></p>`;
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+${FAVICON_LINK}
+<title>${escapeHtml(title)} — Coachatron</title>
+<style>${POSTCARD_TOKENS_CSS}
+  ${SIGNIN_PAGE_CSS}
+  .site-footer { margin-top: 24px; font-size: 0.9rem; }
+  .site-footer a { color: var(--teal); }
+  .sms-consent { display: block; margin: 12px 0; font-size: 0.95rem; color: var(--screen-muted); }
+  .sms-consent input { margin-right: 8px; }
+  .sms-once { font-size: 0.95rem; }
+  .operator { font-size: 0.9rem; color: var(--screen-muted); }
+</style>
+</head>
+<body>
+<div class="phone"><div class="screen">${body.value}${siteFooter().value}</div></div>
+</body>
+</html>`;
+}
+
+export const CONTACT_HINT_SCRIPT = raw(`<script>
+(function(){
+  var input=document.getElementById('contact');
+  var hint=document.getElementById('contact-hint');
+  if(!input||!hint)return;
+  function up(){
+    var v=input.value.trim();
+    if(!v){hint.textContent='';return;}
+    if(v.indexOf('@')!==-1){
+      hint.textContent='We will email a code to this address.';
+      return;
+    }
+    if(/^[\\d\\s()+.-]+$/.test(v)&&/[\\d]/.test(v)){
+      hint.textContent='We will text a code to this phone number (US or Canada +1 only).';
+      return;
+    }
+    hint.textContent='Enter an email address or a phone number with country code.';
+  }
+  input.addEventListener('input',up);
+  up();
+})();
+</script>`);
 
 /** Who runs Coachatron, in the footer and at the top of the legal pages, so
  * a reviewer can tie the site to the business behind it. */
@@ -442,14 +584,22 @@ export function operatorLine(): SafeHtml {
   return html`<p class="operator">Coachatron is operated by Noctusoft, Inc. (<a href="https://noctusoft.com">https://noctusoft.com</a>)</p>`;
 }
 
-export function siteFooter(): SafeHtml {
+export function siteFooter(coachMessage?: { handle: string; name: string }): SafeHtml {
+  const message =
+    coachMessage === undefined
+      ? raw('')
+      : html`<a href="/c/${coachMessage.handle}/message">Message ${coachMessage.name}</a>
+    <span aria-hidden="true"> · </span>`;
   return html`<footer class="site-footer">
     ${operatorLine()}
+    ${message}
     <a href="/privacy">Privacy</a>
     <span aria-hidden="true"> · </span>
     <a href="/terms">Terms</a>
     <span aria-hidden="true"> · </span>
     <a href="/sms">Text messages</a>
+    <span aria-hidden="true"> · </span>
+    <a href="mailto:${SUPPORT_EMAIL}">Contact</a>
   </footer>`;
 }
 
@@ -464,6 +614,8 @@ export interface PageHead {
    * is not indexed as a page of its own. Never set on a coach's screen or
    * on a page a private link opens. */
   canonicalPath?: string;
+  /** Adds a Message link in the footer on a coach's public pages. */
+  coachMessage?: { handle: string; name: string };
 }
 
 /** The <link rel="canonical"> line, or nothing when the page names no path
@@ -486,10 +638,16 @@ ${FAVICON_LINK}${canonicalLink(head)}
   .site-footer a { color: var(--teal); }
   .sms-once { font-size: 0.95rem; }
   .operator { font-size: 0.9rem; color: var(--screen-muted); }
+  .public-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 8px; }
+  .public-top h1 { margin: 0; flex: 1; }
+  .public-top .my-bookings { flex-shrink: 0; font-size: 0.95rem; font-weight: 600; color: var(--teal); text-decoration: none; padding-top: 4px; }
+  .booking-closed-banner { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-bottom: 14px; }
+  .pack-card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; margin-bottom: 10px; }
+  .pack-card .save { color: var(--teal); font-weight: 600; }
 </style>
 </head>
 <body>
-<div class="phone"><div class="screen">${body.value}${siteFooter().value}</div></div>
+<div class="phone"><div class="screen">${body.value}${siteFooter(head.coachMessage).value}</div></div>
 </body>
 </html>`;
 }
@@ -862,6 +1020,51 @@ export const LANDING_CSS = `
   }
   .faq dd:last-child { border-bottom: 0; margin-bottom: 0; padding-bottom: 0; }
   .price p { color: var(--muted); margin: 0; }
+  .landing-close {
+    margin-top: 36px;
+    max-width: 36rem;
+    text-align: center;
+  }
+  .landing-close p {
+    margin: 0 0 12px;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--ink);
+  }
+  .landing-close .action { margin-top: 0; }
+  .landing-mobile-cta {
+    display: none;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 25;
+    padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px));
+    background: var(--page);
+    border-top: 1px solid var(--line);
+    box-shadow: 0 -4px 16px rgba(44, 33, 28, 0.08);
+  }
+  .landing-mobile-cta.is-visible { display: block; }
+  .landing-mobile-cta a {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    min-height: 54px;
+    margin: 0;
+    background: var(--teal);
+    color: var(--teal-ink);
+    border-radius: 999px;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 1rem;
+    font-weight: 700;
+    text-decoration: none;
+    line-height: 1.2;
+  }
+  body.landing-mobile-cta-on {
+    padding-bottom: calc(74px + env(safe-area-inset-bottom, 0px));
+  }
   .stage {
     display: flex;
     flex-direction: column;
@@ -955,6 +1158,8 @@ export const LANDING_CSS = `
   footer.colophon p { margin: 0 0 8px; }
   footer.colophon a { color: var(--teal); }
   @media (min-width: 900px) {
+    .landing-mobile-cta { display: none !important; }
+    body.landing-mobile-cta-on { padding-bottom: 0; }
     .site-nav { display: flex; }
     .site-header .header-cta { display: inline-flex; }
     .site-header-actions { margin-left: 0; }

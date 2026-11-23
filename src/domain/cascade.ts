@@ -784,8 +784,8 @@ async function tellCoachClaimed(db: DbClient, claimed: Claimed, spots: SpotOffer
       ? `${who} took the second group`
       : `${who} is your backup coach, ${claimed.spotsAdded} more ${claimed.spotsAdded === 1 ? 'spot' : 'spots'}`;
   const offered = spots.waitingForMorning
-    ? ' Waitlisted parents are offered the spots from 8am.'
-    : ` ${spots.offered} waitlisted ${spots.offered === 1 ? 'parent was' : 'parents were'} offered a spot.`;
+    ? ' Waitlisted clients are offered the spots from 8am.'
+    : ` ${spots.offered} waitlisted ${spots.offered === 1 ? 'client was' : 'clients were'} offered a spot.`;
   await notifyCoach(db, info, 'overflow-claimed', {
     text: keepTail(`Coachatron: ${compactWhen(info)} ${info.name}`, `: ${job}.${offered}`),
     subject: claimed.kind === 'second_group' ? `${who} took the second group` : `${who} is your backup coach`,
