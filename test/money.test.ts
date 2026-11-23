@@ -146,13 +146,17 @@ test('money screen shows correct summaries after various bookings', async () => 
 
     const htmlText = await moneyRes.text();
     assert.ok(htmlText.includes('This week'));
-    assert.ok(htmlText.includes('3 sessions booked'));
+    assert.ok(htmlText.includes('Sessions booked:'));
     assert.ok(htmlText.includes('$105.00')); // 3 x $35
-    assert.ok(htmlText.includes('Collected (gross): $105.00'));
-    assert.ok(htmlText.includes('Credits'));
-    assert.ok(htmlText.includes('9 credits outstanding'));
-    assert.ok(htmlText.includes('Next week'));
-    assert.ok(htmlText.includes('3 sessions projected'));
+    assert.ok(htmlText.includes('Paid by parents:'));
+    assert.ok(htmlText.includes('You receive, after fees:'));
+    assert.ok(htmlText.includes('Session credits held by parents'));
+    assert.ok(htmlText.includes('<p><strong>9</strong></p>'));
+    assert.ok(htmlText.includes('If every spot next week is booked'));
+    assert.ok(htmlText.includes('3 sessions</strong>'));
+    assert.ok(htmlText.includes('<title>Payments — Coachatron</title>'));
+    assert.doesNotMatch(htmlText, /id="page-link"/);
+    assert.doesNotMatch(htmlText, /Back to schedule/);
 
     // SPEC.md §7.4 / §5 (P5): "There is no payout screen, no balance, no
     // withdrawal." This is the one acceptance item that isn't a number to

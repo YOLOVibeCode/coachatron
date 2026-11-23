@@ -163,7 +163,7 @@ the solo coach. They return only when a paying customer is blocked without them.
    cannot take a card).
    *(Updated 2026-11-03: Stripe Connect through the relay, not Square OAuth.
    Until the coach's account can take charges, each paid session on their
-   page says Booking is not open yet and shows Not open in place of Book; free sessions book as
+   page says "Booking opens soon" in place of Book; free sessions book as
    usual, and families who hold session credits can still book with them.
    Publishing texts the coach their page link and, until payments work, a
    payments link (one use, within 7 days) that signs them in on Money. One

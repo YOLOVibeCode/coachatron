@@ -166,14 +166,12 @@ test('docs give the spot hold and the sign-in code rules the app uses', () => {
 });
 
 test('docs use the words the app shows while booking is closed and for payments kept for the coach', () => {
-  const closedList = /Booking\s+is\s+not\s+open\s+yet/;
-  const closedPage = /Booking\s+is\s+not\s+open\s+yet/;
+  const closed = /Booking\s+opens\s+soon/;
   const kept = /Payments\s+to\s+resolve/;
-  assert.match(read('src/routes/public.ts'), closedList, 'the public page still says booking is closed');
-  assert.match(read('src/routes/public.ts'), closedPage, 'standalone closed booking pages match');
+  assert.match(read('src/routes/public.ts'), closed, 'the public page still says it');
   assert.match(read('src/routes/coach.ts'), kept, 'the Money screen still says it');
   for (const doc of ['SPEC.md', 'README.md', 'docs/PLATFORM.md', 'docs/legal/marketplace-terms.md', 'docs/legal/parent-terms.md']) {
-    assert.match(read(doc), closedList, `${doc} says booking is closed once the coach can take payments`);
+    assert.match(read(doc), closed, `${doc} says booking opens once the coach can take payments`);
   }
   for (const doc of ['SPEC.md', 'README.md', 'docs/PLATFORM.md', 'docs/legal/marketplace-terms.md']) {
     assert.match(read(doc), kept, `${doc} names the list of payments kept for the coach`);

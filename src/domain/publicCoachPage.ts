@@ -1,8 +1,5 @@
 import type { DbClient } from '../db/client.js';
 import type { CoachRow } from './auth.js';
-import { atPlace, placeLine } from './locations.js';
-import { takesSpotSql, type PackageRow } from './pricing.js';
-import { getBookingPolicy, type BookingPolicy } from './policy.js';
 import { html, raw, type SafeHtml } from '../lib/html.js';
 import {
   formatCoachDollars,
@@ -11,7 +8,94 @@ import {
   formatPublicSessionWhen,
   formatTimeZoneShort,
 } from '../lib/time.js';
+import { placeLine } from './locations.js';
+import type { BookingPolicy } from './policy.js';
+import { takesSpotSql, type PackageRow, type PlanRow } from './pricing.js';
 import { addCalendarDays, zonedParts, zonedTimeToUtc } from './scheduling.js';
+
+export async function minDropInPriceCents(db: DbClient, coachId: number): Promise<number | null> {
+  const result = await db.query<{ min: number | null }>(
+    'select min(price_cents)::int as min from session_type where coach_id = $1 and active = true and price_cents > 0',
+    [coachId],
+  );
+  const min = result.rows[0]?.min;
+  return min !== null && min !== undefined && min > 0 ? min : null;
+}
+
+export function perSessionCents(priceCents: number, credits: number): number {
+  return Math.floor(priceCents / Math.max(1, credits));
+}
+
+/** Whole dollars saved per session when a pack beats drop-in, or null. */
+export function packSavingsCents(perSession: number, dropInCents: number | null): number | null {
+  if (dropInCents === null || perSession >= dropInCents) return null;
+  return dropInCents - perSession;
+}
+
+export function publicCancelSentence(windowHours: number): string {
+  if (windowHours === 0) return 'Cancel free any time before the session starts.';
+  return `Cancel free up to ${windowHours} ${windowHours === 1 ? 'hour' : 'hours'} before.`;
+}
+
+export function publicChildrenLine(childrenPerBooking: number): string | null {
+  if (childrenPerBooking <= 1) return null;
+  return `Up to ${childrenPerBooking} people per booking.`;
+}
+
+export function packSaveLabel(savingsCents: number | null): SafeHtml {
+  if (savingsCents === null || savingsCents <= 0) return raw('');
+  return html` <span class="save">Save ${formatCoachDollars(savingsCents)} per session</span>`;
+}
+
+export function renderSessionPackSection(
+  packages: PackageRow[],
+  plans: PlanRow[],
+  dropInCents: number | null,
+): SafeHtml {
+  if (packages.length === 0 && plans.length === 0) return raw('');
+  const rows = [
+    ...packages.map((p) => {
+      const per = perSessionCents(p.price_cents, p.credits);
+      const expiry = p.expires_days
+        ? ` · Use within ${p.expires_days} days`
+        : ' · Credits do not expire';
+      return html`<div class="pack-card">
+        <strong>${p.name}</strong>
+        <p class="muted">${p.credits} ${p.credits === 1 ? 'session' : 'sessions'} · ${formatCoachDollars(p.price_cents)}${expiry}${packSaveLabel(packSavingsCents(per, dropInCents))}</p>
+      </div>`;
+    }),
+    ...plans.map((pl) => {
+      const per = perSessionCents(pl.price_cents, pl.credits_per_month);
+      return html`<div class="pack-card">
+        <strong>${pl.name}</strong>
+        <p class="muted">${pl.credits_per_month} ${pl.credits_per_month === 1 ? 'session' : 'sessions'} · ${formatCoachDollars(pl.price_cents)} · Credits do not expire${packSaveLabel(packSavingsCents(per, dropInCents))}</p>
+      </div>`;
+    }),
+  ];
+  return html`<h2>Session packs</h2>
+    <p class="muted">Pay once, book them one at a time.</p>
+    ${rows}`;
+}
+
+export function renderPublicPolicyLines(
+  policy: BookingPolicy,
+  showCancel: boolean,
+): SafeHtml {
+  const lines: SafeHtml[] = [];
+  if (showCancel) {
+    lines.push(html`<p class="muted policy-line">${publicCancelSentence(policy.cancelWindowHours)}</p>`);
+  }
+  const children = publicChildrenLine(policy.childrenPerBooking);
+  if (children) {
+    lines.push(html`<p class="muted policy-line">${children}</p>`);
+  }
+  if (lines.length === 0) return raw('');
+  return html`${lines}`;
+}
+
+export function coachMessageHead(handle: string, name: string) {
+  return { coachMessage: { handle, name } };
+}
 
 export type PublicSessionTypeFilter = 'all' | 'one_on_one' | 'group';
 
@@ -116,35 +200,6 @@ export async function coachHasUpcomingPaidSessions(db: DbClient, coachId: number
   return result.rows[0]?.exists === true;
 }
 
-export async function coachMinDropInCents(db: DbClient, coachId: number): Promise<number | null> {
-  const result = await db.query<{ min: string | null }>(
-    `select min(price_cents)::text as min from session_type where coach_id = $1 and active = true and price_cents > 0`,
-    [coachId],
-  );
-  const v = result.rows[0]?.min;
-  return v === null || v === undefined ? null : Number(v);
-}
-
-export function packageSaveCents(pkg: PackageRow, minDropInCents: number | null): number | null {
-  if (minDropInCents === null) return null;
-  const full = pkg.credits * minDropInCents;
-  const save = full - pkg.price_cents;
-  return save > 0 ? save : null;
-}
-
-function cancelGivesParentLine(policy: Pick<BookingPolicy, 'cancelGives'>): string {
-  return policy.cancelGives === 'refund' ? 'a paid drop-in is refunded to their card' : 'a paid drop-in becomes a session credit';
-}
-
-export function publicCancelSummary(policy: BookingPolicy): string {
-  const hours = policy.cancelWindowHours;
-  const window =
-    hours === 0
-      ? 'before a session starts'
-      : `more than ${hours} ${hours === 1 ? 'hour' : 'hours'} before a session`;
-  return `Cancel ${window} and ${cancelGivesParentLine(policy)}. Inside that window, the booking counts as a no-show.`;
-}
-
 export function spotLabel(capacity: number, spotsLeft: number): string {
   if (spotsLeft <= 0) return 'Full';
   if (capacity === 1) return 'Available';
@@ -169,20 +224,21 @@ export interface RenderCoachPublicPageArgs {
   coach: CoachRow;
   sessions: PublicSessionRow[];
   packages: PackageRow[];
+  plans: PlanRow[];
   policy: BookingPolicy;
-  minDropInCents: number | null;
+  dropInCents: number | null;
   paymentsOpen: boolean;
   creditsWork: boolean;
   bookQuery: string;
   pageQuery: PublicPageQuery;
   fromToken: string | null;
-  needsPaymentAny: boolean;
-  askQuestionHref: string;
+  /** Whether any upcoming session is paid, in any week. */
+  hasPaidSessions: boolean;
 }
 
-function priceDetail(session: PublicSessionRow, perPerson: boolean): string {
+function priceDetail(session: PublicSessionRow): string {
   const price = formatCoachDollars(session.price_cents);
-  return perPerson && session.capacity > 1 ? `${price} per person` : price;
+  return session.capacity > 1 ? `${price} per person` : price;
 }
 
 export function renderCoachPublicPage(args: RenderCoachPublicPageArgs): SafeHtml {
@@ -190,18 +246,16 @@ export function renderCoachPublicPage(args: RenderCoachPublicPageArgs): SafeHtml
     coach,
     sessions,
     packages,
+    plans,
     policy,
-    minDropInCents,
+    dropInCents,
     paymentsOpen,
     creditsWork,
     bookQuery,
     pageQuery,
     fromToken,
-    needsPaymentAny,
-    askQuestionHref,
+    hasPaidSessions,
   } = args;
-  const closedPaid = !paymentsOpen && needsPaymentAny;
-  const qSuffix = publicPageQueryString(pageQuery.week, pageQuery.type, fromToken);
   const handle = coach.handle;
 
   const filterLinks = (active: PublicSessionTypeFilter, label: string) => {
@@ -228,27 +282,25 @@ export function renderCoachPublicPage(args: RenderCoachPublicPageArgs): SafeHtml
             ${daySessions.map((s) => {
               const spotsLeft = s.capacity - Number(s.booked);
               const paid = s.price_cents > 0;
-              const canBook = spotsLeft > 0 && (paymentsOpen || !paid);
-              const canBookWithCredits = spotsLeft > 0 && paid && !paymentsOpen && creditsWork;
-              const waitlist = spotsLeft <= 0 && (paymentsOpen || !paid || creditsWork);
               const place = s.location_text ? placeLine(s.location_text, s.location_address) : coach.sessions_place;
               const metaLeft = [formatDurationMin(s.duration_min), s.name, place].filter(Boolean).join(' · ');
               return html`<div class="card">
                 <strong>${formatPublicSessionWhen(s.starts_at_utc, s.tz)}</strong>
                 <div class="meta">
                   <span>${metaLeft}</span>
-                  <span>${spotLabel(s.capacity, spotsLeft)} · ${priceDetail(s, s.capacity > 1)}</span>
+                  <span>${spotLabel(s.capacity, spotsLeft)} · ${priceDetail(s)}</span>
                 </div>
                 ${s.listing_note ? html`<p class="muted">${s.listing_note}</p>` : raw('')}
-                ${waitlist
-                  ? html`<a class="action ghost" href="/c/${handle}/sessions/${s.id}/book${bookQuery}">Join the waitlist</a>`
-                  : canBook
+                ${spotsLeft <= 0
+                  ? paymentsOpen || !paid || creditsWork
+                    ? html`<a class="action ghost" href="/c/${handle}/sessions/${s.id}/book${bookQuery}">Join the waitlist</a>`
+                    : raw('')
+                  : paymentsOpen || !paid
                     ? html`<a class="action" href="/c/${handle}/sessions/${s.id}/book${bookQuery}">Book</a>`
-                    : canBookWithCredits
-                      ? html`<p class="muted"><a href="/c/${handle}/sessions/${s.id}/book${bookQuery}">Have session credits? Book with them</a></p>`
-                    : paid && !paymentsOpen
-                      ? html`<button type="button" class="action disabled" disabled>Not open</button>`
-                      : raw('')}
+                    : html`<button type="button" class="action ghost" disabled>Not open</button>
+                        ${creditsWork
+                          ? html`<p class="muted"><a href="/c/${handle}/sessions/${s.id}/book${bookQuery}">Have session credits? Book with them</a></p>`
+                          : raw('')}`}
               </div>`;
             })}
           </section>`;
@@ -266,46 +318,27 @@ export function renderCoachPublicPage(args: RenderCoachPublicPageArgs): SafeHtml
     html`<p class="muted">Times are in ${tzLabel} (${coach.tz.replace(/_/g, ' ')}).</p>`,
   ];
 
-  const packsSection =
-    packages.length === 0
-      ? raw('')
-      : html`<h2>Session packs</h2>
-          <p class="muted">Pay once, book them one at a time.</p>
-          ${packages.map((p) => {
-            const save = packageSaveCents(p, minDropInCents);
-            const expiry = p.expires_days ? ` · Use within ${p.expires_days} days` : '';
-            return html`<div class="card">
-              <strong>${p.name}</strong>
-              <div class="meta">
-                <span>${p.credits} sessions</span>
-                <span>${formatCoachDollars(p.price_cents)}${save !== null ? ` · Save ${formatCoachDollars(save)}` : ''}${expiry}</span>
-              </div>
-            </div>`;
-          })}`;
-
-  return html`${closedPaid
-      ? html`<div class="card booking-closed-banner">
+  return html`<div class="public-top">
+      <h1>${coach.name}</h1>
+      <a class="my-bookings" href="/my">My bookings</a>
+    </div>
+    ${headerExtras}
+    ${!paymentsOpen && hasPaidSessions
+      ? html`<div class="booking-closed-banner">
           <p><strong>Booking is not open yet.</strong> This coach has not turned on payments.</p>
-          <p class="muted"><a href="${askQuestionHref}">Ask a question</a></p>
+          <p class="muted"><a href="/c/${handle}/message">Message ${coach.name}</a></p>
         </div>`
       : raw('')}
-    <h1>${coach.name}</h1>
-    ${headerExtras}
     <nav class="btn-row public-filters" aria-label="Session type">
       ${filterLinks('all', 'All')}
       ${filterLinks('one_on_one', 'One-on-one')}
       ${filterLinks('group', 'Group')}
     </nav>
-  <h2 class="eyebrow">Open sessions</h2>
+    <h2 class="eyebrow">Open sessions</h2>
     <p class="muted">No account needed. Book a time, then pay on the secure checkout page.</p>
     ${sessionBlocks}
     ${weekNav}
-    ${packsSection}
-    <h2>Cancellation</h2>
-    <p class="muted">${publicCancelSummary(policy)}</p>
+    ${renderSessionPackSection(packages, plans, dropInCents)}
+    ${renderPublicPolicyLines(policy, hasPaidSessions)}
     <p class="muted">Booked before? <a href="/my">See all your sessions</a></p>`;
-}
-
-export async function loadPublicPagePolicy(db: DbClient, coachId: number): Promise<BookingPolicy> {
-  return getBookingPolicy(db, coachId);
 }

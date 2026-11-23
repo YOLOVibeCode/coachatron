@@ -178,12 +178,11 @@ SPEC.md §8.1.
   `seller.updated` and `seller.disconnected` events, and by the tick, which
   asks about a coach still setting up at most every 15 minutes (for 30 days
   after they started) in case an event was missed.
-- **Booking is not open yet.** Until charges work, `/c/:handle` says booking is
-  not open (the coach has not turned on payments), each paid session shows a
-  disabled **Not open** control instead of Book, checkout offers only session
-  credits, and nothing sends a parent to the payment page. Free sessions book
-  as usual, and families who hold session credits with the coach can still
-  book with them.
+- **Booking opens soon.** Until charges work, each paid session on
+  `/c/:handle` says "Booking opens soon" in place of Book, checkout offers
+  only session credits, and nothing sends a parent to the payment page. Free
+  sessions book as usual, and families who hold session credits with the
+  coach can still book with them.
 - **Texts to the coach** (each one segment, only to a mobile with the texts
   box ticked): on the first publish, the page link and, until charges work, a
   payments link `/p/:token` (one use, 7 days) that signs the coach in on

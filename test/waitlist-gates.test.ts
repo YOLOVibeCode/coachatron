@@ -63,8 +63,8 @@ test('while the coach cannot take payments, the waitlist is open only to a famil
       const refused = await post(base, path, { athlete_name: 'Cy', contact_phone: '5550006102', sms_consent: '1' });
       assert.equal(refused.status, 409, 'the booking form\'s status');
       const html = await refused.text();
-      assert.match(html, /<h1>Booking is not open yet<\/h1>/);
-      assert.match(html, /has not turned on payments/);
+      assert.match(html, /<h1>Booking opens soon<\/h1>/);
+      assert.match(html, /is still setting up payments/);
       assert.deepEqual(await line(db, seed.sessionId), []);
       assert.equal(await consentSource(db, '+15550006102'), null, 'nothing was recorded');
 

@@ -345,16 +345,15 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
 
         await step('4. until payments work, the coach page shows "Not open" and no Pay', async () => {
           const pubHtml = await (await get(`/c/${handle}`)).text();
-          assert.match(visible(pubHtml), /Booking is not open yet/);
-          assert.match(visible(pubHtml), /has not turned on payments/);
           const cards = sessionCards(pubHtml);
           assert.ok(cards.length >= 3);
+          assert.match(visible(pubHtml), /Booking is not open yet/);
           assert.ok(
             cards.every((c) => c.notOpen && c.book === null),
             `every priced session shows Not open and has no Book link: ${JSON.stringify(cards.slice(0, 3))}`,
           );
           const pubText = visible(pubHtml);
-          assert.doesNotMatch(pubText, />\s*Book\s*</, 'no Book action on the list');
+          assert.doesNotMatch(pubText, /\bPay\b/, 'nothing offers to pay');
           assert.doesNotMatch(pubText, /Book with them/, 'no family holds credits, so there is no credits link either');
 
           const group = await db.query<{ id: number }>(
@@ -365,14 +364,14 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           const bookPage = await get(bookPath);
           assert.equal(bookPage.status, 200);
           const bookHtml = await bookPage.text();
-          assert.match(visible(bookHtml), /Booking is not open yet/);
           assert.match(visible(bookHtml), /has not turned on payments/);
+          assert.match(visible(bookHtml), /still setting up payments/);
           assert.doesNotMatch(bookHtml, /name="contact_phone"/, 'no booking form');
           assert.doesNotMatch(bookHtml, new RegExp(escapeRegExp(relay.url)), 'no link to the payment page');
 
           const tried = await postForm(bookPath, { athlete_name: 'Sam Lee', contact_phone: '(512) 555-0142' });
           assert.equal(tried.status, 409, 'a booking posted anyway is turned away');
-          assert.match(visible(await tried.text()), /Booking is not open yet/);
+          assert.match(visible(await tried.text()), /Booking opens soon/);
           assert.equal(await count('booking'), 0, 'and starts no booking');
           assert.deepEqual(relay.buyLinks, [], 'no parent reached a payment page');
         });
@@ -445,9 +444,9 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
 
           const after = visible(await (await get('/app/money?seller=connected', moneyCookie)).text());
           assert.match(after, /Payments are connected\./, 'the return notice');
-          assert.match(after, /Payments connected\. Athletes pay you directly\. Coachatron keeps 5% of each payment\./);
-          assert.match(after, /Payouts go to your bank account\./);
+          assert.match(after, /Paid by parents:/);
           assert.doesNotMatch(after, /marketplace terms/, 'the terms are not asked again');
+          assert.doesNotMatch(after, /id="page-link"/);
 
           assert.equal(textsToCoach().length, 3, 'coming back from onboarding does not text again');
 
