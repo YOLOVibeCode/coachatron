@@ -5,6 +5,7 @@ import { withServer } from './helpers/server.js';
 import { withRelay } from './helpers/relay.js';
 import { seedBookedSession, seedCoachWithSession } from './helpers/fixtures.js';
 import { createCoachSession } from '../src/domain/auth.js';
+import { createWeeklySlots } from '../src/domain/scheduling.js';
 
 function form(body: Record<string, string>, cookie?: string) {
   return {
@@ -104,5 +105,28 @@ test('delete retires an empty type but refuses when upcoming sessions are booked
       const active = await db.query<{ active: boolean }>('select active from session_type where id = $1', [typeId]);
       assert.equal(active.rows[0].active, false);
     });
+  });
+});
+
+test('deleting a type stops its weekly times and cancels its empty upcoming sessions', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db);
+    const cookie = `cx_session=${await createCoachSession(db, seed.coach.id)}`;
+    await createWeeklySlots(db, seed.sessionTypeId, seed.coach.tz, [{ weekday: 3, timeLocal: '17:00' }], new Date());
+    await withServer(async (base) => {
+      const removed = await fetch(`${base}/app/session-types/${seed.sessionTypeId}/delete`, form({}, cookie));
+      assert.equal(removed.status, 303);
+    });
+    const slots = await db.query<{ n: string }>(
+      'select count(*)::text as n from weekly_slot where session_type_id = $1 and active',
+      [seed.sessionTypeId],
+    );
+    assert.equal(slots.rows[0].n, '0');
+    const bookable = await db.query<{ n: string }>(
+      "select count(*)::text as n from session where session_type_id = $1 and status = 'scheduled' and starts_at_utc > now()",
+      [seed.sessionTypeId],
+    );
+    assert.equal(bookable.rows[0].n, '0', 'no upcoming session of a removed type is left to book');
   });
 });

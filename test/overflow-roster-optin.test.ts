@@ -134,7 +134,7 @@ test('the opt-in link shows who is asking and records consent only with the box 
       assert.match(body, new RegExp(`••••${member.phone.slice(-4)}`));
       assert.doesNotMatch(body, new RegExp(member.phone.replace('+', '\\+')), 'the full number is not shown');
       assert.match(body, /name="sms_consent"/);
-      assert.doesNotMatch(body, /checked/);
+      assert.doesNotMatch(body, /<input[^>]*\bchecked\b/);
 
       const unchecked = await fetch(`${base}/offer/${token}`, form({ action: 'optin' }));
       assert.equal(unchecked.status, 422);
