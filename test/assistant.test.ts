@@ -144,8 +144,10 @@ test('model path: fake intent confirms then Yes on the schedule screen', async (
 
         const page = await fetch(`${base}/app/schedule`, { headers: { cookie: cookieFor(token) } });
         const html = await page.text();
-        assert.match(html, /Text the week/);
-        assert.match(html, /placeholder="Text the week/);
+        assert.match(html, /schedule-edit/);
+        assert.match(html, /Edit schedule/);
+        assert.match(html, /placeholder="Cancel tomorrow, or add Saturday 9am"/);
+        assert.doesNotMatch(html, /<details class="schedule-edit" open/);
         assert.match(html, /Send/);
         assert.match(html, /Cancel /);
         assert.match(html, /name="answer" value="yes"/);

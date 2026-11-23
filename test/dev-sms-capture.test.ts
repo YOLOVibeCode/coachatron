@@ -17,10 +17,10 @@ async function withAppEnv(value: string | undefined, fn: () => Promise<void>): P
   }
 }
 
-function post(base: string, path: string, body: Record<string, string>): Promise<Response> {
+function post(base: string, path: string, body: Record<string, string>, cookie?: string): Promise<Response> {
   return fetch(`${base}${path}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...(cookie ? { cookie } : {}) },
     body: JSON.stringify(body),
     redirect: 'manual',
   });
@@ -54,7 +54,10 @@ test('with RELAY_APP_ENV=dev, every text is marked for capture and any number ca
         assert.ok(sent);
         assert.equal(sent.appEnv, 'dev');
         const code = /code is (\d{6})/.exec(sent.body)![1];
-        const done = await post(base, '/signin/verify', { to: '+639171234567', code, name: 'Acel Tester', tz: 'Asia/Manila' });
+        const verify = await post(base, '/signin/verify', { to: '+639171234567', code });
+        assert.equal(verify.status, 303);
+        const pending = verify.headers.getSetCookie?.().find((c) => c.startsWith('cx_signin='))?.split(';')[0];
+        const done = await post(base, '/signin/profile', { name: 'Acel Tester', tz: 'Asia/Manila' }, pending);
         assert.equal(done.status, 303);
         assert.deepEqual(await coachPhones(db), ['+639171234567']);
       });

@@ -126,11 +126,11 @@ test('in production a coach whose payment account is a test one cannot open book
 
       await withEnv(PRODUCTION, async () => {
         const page = await publicPage();
-        assert.match(page, /Booking opens soon/);
+        assert.match(page, /Booking is not open yet/);
         assert.doesNotMatch(page, />Book</);
         assert.equal((await bookForm()).status, 409);
-        const money = await (await fetch(`${base}/app/money`, { headers: { cookie } })).text();
-        assert.match(money, /takes test payments only, so parents cannot book paid sessions yet/);
+        const money = await (await fetch(`${base}/app/payments`, { headers: { cookie } })).text();
+        assert.match(money, /takes test payments only, so clients cannot book paid sessions yet/);
       });
       const row = await db.query<{ test_mode: boolean | null }>('select test_mode from coach_payments where coach_id = $1', [seed.coach.id]);
       assert.equal(row.rows[0].test_mode, true, 'learned from the relay');
@@ -146,7 +146,7 @@ test('in production a coach whose payment account is a test one cannot open book
       await withEnv(PRODUCTION, async () => {
         assert.equal((await postSellerEvent(base, { sellerKey: key, chargesEnabled: true, mode: 'live' })).status, 200);
         assert.match(await publicPage(), />Book</);
-        const money = await (await fetch(`${base}/app/money`, { headers: { cookie } })).text();
+        const money = await (await fetch(`${base}/app/payments`, { headers: { cookie } })).text();
         assert.doesNotMatch(money, /test payments only/);
       });
     });

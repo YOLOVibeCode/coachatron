@@ -462,7 +462,7 @@ test('the coach\'s cookie does not open this page, and this cookie does not open
       assert.equal((await sessionsPage(base, mine)).status, 200);
       const value = mine.slice('cx_my='.length);
       for (const cookie of [mine, `cx_session=${value}`]) {
-        for (const path of ['/app/schedule', '/app/money', '/app/roster']) {
+        for (const path of ['/app/schedule', '/app/payments', '/app/roster']) {
           const res = await fetch(`${base}${path}`, { headers: { cookie }, redirect: 'manual' });
           assert.equal(res.status, 303, path);
           assert.equal(res.headers.get('location'), '/signin', path);

@@ -19,7 +19,7 @@ test('coach onboarding: OTP sign-in, session type, weekly schedule, public page'
       const otpRes = await fetch(`${base}/signin/otp`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ phone: '5551234567', sms_consent: '1' }),
+        body: JSON.stringify({ contact: '5551234567', sms_consent: '1' }),
         redirect: 'manual',
       });
       assert.equal(otpRes.status, 303);
@@ -33,21 +33,23 @@ test('coach onboarding: OTP sign-in, session type, weekly schedule, public page'
       assert.ok(codeMatch, `expected a 6-digit code in the SMS body: ${sentSms!.body}`);
       const code = codeMatch![1];
 
-      // 2. Verify the OTP, completing the first-time profile in the same step.
       const verifyRes = await fetch(`${base}/signin/verify`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          phone,
-          code,
-          name: 'Jamie Coach',
-          email: 'jamie@example.com',
-          tz: 'America/Chicago',
-        }),
+        body: JSON.stringify({ to: phone, code }),
         redirect: 'manual',
       });
-      assert.equal(verifyRes.status, 303, 'expected a redirect to /app/schedule on successful verify');
-      const cookie = extractSessionCookie(verifyRes as unknown as Response);
+      assert.equal(verifyRes.status, 303);
+      const pending = verifyRes.headers.getSetCookie?.().find((c) => c.startsWith('cx_signin='))?.split(';')[0];
+      assert.ok(pending);
+      const profileRes = await fetch(`${base}/signin/profile`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie: pending! },
+        body: JSON.stringify({ name: 'Jamie Coach', extra: 'jamie@example.com', tz: 'America/Chicago' }),
+        redirect: 'manual',
+      });
+      assert.equal(profileRes.status, 303, 'expected a redirect to /app/schedule on successful signup');
+      const cookie = extractSessionCookie(profileRes as unknown as Response);
 
       // 3. Create a session type.
       const createTypeRes = await fetch(`${base}/app/session-types`, {
@@ -94,7 +96,7 @@ test('coach onboarding: OTP sign-in, session type, weekly schedule, public page'
       const publicHtml = await publicRes.text();
       assert.match(publicHtml, /Goalkeeper Group/);
       assert.match(publicHtml, /8 spots left/);
-      assert.match(publicHtml, /\$35\.00/);
+      assert.match(publicHtml, /\$35/);
     });
   });
 });
@@ -111,15 +113,22 @@ async function signUp(base: string, relay: { sms: Array<{ to: string; body: stri
   await fetch(`${base}/signin/otp`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ phone: digits, sms_consent: '1' }),
+    body: JSON.stringify({ contact: digits, sms_consent: '1' }),
     redirect: 'manual',
   });
   const phone = `+1${digits}`;
   const code = /code is (\d{6})/.exec(relay.sms.filter((m) => m.to === phone).at(-1)!.body)![1];
-  return fetch(`${base}/signin/verify`, {
+  const verify = await fetch(`${base}/signin/verify`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ phone, code, ...profile }),
+    body: JSON.stringify({ to: phone, code }),
+    redirect: 'manual',
+  });
+  const pending = verify.headers.getSetCookie?.().find((c) => c.startsWith('cx_signin='))?.split(';')[0];
+  return fetch(`${base}/signin/profile`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie: pending ?? '' },
+    body: JSON.stringify(profile),
     redirect: 'manual',
   });
 }
@@ -139,10 +148,9 @@ test('a new coach signs up with just a name; the browser timezone is kept, a bad
   await withRelay(async (relay) => {
     const db = await freshDb();
     await withServer(async (base) => {
-      const form = await (await fetch(`${base}/signin/verify?phone=%2B15550001111`)).text();
+      const form = await (await fetch(`${base}/signin/verify?to=%2B15550001111`)).text();
       assert.match(form, /autocomplete="one-time-code"/);
-      assert.match(form, /name="tz" type="hidden"/);
-      assert.doesNotMatch(form, /IANA/);
+      assert.match(form, /Back to home/);
 
       const denver = await signUp(base, relay, '5550001111', { name: 'Dana Keeper', tz: 'America/Denver' });
       assert.equal(denver.status, 303);

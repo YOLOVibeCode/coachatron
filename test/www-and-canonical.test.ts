@@ -267,7 +267,7 @@ test('the coach\'s screens, pages a private link opens, and pages that are not f
         for (const path of [
           '/app/schedule',
           `/app/sessions/${seed.sessionId}`,
-          '/app/money',
+          '/app/payments',
           `/booking/${token}`,
           `/start/${start}`,
           `/p/${payments}`,

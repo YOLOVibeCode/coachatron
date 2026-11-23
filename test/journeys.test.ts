@@ -40,7 +40,7 @@ test('journey 1: coach signs in, creates a session type, generates a week, gets 
       const otpRes = await fetch(`${base}/signin/otp`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ phone: '5551110001', sms_consent: '1' }),
+        body: JSON.stringify({ contact: '5551110001', sms_consent: '1' }),
         redirect: 'manual',
       });
       assert.equal(otpRes.status, 303);
@@ -54,11 +54,19 @@ test('journey 1: coach signs in, creates a session type, generates a week, gets 
       const verifyRes = await fetch(`${base}/signin/verify`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ phone, code, name: 'Journey Coach', email: 'journey@example.com', tz: 'America/Chicago' }),
+        body: JSON.stringify({ to: phone, code }),
         redirect: 'manual',
       });
-      assert.equal(verifyRes.status, 303, 'sign-in should redirect to /app/schedule');
-      const cookie = extractSessionCookie(verifyRes as unknown as Response);
+      assert.equal(verifyRes.status, 303);
+      const pending = verifyRes.headers.getSetCookie?.().find((c) => c.startsWith('cx_signin='))?.split(';')[0];
+      const profileRes = await fetch(`${base}/signin/profile`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie: pending! },
+        body: JSON.stringify({ name: 'Journey Coach', extra: 'journey@example.com', tz: 'America/Chicago' }),
+        redirect: 'manual',
+      });
+      assert.equal(profileRes.status, 303, 'sign-in should redirect to /app/schedule');
+      const cookie = extractSessionCookie(profileRes as unknown as Response);
 
       const createTypeRes = await fetch(`${base}/app/session-types`, {
         method: 'POST',
@@ -91,7 +99,7 @@ test('journey 1: coach signs in, creates a session type, generates a week, gets 
       assert.equal(publicRes.status, 200);
       const publicHtml = await publicRes.text();
       assert.match(publicHtml, /Goalkeeper Group/);
-      assert.match(publicHtml, /\$35\.00/);
+      assert.match(publicHtml, /\$35/);
     });
   });
 });
@@ -138,7 +146,7 @@ test('journey 2: parent books and pays a drop-in via the fake relay', async () =
 
       // The coach's Money screen reflects the collection (SPEC.md example).
       const token = await (await import('../src/domain/auth.js')).createCoachSession(db, seed.coach.id);
-      const moneyRes = await fetch(`${base}/app/money`, { headers: { cookie: `cx_session=${token}` } });
+      const moneyRes = await fetch(`${base}/app/payments`, { headers: { cookie: `cx_session=${token}` } });
       assert.equal(moneyRes.status, 200);
       const moneyHtml = await moneyRes.text();
       assert.match(moneyHtml, /\$35\.00/);
@@ -216,18 +224,25 @@ test('journey 4: a new coach talks their week in and publishes it, three decisio
         await fetch(`${base}/signin/otp`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ phone: '5550004444', sms_consent: '1' }),
+          body: JSON.stringify({ contact: '5550004444', sms_consent: '1' }),
           redirect: 'manual',
         });
         const code = /code is (\d{6})/.exec(relay.sms.find((m) => m.to === '+15550004444')!.body)![1];
         const verify = await fetch(`${base}/signin/verify`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ phone: '+15550004444', code, name: 'Dana Keeper', tz: 'America/Chicago' }),
+          body: JSON.stringify({ to: '+15550004444', code }),
           redirect: 'manual',
         });
-        const cookie = extractSessionCookie(verify as unknown as Response);
-        assert.match(await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text(), /Tell me your week/);
+        const pending = verify.headers.getSetCookie?.().find((c) => c.startsWith('cx_signin='))?.split(';')[0];
+        const profile = await fetch(`${base}/signin/profile`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', cookie: pending! },
+          body: JSON.stringify({ name: 'Dana Keeper', tz: 'America/Chicago' }),
+          redirect: 'manual',
+        });
+        const cookie = extractSessionCookie(profile as unknown as Response);
+        assert.match(await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text(), /Edit schedule/);
 
         // Decision 2: say the week, then "Set it up".
         await fetch(`${base}/app/setup`, {

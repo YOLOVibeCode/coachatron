@@ -14,7 +14,13 @@ import {
 import { consumeStartLink, getOpenStartLink, reopenStartLink } from '../domain/startLink.js';
 import { clientKey, START_BOX_LIMITS, takeRequest } from '../domain/requestLimits.js';
 import { handleSetupMessage } from '../domain/setup.js';
-import { html, landingPage, page, raw, smsConsentCheckbox } from '../lib/html.js';
+import { html, landingPage, landingSmsDisclosure, page, raw, smsConsentCheckbox } from '../lib/html.js';
+import {
+  COPY_SMS_NUMBER_SCRIPT,
+  LANDING_PREVIEW_SCRIPT,
+  LANDING_WEEK_EXAMPLE,
+  renderLandingPhonePreview,
+} from '../lib/landingPreview.js';
 import { recordConsent } from '../domain/sms-consent.js';
 import { clearCookie, serializeCookie } from '../lib/cookies.js';
 import {
@@ -31,88 +37,176 @@ export const landingRouter = Router();
 
 const TITLE = 'Say your week. Start taking bookings.';
 const DESCRIPTION =
-  'Type it or talk it — what you coach, how long, how many, the price, your days. Get a link parents book and pay on. About five minutes, on your phone.';
+  'Tell us your week in plain words. You get a link clients can book and pay on, in about five minutes, on your phone.';
 // Every time says am or pm: a bare hour is read as pm (src/domain/setup.ts),
 // so "Saturday at 9" would mean 9pm.
-const WEEK_EXAMPLE =
-  'Tuesdays and Thursdays at 6pm, an hour, 8 athletes, $35. Privates Saturday at 9am, 45 minutes, $70. 10-pack for $300.';
+const WEEK_EXAMPLE = LANDING_WEEK_EXAMPLE;
 
 function field(body: unknown, key: string): string {
   const value = (body as Record<string, unknown> | undefined)?.[key];
   return typeof value === 'string' ? value.trim() : '';
 }
 
-function displaySmsNumber(raw: string): { href: string; label: string } | null {
+function displaySmsNumber(raw: string): { href: string; label: string; e164: string } | null {
   const phone = normalizePhone(raw);
   if (!phone) return null;
   const label =
     phone.startsWith('+1') && phone.length === 12
       ? `(${phone.slice(2, 5)}) ${phone.slice(5, 8)}-${phone.slice(8)}`
       : phone;
-  return { href: `sms:${phone}`, label };
+  return { href: `sms:${phone}`, label, e164: phone };
 }
+
+const VOICE_SCRIPT = raw(`<script>(function(){
+var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+var btn=document.getElementById("week-voice");
+var ta=document.getElementById("week");
+var status=document.getElementById("week-voice-status");
+if(!btn||!ta)return;
+if(!SR){btn.hidden=true;if(status)status.textContent="Voice isn't available here. You can type it instead.";return;}
+var rec=new SR();rec.continuous=true;rec.interimResults=true;var listening=false;
+btn.addEventListener("click",function(){if(listening){rec.stop();return;}try{rec.start();}catch(e){btn.hidden=true;if(status)status.textContent="Voice isn't available here. You can type it instead.";}});
+rec.onstart=function(){listening=true;btn.setAttribute("aria-pressed","true");if(status)status.textContent="Listening… tap to stop";};
+rec.onend=function(){listening=false;btn.setAttribute("aria-pressed","false");if(status&&status.textContent==="Listening… tap to stop")status.textContent="";};
+rec.onerror=function(){listening=false;btn.setAttribute("aria-pressed","false");btn.hidden=true;if(status)status.textContent="Voice isn't available here. You can type it instead.";};
+rec.onresult=function(ev){var chunk="";for(var i=ev.resultIndex;i<ev.results.length;i++)chunk+=ev.results[i][0].transcript;if(chunk){var base=ta.value;ta.value=base+(base&&!/\\s$/.test(base)?" ":"")+chunk;}};
+})();</script>`);
+
+const MOBILE_CTA_SCRIPT = raw(`<script>(function(){
+var mobile=window.matchMedia("(max-width: 899px)");
+var cta=document.getElementById("landing-mobile-cta");
+var anchor=document.getElementById("week-cta");
+var week=document.getElementById("week");
+if(!cta||!anchor)return;
+var heroInView=true;
+var keyboardOpen=false;
+function setVisible(on){
+  cta.classList.toggle("is-visible",on);
+  cta.setAttribute("aria-hidden",on?"false":"true");
+  document.body.classList.toggle("landing-mobile-cta-on",on);
+}
+function refreshKeyboard(){
+  var vv=window.visualViewport;
+  keyboardOpen=!!(vv&&vv.height<window.innerHeight-120);
+}
+function update(){
+  if(!mobile.matches||keyboardOpen||document.activeElement===week){
+    setVisible(false);
+    return;
+  }
+  setVisible(!heroInView);
+}
+if("IntersectionObserver"in window){
+  new IntersectionObserver(function(entries){heroInView=entries[0].isIntersecting;update();},{threshold:0}).observe(anchor);
+}else{
+  function scrollFallback(){
+    var r=anchor.getBoundingClientRect();
+    heroInView=r.bottom>0&&r.top<window.innerHeight;
+    update();
+  }
+  window.addEventListener("scroll",scrollFallback,{passive:true});
+  scrollFallback();
+}
+if(window.visualViewport){
+  window.visualViewport.addEventListener("resize",function(){refreshKeyboard();update();});
+}
+if(week){
+  week.addEventListener("focus",function(){setVisible(false);});
+  week.addEventListener("blur",function(){refreshKeyboard();update();});
+}
+mobile.addEventListener("change",update);
+refreshKeyboard();
+update();
+})();</script>`);
 
 function renderLanding(): string {
   const sms = displaySmsNumber(coachatronSmsNumber());
   return landingPage(
     `${TITLE} — Coachatron`,
     DESCRIPTION,
-    html`<div class="wrap">
+    html`<header class="site-header">
+      <div class="site-header-inner">
+        <a class="site-brand" href="/">Coachatron</a>
+        <nav class="site-nav" aria-label="On this page">
+          <a href="#how-it-works">How it works</a>
+          <a href="#pricing">Pricing</a>
+          <a href="#faq">FAQ</a>
+        </nav>
+        <div class="site-header-actions">
+          <a class="header-cta" href="#week">Set it up</a>
+          <a class="btn-outline" href="/signin">Sign in</a>
+        </div>
+      </div>
+    </header>
+    <div class="wrap">
       <div class="hero">
         <div>
-          <div class="kicker">Coachatron</div>
+          <div class="kicker">For coaches and trainers</div>
           <h1>Say your week. Start taking bookings.</h1>
           <p class="lede">${DESCRIPTION}</p>
           <form class="box" method="post" action="/start">
             <label for="week">Your week</label>
-            <textarea id="week" name="text" rows="6" placeholder="${WEEK_EXAMPLE}"></textarea>
-            <p class="hint">Tap the mic on your keyboard and just talk.</p>
-            <button type="submit">Set it up</button>
+            <div class="week-field">
+              <div class="week-input-row">
+                <textarea id="week" name="text" rows="5" placeholder="${WEEK_EXAMPLE}"></textarea>
+                <button type="button" id="week-voice" class="week-voice" aria-label="Talk instead of typing">🎙</button>
+              </div>
+              <p id="week-voice-status" class="voice-status" aria-live="polite"></p>
+            </div>
+            <button type="submit" id="week-cta">Set it up</button>
           </form>
+          <p class="form-alt">Prefer forms? <a href="/signin">Set up with a form instead</a></p>
           ${sms
-            ? html`<p class="sms">Or text it to <a href="${sms.href}">${sms.label}</a>.</p>`
+            ? html`<div class="sms-card">
+                <strong>Or just text it</strong>
+                <a class="sms-number" href="${sms.href}">${sms.label}</a>
+                <input class="sms-number-digits" id="landing-sms-number" type="text" readonly tabindex="-1" value="${sms.e164}" aria-hidden="true" />
+                <button type="button" class="sms-copy" onclick="${COPY_SMS_NUMBER_SCRIPT}">Copy number</button>
+                ${landingSmsDisclosure()}
+              </div>`
             : raw('')}
         </div>
-        <div class="stage" aria-hidden="true">
-          <div class="phone"><div class="screen">
-            <div class="status"><span>9:14</span><span>LTE</span></div>
-            <div class="body">
-              <p class="eyebrow">coachatron.com/c/northfield</p>
-              <h2>Evening sessions</h2>
-              <p class="sub">Tap a time. Pay before you arrive.</p>
-              <div class="card"><strong>Tue 7 Oct · 6:00pm</strong><div class="meta"><span>60 min · Field 3</span><span class="spots">2 spots · $35</span></div></div>
-              <div class="card"><strong>Thu 9 Oct · 6:00pm</strong><div class="meta"><span>60 min · Field 3</span><span class="spots">5 spots · $35</span></div></div>
-              <div class="card"><strong>Sat 11 Oct · 9:00am</strong><div class="meta"><span>60 min · Field 1</span><span class="spots">5 spots · $35</span></div></div>
-              <div class="btn">Book Tue 6:00pm</div>
-            </div>
-          </div></div>
-        </div>
+        ${renderLandingPhonePreview()}
       </div>
-      <section class="steps">
-        <h2>Three steps. Then you're live.</h2>
+      ${LANDING_PREVIEW_SCRIPT}
+      <section class="steps" id="how-it-works">
+        <h2>How it works</h2>
         <ol>
           <li><strong>Say it</strong><span>One box, or one text. What you coach, how long, how many, the price, your days.</span></li>
           <li><strong>Check it</strong><span>We show what we understood and ask about anything missing. We never guess a price. Nothing goes live until you tap Publish.</span></li>
-          <li><strong>Share it</strong><span>Parents pick a time and pay. No app. No account.</span></li>
+          <li><strong>Share it</strong><span>Clients pick a time and pay. No app. No account.</span></li>
         </ol>
       </section>
-      <section class="skip">
-        <h2>What you skip</h2>
-        <ul>
-          <li>No setup wizard.</li>
-          <li>No passwords. Your email or phone is the sign-in.</li>
-          <li>No app to download.</li>
-        </ul>
+      <section class="faq" id="faq">
+        <h2>Questions</h2>
+        <dl>
+          <dt>Is there a setup wizard?</dt>
+          <dd>No. One box, or one text, and you're started.</dd>
+          <dt>Do I need a password?</dt>
+          <dd>No. Your email or phone is the sign-in.</dd>
+          <dt>Do clients need an app?</dt>
+          <dd>No. They pick a time and pay on your link.</dd>
+        </dl>
       </section>
-      <section class="price">
-        <h2>Free to start. 5% when they pay.</h2>
+      <section class="price" id="pricing">
+        <h2>Pricing</h2>
+        <p class="price-lede">Free to start. 5% when they pay.</p>
         <p>Money goes straight to your own account. We never hold it. Card processing is extra, on top.</p>
+      </section>
+      <section class="landing-close" aria-label="Get started">
+        <p>Ready? Say your week.</p>
+        <a class="action" href="#week">Set it up</a>
       </section>
       <footer class="colophon">
         <p>Already set up? <a href="/signin">Sign in</a></p>
         <p>Prefer forms? <a href="/signin">Set up with a form instead</a></p>
       </footer>
-    </div>`,
+    </div>
+    <div class="landing-mobile-cta" id="landing-mobile-cta" aria-hidden="true">
+      <a href="#week">Set it up</a>
+    </div>
+    ${VOICE_SCRIPT}
+    ${MOBILE_CTA_SCRIPT}`,
     { canonicalPath: '/' },
   );
 }

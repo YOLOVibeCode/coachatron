@@ -21,7 +21,7 @@ function connect(base: string, cookie: string, form: Record<string, string>): Pr
 }
 
 async function moneyPage(base: string, cookie: string, query = ''): Promise<string> {
-  const res = await fetch(`${base}/app/money${query}`, { headers: { cookie } });
+  const res = await fetch(`${base}/app/payments${query}`, { headers: { cookie } });
   assert.equal(res.status, 200);
   return res.text();
 }
@@ -69,7 +69,7 @@ test('accepting the terms records the agreement and sends the coach to the relay
           {
             product: 'coachatron',
             sellerKey: coach.handle,
-            returnUrl: 'https://dev.coachatron.com/app/money',
+            returnUrl: 'https://dev.coachatron.com/app/payments',
             email: 'pat@example.com',
             profile: {
               phone: '+15550102030',
@@ -144,10 +144,10 @@ test('once onboarding enables charges the Money screen says payments are connect
       relay.enableCharges('coachatron', coach.handle);
       const page = await moneyPage(base, cookie, '?seller=connected');
       assert.match(page, /Payments are connected\./);
-      assert.match(page, /Athletes pay you directly/);
-      assert.match(page, /Payouts go to your bank account\./);
-      assert.match(page, /Update payout details/);
+      assert.match(page, /Paid by clients:/);
+      assert.match(page, /aria-current="page">Payments<\/a>/);
       assert.doesNotMatch(page, /name="agree"/);
+      assert.doesNotMatch(page, /id="page-link"/);
     });
   });
 });

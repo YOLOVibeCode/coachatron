@@ -7,6 +7,7 @@ import { createCoach, findCoachById } from '../src/domain/auth.js';
 import { createStartLink } from '../src/domain/startLink.js';
 import { runMigrations } from '../src/db/migrate.js';
 import type { DbClient } from '../src/db/client.js';
+import { cookieJar, postVerify, signUpNewCoach } from './helpers/signin.js';
 
 /** An email typed during a phone sign-up is a way to reach the coach, not a
  * way in, until a code sent to it is entered. */
@@ -35,11 +36,13 @@ async function coachOf(db: DbClient, cookie: string): Promise<number> {
 
 /** Joins by text with an optional email; returns the new coach's cookie. */
 async function joinByPhone(base: string, relay: { sms: Array<{ body: string }> }, phone: string, email: string): Promise<string> {
-  await post(base, '/signin/otp', { contact: phone });
+  await post(base, '/signin/otp', { contact: phone, sms_consent: '1' });
   const code = /code is (\d{6})/.exec(relay.sms.at(-1)!.body)![1];
-  const joined = await post(base, '/signin/verify', { to: phone, code, name: 'Pat Coach', email });
+  const joined = await signUpNewCoach(base, phone, code, 'Pat Coach', email ? { extra: email } : { skip: '1' });
   assert.equal(joined.status, 303);
-  return sessionCookie(joined);
+  const header = sessionCookie(joined);
+  assert.ok(header, 'a session cookie');
+  return header!;
 }
 
 async function giveAWeek(db: DbClient, coachId: number): Promise<void> {
@@ -63,12 +66,16 @@ test('an email typed during a phone sign-up does not open that account by email'
 
       await post(base, '/signin/otp', { contact: 'pat@example.com' });
       const code = emailedCode(relay.emails.at(-1)!.subject);
-      const noName = await post(base, '/signin/verify', { to: 'pat@example.com', code });
+      const codeStep = await postVerify(base, 'pat@example.com', code);
+      const jar = cookieJar(codeStep);
+      const noName = await post(base, '/signin/profile', { name: '' }, jar);
       assert.equal(noName.status, 422);
-      assert.match(await noName.text(), /isn&#39;t confirmed on an account yet|isn't confirmed on an account yet/);
-      assert.equal(noName.headers.getSetCookie().length, 0, 'no session for the phone account');
+      assert.match(await noName.text(), /Enter your name/);
+      assert.equal(noName.headers.getSetCookie()?.find((c) => c.startsWith('cx_session=')), undefined, 'no session for the phone account');
 
-      const named = await post(base, '/signin/verify', { to: 'pat@example.com', code, name: 'Email Owner' });
+      await post(base, '/signin/otp', { contact: 'pat@example.com' });
+      const code2 = emailedCode(relay.emails.at(-1)!.subject);
+      const named = await signUpNewCoach(base, 'pat@example.com', code2, 'Email Owner');
       assert.equal(named.status, 303);
       const emailCoach = await coachOf(db, sessionCookie(named));
       assert.notEqual(emailCoach, phoneCoach, 'the person who proved the email gets their own account');
@@ -90,7 +97,8 @@ test('a coach confirms a typed email with an emailed code, then signs in with it
       await giveAWeek(db, coachId);
 
       const schedule = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
-      assert.match(schedule, /Confirm sam@example\.com to sign in with it too/);
+      assert.match(schedule, /Also sign in with your email/);
+      assert.match(schedule, /Confirm sam@example\.com with a code to use it as a second way in/);
       assert.match(schedule, /action="\/app\/email"/);
 
       const sent = await post(base, '/app/email', {}, cookie);
@@ -105,6 +113,7 @@ test('a coach confirms a typed email with an emailed code, then signs in with it
       assert.equal(right.headers.get('location'), '/app/schedule?email=done');
       assert.equal((await findCoachById(db, coachId))?.email_verified, true);
       const done = await (await fetch(`${base}/app/schedule?email=done`, { headers: { cookie } })).text();
+      assert.match(done, /Email confirmed/);
       assert.match(done, /You can sign in with sam@example\.com too/);
       assert.doesNotMatch(done, /action="\/app\/email"/);
 
@@ -124,13 +133,21 @@ test('an email already on another account cannot be typed at a phone sign-up, pr
     await withServer(async (base) => {
       await post(base, '/signin/otp', { contact: '5550404040' });
       const code = /code is (\d{6})/.exec(relay.sms.at(-1)!.body)![1];
-      const proved = await post(base, '/signin/verify', { to: '+15550404040', code, name: 'Other', email: 'Dana@example.com' });
-      assert.equal(proved.status, 422);
-      assert.match(await proved.text(), /That email already has an account\. Sign in with it instead\./);
-      const unproved = await post(base, '/signin/verify', { to: '+15550404040', code, name: 'Other', email: 'lee@example.com' });
+      const verify = await postVerify(base, '+15550404040', code);
+      const jar = cookieJar(verify);
+      const proved = await post(base, '/signin/profile', { name: 'Other', extra: 'Dana@example.com', tz: 'America/Chicago' }, jar);
+      assert.equal(proved.status, 303);
+      assert.match(proved.headers.get('location') ?? '', /\/signin\/link/);
+      await post(base, '/signin/otp', { contact: '5550404040', sms_consent: '1' });
+      const code2 = /code is (\d{6})/.exec(relay.sms.at(-1)!.body)![1];
+      const verify2 = await postVerify(base, '+15550404040', code2);
+      const jar2 = cookieJar(verify2);
+      const unproved = await post(base, '/signin/profile', { name: 'Other', extra: 'lee@example.com', tz: 'America/Chicago' }, jar2);
       assert.equal(unproved.status, 422);
       assert.match(await unproved.text(), /That email is already on another account\. Leave it out, or use a different one\./);
-      assert.equal((await post(base, '/signin/verify', { to: '+15550404040', code, name: 'Other' })).status, 303, 'without it the join goes through');
+      await post(base, '/signin/otp', { contact: '5550404040', sms_consent: '1' });
+      const code3 = /code is (\d{6})/.exec(relay.sms.at(-1)!.body)![1];
+      assert.equal((await signUpNewCoach(base, '+15550404040', code3, 'Other')).status, 303, 'without it the join goes through');
     });
     assert.equal(Number((await db.query<{ n: string }>('select count(*)::text as n from coach')).rows[0].n), 3);
   });

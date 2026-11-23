@@ -27,7 +27,7 @@ async function withEnv(vars: Record<string, string | undefined>, fn: () => Promi
   }
 }
 
-const TEST_ONLY = /This payment account takes test payments only, so parents cannot book paid sessions yet\./;
+const TEST_ONLY = /This payment account takes test payments only, so clients cannot book paid sessions yet\./;
 
 test('Schedule and Money name each payments step with the same words', async () => {
   await withRelay(async (relay) => {
@@ -42,8 +42,15 @@ test('Schedule and Money name each payments step with the same words', async () 
       };
 
       // Not started.
-      assert.match(await screen('/app/money'), /<button type="submit">Connect payments<\/button>/);
-      assert.match(await screen('/app/schedule'), /<a class="action" href="\/app\/money">Connect payments<\/a>/);
+      assert.match(await screen('/app/payments'), /<button type="submit" class="action">Connect payments<\/button>/);
+      let schedule = await screen('/app/schedule');
+      assert.match(schedule, /Clients can(&#39;|')t book yet/);
+      assert.match(schedule, /<a class="action" href="\/app\/payments">Connect payments<\/a>/);
+      assert.match(schedule, /<button type="button" class="ghost" disabled>Copy link<\/button>/);
+      assert.match(schedule, /<span class="action ghost" aria-disabled="true">Share your link<\/span>/);
+      const sessionAt = schedule.indexOf(`/app/sessions/${seed.sessionId}`);
+      const pageLinkAt = schedule.indexOf('id="page-link"');
+      assert.ok(sessionAt >= 0 && pageLinkAt > sessionAt, 'sessions appear before the page link');
 
       // Terms accepted, onboarding not finished.
       const started = await fetch(`${base}/app/money/payments`, {
@@ -53,20 +60,22 @@ test('Schedule and Money name each payments step with the same words', async () 
         redirect: 'manual',
       });
       assert.equal(started.status, 303);
-      assert.match(await screen('/app/money'), /<button type="submit">Finish connecting payments<\/button>/);
-      const schedule = await screen('/app/schedule');
-      assert.match(schedule, /<a class="action" href="\/app\/money">Finish connecting payments<\/a>/);
+      assert.match(await screen('/app/payments'), /<button type="submit" class="action">Finish connecting payments<\/button>/);
+      schedule = await screen('/app/schedule');
+      assert.match(schedule, /<a class="action" href="\/app\/payments">Finish connecting payments<\/a>/);
       assert.doesNotMatch(schedule, />Connect payments</);
+      const pageLinkChunk = schedule.slice(schedule.indexOf('class="page-link'));
+      assert.doesNotMatch(pageLinkChunk, /<a class="action" href="\/app\/payments">/);
 
       // Charges on, but on a test account, in production.
       relay.enableCharges('coachatron', getConnectRecipientKey(seed.coach));
       await withEnv({ APP_ENV: 'production', ALLOW_TEST_PAYMENTS: undefined }, async () => {
-        const money = await screen('/app/money');
+        const money = await screen('/app/payments');
         assert.match(money, TEST_ONLY);
         assert.doesNotMatch(money, /Connect payments|Finish connecting payments/);
         const testOnly = await screen('/app/schedule');
         assert.match(testOnly, TEST_ONLY);
-        assert.match(testOnly, /<a class="action" href="\/app\/money">See payments<\/a>/);
+        assert.match(testOnly, /<a class="action" href="\/app\/payments">See payments<\/a>/);
         assert.doesNotMatch(testOnly, /Connect payments|Finish connecting payments|until payments are set up/);
       });
 
