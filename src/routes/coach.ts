@@ -1736,7 +1736,7 @@ coachRouter.get('/app/session-types/:id/slots/:slotId/remove', requireAuth, asyn
   res.status(200).send(
     page(
       'Remove weekly time',
-      html`${coachNav('types')}
+      html`${coachHeader('types')}
         <h1>Remove weekly time?</h1>
         <p>Stop running ${slot.name} on <strong>${slotLabel(slot)}${slot.location_text ? ` at ${slot.location_text}` : ''}</strong>?</p>
         <p class="muted">Upcoming sessions at this time with nobody booked are cancelled. Sessions that already have bookings stay on your schedule, and nobody is texted. Cancel those one at a time from the schedule if you need to.</p>
