@@ -61,7 +61,7 @@ test("the coach's cancel says how many parents were texted and lists the ones no
     await withServer(async (base) => {
       const confirm = await (await fetch(`${base}/app/sessions/${seed.sessionId}/cancel`, { headers: { cookie } })).text();
       assert.match(confirm, /3 athletes will get a text/);
-      assert.match(confirm, /1 parent has not opted in to texts/);
+      assert.match(confirm, /1 client has not opted in to texts/);
 
       const res = await fetch(`${base}/app/sessions/${seed.sessionId}/cancel`, {
         method: 'POST',
@@ -73,7 +73,7 @@ test("the coach's cancel says how many parents were texted and lists the ones no
       assert.equal(res.headers.get('location'), `/app/sessions/${seed.sessionId}`);
 
       const detail = await (await fetch(`${base}/app/sessions/${seed.sessionId}`, { headers: { cookie } })).text();
-      assert.match(detail, /Texted 2 of 4 parents\. 2 credits returned\./);
+      assert.match(detail, /Texted 2 of 4 clients\. 2 credits returned\./);
       assert.match(detail, /Not reached — please contact them yourself/);
       assert.match(detail, /Failing Fran · <a href="tel:\+15550000001">\+15550000001<\/a> · text failed to send/);
       assert.match(detail, /Quiet Quinn · <a href="tel:\+15550000002">\+15550000002<\/a> · has not opted in to texts/);
@@ -209,7 +209,7 @@ test('a paid drop-in becomes one session credit with the coach when the coach ca
       });
       assert.equal(res.status, 303);
       const detail = await (await fetch(`${base}/app/sessions/${seed.sessionId}`, { headers: { cookie } })).text();
-      assert.match(detail, /Texted 3 of 3 parents\. 2 credits returned, 1 of them for a paid drop-in\./);
+      assert.match(detail, /Texted 3 of 3 clients\. 2 credits returned, 1 of them for a paid drop-in\./);
     });
 
     const dropIn = await db.query<{ id: number; remaining: number; source: string; expires_at: string | null; package_id: number | null }>(
@@ -306,7 +306,7 @@ test("the coach's cancel emails a parent with no texts who gave an email, and th
 
     await withServer(async (base) => {
       const confirm = await (await fetch(`${base}/app/sessions/${seed.sessionId}/cancel`, { headers: { cookie } })).text();
-      assert.match(confirm, /2 parents have not opted in to texts; 1 will get an email instead\./);
+      assert.match(confirm, /2 clients have not opted in to texts; 1 will get an email instead\./);
       await fetch(`${base}/app/sessions/${seed.sessionId}/cancel`, {
         method: 'POST',
         headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
@@ -314,7 +314,7 @@ test("the coach's cancel emails a parent with no texts who gave an email, and th
         redirect: 'manual',
       });
       const detail = await (await fetch(`${base}/app/sessions/${seed.sessionId}`, { headers: { cookie } })).text();
-      assert.match(detail, /Texted 1 and emailed 1 of 3 parents\./);
+      assert.match(detail, /Texted 1 and emailed 1 of 3 clients\./);
       assert.match(detail, /Quiet Quinn · <a href="tel:\+15550000063">\+15550000063<\/a> · has not opted in to texts/);
       assert.doesNotMatch(detail, /Emailed Emma ·/);
     });

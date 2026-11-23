@@ -108,7 +108,7 @@ test("GET / returns 200 with no database, and the box posts to /start", async ()
     assert.match(body, /href="\/terms"/);
     assert.equal((body.match(/Prefer forms\?/g) ?? []).length, 2);
     assert.match(body, /form-alt/);
-    assert.match(body, /What parents see, built from your words/);
+    assert.match(body, /What clients see, built from your words/);
     assert.match(body, /45 min · Private/);
     assert.match(body, /\$70/);
     assert.match(body, /10-pack/);

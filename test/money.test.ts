@@ -139,7 +139,7 @@ test('money screen shows correct summaries after various bookings', async () => 
     const token = await createCoachSession(db, coach.id);
 
     // Call the money endpoint with authentication
-    const moneyRes = await fetch(`${base}/app/money`, {
+    const moneyRes = await fetch(`${base}/app/payments`, {
       headers: { cookie: `cx_session=${token}` },
     });
     assert.equal(moneyRes.status, 200);
@@ -148,9 +148,9 @@ test('money screen shows correct summaries after various bookings', async () => 
     assert.ok(htmlText.includes('This week'));
     assert.ok(htmlText.includes('Sessions booked:'));
     assert.ok(htmlText.includes('$105.00')); // 3 x $35
-    assert.ok(htmlText.includes('Paid by parents:'));
+    assert.ok(htmlText.includes('Paid by clients:'));
     assert.ok(htmlText.includes('You receive, after fees:'));
-    assert.ok(htmlText.includes('Session credits held by parents'));
+    assert.ok(htmlText.includes('Session credits held by clients'));
     assert.ok(htmlText.includes('<p><strong>9</strong></p>'));
     assert.ok(htmlText.includes('If every spot next week is booked'));
     assert.ok(htmlText.includes('3 sessions</strong>'));
@@ -396,4 +396,26 @@ test('bookings from before prices were recorded take their own charge, or the pr
       ['from a pack', 5000, 'Pack'],
     ],
   );
+});
+
+test('GET /app/money redirects to Payments and nav names the screen Payments', async () => {
+  const db = await freshDb();
+  const coach = await createCoach(db, {
+    name: 'Nav Coach',
+    phone: '+15550009999',
+    email: 'nav@example.com',
+    tz: 'America/Chicago',
+  });
+  const { createCoachSession } = await import('../src/domain/auth.js');
+  const token = await createCoachSession(db, coach.id);
+  await withServer(async (base) => {
+    const legacy = await fetch(`${base}/app/money`, { headers: { cookie: `cx_session=${token}` }, redirect: 'manual' });
+    assert.equal(legacy.status, 303);
+    assert.equal(legacy.headers.get('location'), '/app/payments');
+    const page = await (await fetch(`${base}/app/payments`, { headers: { cookie: `cx_session=${token}` } })).text();
+    assert.match(page, /<h1>Payments<\/h1>/);
+    assert.match(page, /<a href="\/app\/payments" aria-current="page">Payments<\/a>/);
+    const nav = page.match(/<nav class="coach-nav"[^>]*>([\s\S]*?)<\/nav>/)?.[1] ?? '';
+    assert.match(nav, /Schedule.*?Types.*?Roster.*?Pricing.*?Payments/s);
+  });
 });

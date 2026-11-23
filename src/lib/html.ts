@@ -2,7 +2,7 @@
  * template that escapes interpolated values by default, plus a `raw()`
  * escape hatch for pre-built markup. */
 
-import { SMS_BRAND, SMS_PURPOSE, SUPPORT_EMAIL } from '../config.js';
+import { APP_FEE_BPS, SMS_BRAND, SMS_PURPOSE, SUPPORT_EMAIL } from '../config.js';
 import { canonicalUrl } from './siteHost.js';
 
 export function escapeHtml(value: unknown): string {
@@ -413,14 +413,14 @@ export const POSTCARD_TOKENS_CSS = `
   }
 `;
 
-export type CoachNavKey = 'schedule' | 'types' | 'pricing' | 'roster' | 'money';
+export type CoachNavKey = 'schedule' | 'types' | 'pricing' | 'roster' | 'payments';
 
 const COACH_NAV: Array<[CoachNavKey, string, string]> = [
   ['schedule', '/app/schedule', 'Schedule'],
   ['types', '/app/session-types', 'Types'],
-  ['pricing', '/app/pricing', 'Pricing'],
   ['roster', '/app/roster', 'Roster'],
-  ['money', '/app/money', 'Payments'],
+  ['pricing', '/app/pricing', 'Pricing'],
+  ['payments', '/app/payments', 'Payments'],
 ];
 
 /** Plain links across the coach screens. Muted text, not buttons, so each
@@ -449,10 +449,10 @@ export function coachHeader(active: CoachNavKey): SafeHtml {
 }
 
 export const SESSION_CREDITS_EXPLANATION =
-  'Session credits are sessions parents paid for but have not used yet.';
+  'Session credits are sessions clients paid for but have not used yet.';
 
 export const PLATFORM_FEE_DISCLOSURE =
-  "Coachatron keeps 5% of each payment, plus the card company's processing fee from your account.";
+  `Coachatron keeps ${APP_FEE_BPS / 100}% of each payment, plus the card company's processing fee from your account.`;
 
 export function smsConsentCheckbox(): SafeHtml {
   return html`<label class="sms-consent">

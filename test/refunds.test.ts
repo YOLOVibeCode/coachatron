@@ -85,22 +85,22 @@ test('a package nobody has drawn on is refunded from Money and its unused credit
       assert.equal(await creditLeft(db, bookingId), 9);
       const cookie = await coachCookie(db, seed.coach.id);
 
-      const money = await getPage(base, '/app/money', cookie);
+      const money = await getPage(base, '/app/payments', cookie);
       assert.match(money, /Recent payments/);
-      assert.ok(money.includes(`/app/money?refund=b${bookingId}#refund`), 'a Refund link on Money');
-      assert.match(money, /Session credits held by parents/);
+      assert.ok(money.includes(`/app/payments?refund=b${bookingId}#refund`), 'a Refund link on Money');
+      assert.match(money, /Session credits held by clients/);
       assert.match(money, /<p><strong>9<\/strong><\/p>/);
 
-      const confirm = await getPage(base, `/app/money?refund=b${bookingId}`, cookie);
+      const confirm = await getPage(base, `/app/payments?refund=b${bookingId}`, cookie);
       assert.match(confirm, /Refund \$300\?/);
       assert.match(confirm, /The 9 unused session credits it bought are withdrawn\./);
 
       const done = await postForm(base, '/app/money/refund', cookie, { target: `b${bookingId}` });
       assert.equal(done.status, 303);
-      assert.equal(done.headers.get('location'), '/app/money?notice=refund-refunded');
+      assert.equal(done.headers.get('location'), '/app/payments?notice=refund-refunded');
       assert.equal(relay.refunds.length, 1);
 
-      const after = await getPage(base, '/app/money?notice=refund-refunded', cookie);
+      const after = await getPage(base, '/app/payments?notice=refund-refunded', cookie);
       assert.match(after, /<p><strong>0<\/strong><\/p>/);
       assert.match(after, /Refunded \$300\. The spot is free again\. 9 unused session credits were withdrawn\./);
     });
@@ -132,13 +132,13 @@ test('a pack whose sessions were used is not refunded here, and the coach is tol
       assert.match(detail, /Paid \$120 · One-time pack\. 1 of the 4 sessions this payment bought was used, so it cannot be refunded in full here\./);
       assert.ok(!detail.includes(`?refund=${bookingId}#refund`), 'no Refund link');
 
-      const confirm = await getPage(base, `/app/money?refund=b${bookingId}`, cookie);
+      const confirm = await getPage(base, `/app/payments?refund=b${bookingId}`, cookie);
       assert.match(confirm, /1 of the 4 sessions this payment bought was used/);
       assert.doesNotMatch(confirm, /Confirm refund/);
 
       const tried = await postForm(base, '/app/money/refund', cookie, { target: `b${bookingId}` });
       assert.equal(tried.status, 303);
-      assert.equal(tried.headers.get('location'), `/app/money?refund=b${bookingId}#refund`);
+      assert.equal(tried.headers.get('location'), `/app/payments?refund=b${bookingId}#refund`);
       assert.equal(await bookingStatus(db, bookingId), 'booked');
     });
     assert.equal(relay.refundCalls, 0);
@@ -224,21 +224,21 @@ test('a payment kept for the coach is refunded with one tap and a confirmation, 
       const attentionId = item.rows[0].id;
       const cookie = await coachCookie(db, seed.coach.id);
 
-      const money = await getPage(base, '/app/money', cookie);
+      const money = await getPage(base, '/app/payments', cookie);
       assert.match(money, /Payments to resolve/);
-      assert.ok(money.includes(`/app/money?refund=a${attentionId}#refund`));
+      assert.ok(money.includes(`/app/payments?refund=a${attentionId}#refund`));
       assert.match(money, /Refund \$1/);
 
-      const confirm = await getPage(base, `/app/money?refund=a${attentionId}`, cookie);
+      const confirm = await getPage(base, `/app/payments?refund=a${attentionId}`, cookie);
       assert.match(confirm, /Refund \$1\?/);
       assert.match(confirm, /This payment booked nothing, so nothing else changes\./);
       assert.equal(relay.refundCalls, 0);
 
       const done = await postForm(base, '/app/money/refund', cookie, { target: `a${attentionId}` });
-      assert.equal(done.headers.get('location'), '/app/money?notice=refund-refunded');
+      assert.equal(done.headers.get('location'), '/app/payments?notice=refund-refunded');
       assert.equal(relay.refunds[0].paymentRef, 'ns_pay_short');
 
-      const after = await getPage(base, '/app/money', cookie);
+      const after = await getPage(base, '/app/payments', cookie);
       assert.doesNotMatch(after, /Payments to resolve/);
       assert.match(after, /Refunded \$1\./);
     });
@@ -259,8 +259,8 @@ test('a payment that matched no booking can be refunded, and the coach is asked 
       assert.equal(res.status, 200);
       const attentionId = (await db.query<{ id: number }>("select id from payment_attention where payment_ref = 'ns_pay_stray'")).rows[0].id;
       const cookie = await coachCookie(db, seed.coach.id);
-      const confirm = await getPage(base, `/app/money?refund=a${attentionId}`, cookie);
-      assert.match(confirm, /We have no way to reach this parent, so please tell them yourself\./);
+      const confirm = await getPage(base, `/app/payments?refund=a${attentionId}`, cookie);
+      assert.match(confirm, /We have no way to reach this client, so please tell them yourself\./);
       await postForm(base, '/app/money/refund', cookie, { target: `a${attentionId}` });
       assert.equal(relay.refunds[0].paymentRef, 'ns_pay_stray');
     });
@@ -284,17 +284,17 @@ test('a payment that became credit when the coach cancelled is refunded while th
       const attentionId = (await db.query<{ id: number }>("select id from payment_attention where payment_ref = 'ns_pay_credit'")).rows[0].id;
       const cookie = await coachCookie(db, seed.coach.id);
 
-      const confirm = await getPage(base, `/app/money?refund=a${attentionId}`, cookie);
+      const confirm = await getPage(base, `/app/payments?refund=a${attentionId}`, cookie);
       assert.match(confirm, /Refund \$35\?/);
       assert.match(confirm, /The 1 unused session credit it bought is withdrawn\./);
       assert.doesNotMatch(confirm, /spot is free again/, 'the booking was already cancelled');
 
       const done = await postForm(base, '/app/money/refund', cookie, { target: `a${attentionId}` });
-      assert.equal(done.headers.get('location'), '/app/money?notice=refund-refunded');
+      assert.equal(done.headers.get('location'), '/app/payments?notice=refund-refunded');
       assert.equal(relay.refunds[0].paymentRef, 'ns_pay_credit');
       assert.equal(await creditLeft(db, bookingId), 0);
       assert.equal(await bookingStatus(db, bookingId), 'refunded');
-      assert.doesNotMatch(await getPage(base, '/app/money', cookie), /Payments to resolve/);
+      assert.doesNotMatch(await getPage(base, '/app/payments', cookie), /Payments to resolve/);
     });
     const row = await refundRow(db, 'ns_pay_credit');
     assert.deepEqual({ withdrawn: row.credits_withdrawn, released: row.spot_released }, { withdrawn: 1, released: false });
@@ -310,17 +310,17 @@ test('a refund that the relay refuses shows on Money to try again, with a new ke
       const cookie = await coachCookie(db, seed.coach.id);
       relay.refundError = { status: 404, code: 'NOT_FOUND' };
       const first = await postForm(base, '/app/money/refund', cookie, { target: `b${bookingId}` });
-      assert.equal(first.headers.get('location'), '/app/money?notice=refund-failed');
+      assert.equal(first.headers.get('location'), '/app/payments?notice=refund-failed');
       assert.equal(await bookingStatus(db, bookingId), 'booked');
 
-      const money = await getPage(base, '/app/money', cookie);
+      const money = await getPage(base, '/app/payments', cookie);
       assert.match(money, /Payments to resolve/);
       assert.match(money, /The refund of \$35 did not go through\. Stripe has no record of this payment for your account\. Nothing else changed\./);
       assert.match(money, /Try the refund again/);
 
       relay.refundError = null;
       const second = await postForm(base, '/app/money/refund', cookie, { target: `b${bookingId}` });
-      assert.equal(second.headers.get('location'), '/app/money?notice=refund-refunded');
+      assert.equal(second.headers.get('location'), '/app/payments?notice=refund-refunded');
       assert.equal(relay.refunds.length, 1);
       assert.equal(relay.refunds[0].idempotencyKey, refundIdempotencyKey('ns_pay_no', 2));
       assert.equal(await bookingStatus(db, bookingId), 'refunded');
@@ -346,7 +346,7 @@ test('a refund call that gets no answer is sent again with the same key, so it i
       assert.match(detail, /Refund not sent yet/);
       assert.match(detail, /Try the refund again/);
 
-      const money = await getPage(base, '/app/money', cookie);
+      const money = await getPage(base, '/app/payments', cookie);
       assert.match(money, /Payments to resolve/);
       assert.match(money, /The refund of \$35 has not gone through yet: payments did not answer\./);
 
@@ -371,7 +371,7 @@ test("another coach's booking cannot be refunded", async () => {
       assert.equal(res.status, 404);
       const viaMoney = await postForm(base, '/app/money/refund', cookie, { target: `b${bookingId}` });
       assert.equal(viaMoney.status, 303);
-      const confirm = await getPage(base, `/app/money?refund=b${bookingId}`, cookie);
+      const confirm = await getPage(base, `/app/payments?refund=b${bookingId}`, cookie);
       assert.match(confirm, /We could not find that payment\./);
       assert.equal(await bookingStatus(db, bookingId), 'booked');
     });
@@ -402,11 +402,11 @@ test('Money leaves a refunded booking out of booked and collected, and shows wha
         phone: '5553334444',
       });
       const cookie = await coachCookie(db, seed.coach.id);
-      const before = await getPage(base, '/app/money', cookie);
-      assert.match(before, /Paid by parents:<\/strong> \$70\.00/);
+      const before = await getPage(base, '/app/payments', cookie);
+      assert.match(before, /Paid by clients:<\/strong> \$70\.00/);
       await postForm(base, '/app/money/refund', cookie, { target: `b${gone}` });
-      const after = await getPage(base, '/app/money', cookie);
-      assert.match(after, /Paid by parents:<\/strong> \$35\.00/);
+      const after = await getPage(base, '/app/payments', cookie);
+      assert.match(after, /Paid by clients:<\/strong> \$35\.00/);
       assert.match(after, /Sessions booked:<\/strong> 1 — \$35\.00/);
       assert.match(after, /Refunded: \$35\.00 \(1 payment\)\. Refunded bookings are not counted above\./);
       assert.equal(await bookingStatus(db, kept), 'booked');

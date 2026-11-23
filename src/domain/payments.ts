@@ -122,7 +122,7 @@ export function liveText(handle: string, paymentsUrl: string | null): string {
   const page = coachPageForText(handle);
   if (!paymentsUrl) {
     return firstThatFits(LIVE_TEMPLATE, [
-      `Coachatron: You're live at ${page}. Parents can book and pay now.`,
+      `Coachatron: You're live at ${page}. Clients can book and pay now.`,
       `Coachatron: You're live at ${page}.`,
     ]);
   }
@@ -139,7 +139,7 @@ export function readyText(handle: string): string {
 
 export function reminderText(paymentsUrl: string): string {
   return firstThatFits(REMINDER_TEMPLATE, [
-    `Coachatron: Parents can't book until payments are set up. Tap to finish: ${paymentsUrl}`,
+    `Coachatron: Clients can't book until payments are set up. Tap to finish: ${paymentsUrl}`,
     `Coachatron: Set up payments: ${paymentsUrl}`,
   ]);
 }

@@ -162,7 +162,7 @@ test('a coach who can already take payments is told only that they are live', as
     });
     const texts = textsTo(relay, coach.phone);
     assert.equal(texts.length, 1);
-    assert.equal(texts[0].body, "Coachatron: You're live at coachatron.com/c/pat-keeper. Parents can book and pay now. Reply STOP to opt out.");
+    assert.equal(texts[0].body, "Coachatron: You're live at coachatron.com/c/pat-keeper. Clients can book and pay now. Reply STOP to opt out.");
     assert.equal((await db.query('select id from payments_link')).rows.length, 0);
   });
 });
@@ -199,10 +199,10 @@ test('the payments link opens a page, signs the coach in once, and lands on Mone
 
       const signedIn = await form(base, `/p/${token}`, {});
       assert.equal(signedIn.status, 303);
-      assert.equal(signedIn.headers.get('location'), '/app/money');
+      assert.equal(signedIn.headers.get('location'), '/app/payments');
       const fresh = sessionCookie(signedIn);
       assert.ok(fresh);
-      const money = await (await fetch(`${base}/app/money`, { headers: { cookie: fresh } })).text();
+      const money = await (await fetch(`${base}/app/payments`, { headers: { cookie: fresh } })).text();
       assert.match(money, /name="agree"/);
       assert.match(money, /Connect payments/);
 
@@ -211,7 +211,7 @@ test('the payments link opens a page, signs the coach in once, and lands on Mone
       assert.equal(sessionCookie(again), null);
       const signedInAgain = await form(base, `/p/${token}`, {}, fresh);
       assert.equal(signedInAgain.status, 303, 'a coach who is still signed in just goes to Money');
-      assert.equal(signedInAgain.headers.get('location'), '/app/money');
+      assert.equal(signedInAgain.headers.get('location'), '/app/payments');
     });
   });
 });
@@ -249,7 +249,7 @@ test('a coach who has not set up payments is reminded about a day and three days
     assert.equal(texts().length, 1);
     await runTick(db, new Date(MORNING.getTime() + 24 * HOUR));
     assert.equal(texts().length, 2);
-    assert.match(texts()[1].body, /^Coachatron: Parents can't book until payments are set up\. Tap to finish: https:\/\/coachatron\.com\/p\/[A-Za-z0-9_-]{22} Reply STOP to opt out\.$/);
+    assert.match(texts()[1].body, /^Coachatron: Clients can't book until payments are set up\. Tap to finish: https:\/\/coachatron\.com\/p\/[A-Za-z0-9_-]{22} Reply STOP to opt out\.$/);
     assert.notEqual(LINK.exec(texts()[1].body)![1], LINK.exec(texts()[0].body)![1], 'each text has its own link');
 
     await runTick(db, new Date(MORNING.getTime() + 25 * HOUR));
@@ -309,14 +309,14 @@ test('the page link stays on Schedule in a box made to copy, not on Payments', a
     await withServer(async (base) => {
       await publishByHand(base, db, cookie);
       const link = `https://coachatron.com/c/${coach.handle}`;
-      const money = await (await fetch(`${base}/app/money`, { headers: { cookie } })).text();
+      const money = await (await fetch(`${base}/app/payments`, { headers: { cookie } })).text();
       assert.doesNotMatch(money, /id="page-link"/);
       const schedule = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
       assert.match(schedule, new RegExp(`<input id="page-link" type="text" readonly value="${link}"`), '/app/schedule');
-      assert.match(schedule, /Parents can(&#39;|')t book yet/);
-      assert.match(schedule, /Parents can(&#39;|')t book until payments are set up\./);
+      assert.match(schedule, /Clients can(&#39;|')t book yet/);
+      assert.match(schedule, /Clients can't book until payments are set up\./);
       assert.doesNotMatch(schedule, /<a class="action" href="sms:\?&amp;body=Book%20with%20me/);
-      assert.match(schedule, /<a class="action" href="\/app\/money">Connect payments<\/a>/);
+      assert.match(schedule, /<a class="action" href="\/app\/payments">Connect payments<\/a>/);
       assert.match(schedule, /<button type="button" class="ghost" disabled>Copy link<\/button>/);
     });
   });

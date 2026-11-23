@@ -21,13 +21,13 @@ const CHOICES: Array<[CancelGives, string]> = [
 /** The third field of the booking-policy form, next to the cancellation
  * window and the children limit. */
 export function cancelGivesField(policy: Pick<BookingPolicy, 'cancelGives'>): SafeHtml {
-  return html`<label for="cancel_gives">When a parent cancels in time</label>
+  return html`<label for="cancel_gives">When a client cancels in time</label>
     <select id="cancel_gives" name="cancel_gives">
       ${CHOICES.map(([value, label]) =>
         value === policy.cancelGives ? html`<option value="${value}" selected>${label}</option>` : html`<option value="${value}">${label}</option>`,
       )}
     </select>
-    <p class="muted">For a session paid by card. A refund sends the whole payment back to the parent's card: Coachatron's ${APP_FEE_BPS / 100}% fee is returned with it, and Stripe keeps its card processing fee. Bookings already made keep the choice they were made under.</p>`;
+    <p class="muted">For a session paid by card. A refund sends the whole payment back to the client's card: Coachatron's ${APP_FEE_BPS / 100}% fee is returned with it, and Stripe keeps its card processing fee. Bookings already made keep the choice they were made under.</p>`;
 }
 
 /** What the policy card says a paid drop-in cancelled in time becomes. */

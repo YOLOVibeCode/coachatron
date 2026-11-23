@@ -114,7 +114,7 @@ export function renderDownloadBlock(tz: string, now: Date = new Date()): SafeHtm
         </div>
         <div class="download-btn-wrap">
           <button type="submit" class="ghost">Download payments</button>
-          <p class="muted download-btn-desc">What parents paid, listed by the day they paid.</p>
+          <p class="muted download-btn-desc">What clients paid, listed by the day they paid.</p>
         </div>
         <div class="download-btn-wrap">
           <button type="submit" class="ghost" formaction="${BOOKINGS_PATH}">Download bookings</button>
@@ -132,10 +132,10 @@ function refusal(res: Response, status: number, title: string, message: string):
   res.status(status).send(
     page(
       title,
-      html`${coachHeader('money')}
+      html`${coachHeader('payments')}
         <h1>${title}</h1>
         <p class="muted">${message}</p>
-        <a class="action" href="/app/money#download">Back to Payments</a>`,
+        <a class="action" href="/app/payments#download">Back to Payments</a>`,
     ),
   );
 }

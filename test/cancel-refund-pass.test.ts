@@ -111,8 +111,8 @@ test('with two children on one payment, the first cancel gives a credit and says
         { status: row?.status, amount: row?.amount_cents, who: row?.athlete_name, withdrawn: row?.credits_withdrawn, by: row?.cancel_booking_id },
         { status: 'refunded', amount: 7000, who: 'Mia and Leo', withdrawn: 1, by: mia.id },
       );
-      const money = await getPage(base, '/app/money', await coachCookie(db, seed.coach.id));
-      assert.match(money, /Mia and Leo<\/strong> · \$70 · Refunded \(parent cancelled in time\)/);
+      const money = await getPage(base, '/app/payments', await coachCookie(db, seed.coach.id));
+      assert.match(money, /Mia and Leo<\/strong> · \$70 · Refunded \(client cancelled in time\)/);
       assert.match(money, /1 unused session credit was withdrawn\./);
     });
     const texts = refundTexts(relay.sms);

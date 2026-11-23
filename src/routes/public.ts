@@ -314,7 +314,7 @@ function renderSmsPage(values: { phone?: string } = {}, notice?: { kind: 'error'
       ${operatorLine()}
       <p>
         ${SMS_BRAND} (coachatron.com) is a booking site for independent youth sports coaches. Coaches
-        publish their sessions; parents and athletes book and pay. Texts are optional: you can sign in with your email and book
+        publish their sessions; clients and athletes book and pay. Texts are optional: you can sign in with your email and book
         a session without them.
       </p>
       <h2>What we text</h2>

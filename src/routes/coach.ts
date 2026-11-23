@@ -933,7 +933,7 @@ function renderPaymentsLinkPage(token: string, coachName: string) {
   return page(
     'Set up payments',
     html`<h1>Set up payments</h1>
-      <p class="muted">Signs you in as ${coachName} and opens payments, so parents can pay you when they book.</p>
+      <p class="muted">Signs you in as ${coachName} and opens payments, so clients can pay you when they book.</p>
       <form method="post" action="/p/${token}">
         <button type="submit">Continue</button>
       </form>`,
@@ -951,7 +951,7 @@ function paymentsLinkDonePage() {
 
 async function answerUsedPaymentsLink(req: Request, res: Response): Promise<void> {
   if (await signedInCoachId(req)) {
-    res.redirect(303, '/app/money');
+    res.redirect(303, '/app/payments');
     return;
   }
   res.status(410).send(paymentsLinkDonePage());
@@ -977,7 +977,7 @@ coachRouter.post('/p/:token', async (req, res) => {
   }
   const token = await createCoachSession(db, coachId);
   res.setHeader('Set-Cookie', serializeCookie(SESSION_COOKIE, token, 30 * 24 * 60 * 60));
-  res.redirect(303, '/app/money');
+  res.redirect(303, '/app/payments');
 });
 
 // ---- Screen 4: session types ----
@@ -1757,31 +1757,32 @@ const COPY_LINK_SCRIPT =
 /** The words for each payments step, the same on Schedule and Money. */
 const CONNECT_PAYMENTS = 'Connect payments';
 const FINISH_CONNECTING_PAYMENTS = 'Finish connecting payments';
-const TEST_ONLY_PAYMENTS = 'This payment account takes test payments only, so parents cannot book paid sessions yet.';
+const TEST_ONLY_PAYMENTS = 'This payment account takes test payments only, so clients cannot book paid sessions yet.';
+const PAYMENTS_SCREEN = '/app/payments';
 
 /** Schedule's line and link for a coach who cannot take payments yet. */
 function paymentsStepCard(step: PaymentsStep) {
   if (step === 'test-only') {
     return html`<div class="banner-warn">${TEST_ONLY_PAYMENTS}</div>
-      <a class="action" href="/app/money">See payments</a>`;
+      <a class="action" href="${PAYMENTS_SCREEN}">See payments</a>`;
   }
-  return html`<div class="banner-warn">Parents can't book until payments are set up.</div>
-    <a class="action" href="/app/money">${step === 'finish' ? FINISH_CONNECTING_PAYMENTS : CONNECT_PAYMENTS}</a>`;
+  return html`<div class="banner-warn">Clients can't book until payments are set up.</div>
+    <a class="action" href="${PAYMENTS_SCREEN}">${step === 'finish' ? FINISH_CONNECTING_PAYMENTS : CONNECT_PAYMENTS}</a>`;
 }
 
 /** Top-of-schedule notice when parents cannot pay yet. */
 function renderPaymentsBanner(step: PaymentsStep) {
   if (step === 'test-only') {
     return html`<div class="card payments-banner">
-      <p><strong>Parents can't book yet</strong></p>
+      <p><strong>Clients can't book yet</strong></p>
       <p class="muted">${TEST_ONLY_PAYMENTS}</p>
-      <a class="action" href="/app/money">See payments</a>
+      <a class="action" href="${PAYMENTS_SCREEN}">See payments</a>
     </div>`;
   }
   return html`<div class="card payments-banner">
-    <p><strong>Parents can't book yet</strong></p>
-    <p class="muted">Parents can't book until payments are set up.</p>
-    <a class="action" href="/app/money">${step === 'finish' ? FINISH_CONNECTING_PAYMENTS : CONNECT_PAYMENTS}</a>
+    <p><strong>Clients can't book yet</strong></p>
+    <p class="muted">Clients can't book until payments are set up.</p>
+    <a class="action" href="${PAYMENTS_SCREEN}">${step === 'finish' ? FINISH_CONNECTING_PAYMENTS : CONNECT_PAYMENTS}</a>
   </div>`;
 }
 
@@ -1828,12 +1829,12 @@ function renderPageLinkCard(coach: CoachRow, opts: PageLinkOpts) {
   const shareNote =
     !sharingOpen && layout === 'compact'
       ? html`<p class="muted page-link-share-note">${
-          opts.main === 'test-only' ? TEST_ONLY_PAYMENTS : "Parents can't book until payments are set up."
+          opts.main === 'test-only' ? TEST_ONLY_PAYMENTS : "Clients can't book until payments are set up."
         }</p>`
       : raw('');
   return html`<div class="${wrapClass}">
     ${opts.justPublished
-      ? html`<p><strong>You're live.</strong> Parents book at ${link.replace(/^https?:\/\//, '')}</p>`
+      ? html`<p><strong>You're live.</strong> Clients book at ${link.replace(/^https?:\/\//, '')}</p>`
       : raw('')}
     <label for="page-link">Your page</label>
     <input id="page-link" type="text" readonly value="${link}" onfocus="this.select()" />
@@ -2559,7 +2560,7 @@ async function sessionMoves(db: DbClient, sessionId: number): Promise<{ out: Mov
 }
 
 function movedHereNote(from: MoveRow | undefined) {
-  return from ? html`<p class="muted">Moved here by the parent from ${formatLocal(from.starts_at_utc, from.tz)}.</p>` : raw('');
+  return from ? html`<p class="muted">Moved here by the client from ${formatLocal(from.starts_at_utc, from.tz)}.</p>` : raw('');
 }
 
 /** Bookings that were sold and still hold their spot: "Booked (N)" on
@@ -2637,7 +2638,7 @@ function renderBookingPayment(
 function creditPurchaseLink(block: Extract<RefundBlock, { kind: 'paid_with_credit' }>) {
   return block.purchaseBookingId === null
     ? raw('')
-    : html`<a class="action ghost" href="/app/money?refund=b${block.purchaseBookingId}#refund">See the payment the credit came from</a>`;
+    : html`<a class="action ghost" href="${PAYMENTS_SCREEN}?refund=b${block.purchaseBookingId}#refund">See the payment the credit came from</a>`;
 }
 
 const PLAN_KIND: Record<string, string> = {
@@ -2660,7 +2661,7 @@ function renderRefundConfirm(check: Refundability, opts: { action: string; keepH
   }
   const plan = check.plan;
   const amount = plan.amountCents === null ? 'this payment' : formatCoachDollars(plan.amountCents);
-  const who = plan.athleteName ?? 'the parent';
+  const who = plan.athleteName ?? 'the client';
   const what =
     plan.sessionName && plan.startsAtUtc && plan.tz
       ? `${who} · ${PLAN_KIND[plan.kind]} · ${plan.sessionName}, ${formatLocal(plan.startsAtUtc, plan.tz)}`
@@ -2686,8 +2687,8 @@ function renderRefundConfirm(check: Refundability, opts: { action: string; keepH
   effects.push(`The whole ${amount} goes back to the card it came from. Coachatron's ${APP_FEE_BPS / 100}% fee is returned with it; Stripe keeps its card processing fee.`);
   effects.push(
     plan.reachable
-      ? 'The parent is told by text if they chose texts, and by email if they gave one.'
-      : 'We have no way to reach this parent, so please tell them yourself.',
+      ? 'The client is told by text if they chose texts, and by email if they gave one.'
+      : 'We have no way to reach this client, so please tell them yourself.',
   );
   return html`<div class="card" id="refund">
     <p><strong>Refund ${amount}?</strong></p>
@@ -2730,7 +2731,7 @@ const UNREACHED_REASON: Record<CancelReach['unreached'][number]['reason'], strin
 /** The cancel's confirmation on screen 3: how many parents were texted or
  * emailed, and who still needs to be told by the coach. */
 function renderCancelReach(reach: CancelReach) {
-  const parents = reach.athletesTotal === 1 ? 'parent' : 'parents';
+  const parents = reach.athletesTotal === 1 ? 'client' : 'clients';
   const credits = reach.creditsReturned === 1 ? 'credit' : 'credits';
   if (reach.athletesTotal === 0) return html`<div class="card cancel-reach"><p><strong>Cancelled.</strong></p></div>`;
   return html`<div class="card cancel-reach">
@@ -2842,7 +2843,7 @@ coachRouter.get('/app/sessions/:id/cancel', requireAuth, async (req, res) => {
         <h1>Cancel session</h1>
         <p>Cancel ${when}? ${preview.textable} ${preview.textable === 1 ? 'athlete' : 'athletes'} will get a text.</p>
         ${untextable > 0
-          ? html`<p class="muted">${untextable} ${untextable === 1 ? 'parent has' : 'parents have'} not opted in to texts${preview.emailable > 0
+          ? html`<p class="muted">${untextable} ${untextable === 1 ? 'client has' : 'clients have'} not opted in to texts${preview.emailable > 0
               ? `; ${preview.emailable} will get an email instead`
               : ''}. You'll see who to contact after you cancel.</p>`
           : raw('')}
@@ -2902,10 +2903,10 @@ function renderPolicySection(policy: BookingPolicy, contactChannel: ClientContac
   return html`<h2 id="policy">Booking policy</h2>
     <div class="card policy">
       <p><strong>No-show:</strong> the booking's credit is used. You can give it back on the session's screen.</p>
-      <p><strong>Cancelling:</strong> a parent who cancels ${window} gets their credit back (${cancelGivesSummary(policy)}).${hours === 0
+      <p><strong>Cancelling:</strong> a client who cancels ${window} gets their credit back (${cancelGivesSummary(policy)}).${hours === 0
         ? ''
         : ` Inside ${hours} ${hours === 1 ? 'hour' : 'hours'} it counts as a no-show, and you can give it back.`}</p>
-      <p><strong>Children:</strong> a parent can book up to ${children} ${children === 1 ? 'child' : 'children'} at once. Each takes a spot and uses a credit or a drop-in.</p>
+      <p><strong>Children:</strong> a client can book up to ${children} ${children === 1 ? 'child' : 'children'} at once. Each takes a spot and uses a credit or a drop-in.</p>
       <p class="muted">${cardRefundsNote(policy)}</p>
     </div>
     <details${error ? raw(' open') : raw('')}>
@@ -3203,6 +3204,8 @@ const RETURN_NOTICES: Record<string, string> = {
   failed: 'Payments were not connected. Try again.',
 };
 
+const PAYMENTS_CONNECT_PATH = '/app/money/payments';
+
 function netAfterPlatformFee(grossCents: number): number {
   return Math.round((grossCents * (10000 - APP_FEE_BPS)) / 10000);
 }
@@ -3216,7 +3219,7 @@ function renderPaymentsStatusCompact(state: PaymentsState, notice: string | null
         ${state.testOnly ? html`<p class="error">${TEST_ONLY_PAYMENTS}</p>` : raw('')}
         ${!state.payoutsEnabled
           ? html`<p class="muted">Payouts are paused until your bank details are complete.</p>
-              <form method="post" action="/app/money/payments">
+              <form method="post" action="${PAYMENTS_CONNECT_PATH}">
                 <button type="submit" class="ghost">Update payout details</button>
               </form>`
           : raw('')}
@@ -3231,20 +3234,20 @@ function renderPaymentsStatusCompact(state: PaymentsState, notice: string | null
   }
   if (state.kind === 'finish') {
     return html`<div class="card payments-banner">
-        <p><strong>Parents can't book yet</strong></p>
-        <p class="muted">Finish setting up your payment account so athletes can pay you.</p>
+        <p><strong>Clients can't book yet</strong></p>
+        <p class="muted">Finish setting up your payment account so clients can pay you.</p>
         ${notice ? html`<p>${notice}</p>` : raw('')}
-        <form method="post" action="/app/money/payments">
+        <form method="post" action="${PAYMENTS_CONNECT_PATH}">
           <button type="submit" class="action">${FINISH_CONNECTING_PAYMENTS}</button>
         </form>
         ${error ? html`<p class="error">${error}</p>` : raw('')}
       </div>`;
   }
   return html`<div class="card payments-banner">
-      <p><strong>Parents can't book yet</strong></p>
-      <p class="muted">Connect a payment account so athletes can pay you when they book. Coachatron keeps ${feePercent} of each payment.</p>
+      <p><strong>Clients can't book yet</strong></p>
+      <p class="muted">Connect a payment account so clients can pay you when they book. Coachatron keeps ${feePercent} of each payment.</p>
       ${notice ? html`<p>${notice}</p>` : raw('')}
-      <form method="post" action="/app/money/payments">
+      <form method="post" action="${PAYMENTS_CONNECT_PATH}">
         <label><input type="checkbox" name="agree" value="1" /> I accept the Coachatron marketplace terms (${SELLER_AGREEMENT_VERSION}).</label>
         <button type="submit" class="action">${CONNECT_PAYMENTS}</button>
       </form>
@@ -3258,7 +3261,7 @@ function renderPaymentsStatusCompact(state: PaymentsState, notice: string | null
 function renderPaymentAttention(items: AttentionItem[], refunds: Map<string, RefundRow>, needing: RefundItem[]) {
   if (items.length === 0 && needing.length === 0) return raw('');
   return html`<h2>Payments to resolve</h2>
-    <p class="muted">These payments reached you but did not book as they stood, or a refund did not go through. Contact the parent to sort each one out, or refund it.</p>
+    <p class="muted">These payments reached you but did not book as they stood, or a refund did not go through. Contact the client to sort each one out, or refund it.</p>
     ${items.map((item) => {
       const refund = item.payment_ref ? refunds.get(item.payment_ref) : undefined;
       const amount = item.amount_cents === null ? 'amount unknown' : formatCoachDollars(item.amount_cents);
@@ -3271,7 +3274,7 @@ function renderPaymentAttention(items: AttentionItem[], refunds: Map<string, Ref
         <p>${describeAttention(item)}</p>
         ${refund ? html`<p class="muted">${describeRefund(refund)}</p>` : raw('')}
         ${item.payment_ref && (!refund || canTryAgain(refund))
-          ? html`<a class="action ghost" href="/app/money?refund=a${item.id}#refund">${refund ? 'Try the refund again' : `Refund ${amount}`}</a>`
+          ? html`<a class="action ghost" href="${PAYMENTS_SCREEN}?refund=a${item.id}#refund">${refund ? 'Try the refund again' : `Refund ${amount}`}</a>`
           : raw('')}
       </div>`;
     })}
@@ -3282,7 +3285,7 @@ function renderPaymentAttention(items: AttentionItem[], refunds: Map<string, Ref
         ${r.session_name && r.starts_at_utc && r.tz ? html`<p class="muted">${r.session_name} — ${formatLocal(r.starts_at_utc, r.tz)}</p>` : raw('')}
         <p>${describeRefund(r)}</p>
         ${canTryAgain(r) && r.booking_id !== null
-          ? html`<a class="action ghost" href="/app/money?refund=b${r.booking_id}#refund">Try the refund again</a>`
+          ? html`<a class="action ghost" href="${PAYMENTS_SCREEN}?refund=b${r.booking_id}#refund">Try the refund again</a>`
           : raw('')}
       </div>`,
     )}`;
@@ -3294,7 +3297,7 @@ const DISPUTE_STATE: Record<string, string> = { open: 'Open', won: 'Decided for 
 function renderDisputes(items: DisputeItem[]) {
   if (items.length === 0) return raw('');
   return html`<h2>Card disputes</h2>
-    <p class="muted">Stripe handles card disputes between a parent's bank and your payment account. Coachatron holds no funds and does not decide them.</p>
+    <p class="muted">Stripe handles card disputes between a client's bank and your payment account. Coachatron holds no funds and does not decide them.</p>
     ${items.map(
       (d) => html`<div class="card payment-dispute">
         <p><strong>${d.athlete_name ?? 'Unknown athlete'}</strong>${d.contact_phone ? html` · <a href="tel:${d.contact_phone}">${d.contact_phone}</a>` : raw('')}
@@ -3326,7 +3329,7 @@ function renderRecentPayments(items: PaymentItem[], refunds: Map<string, RefundR
       (p) => html`<div class="card recent-payment">
         <p><strong>${p.athlete_name}</strong> · ${formatCoachDollars(p.gross_cents)}</p>
         <p class="muted">${p.session_name} — ${formatLocal(p.starts_at_utc, p.tz)}</p>
-        ${renderBookingPayment(p, refunds, checks.get(p.booking_id) ?? null, `/app/money?refund=b${p.booking_id}#refund`)}
+        ${renderBookingPayment(p, refunds, checks.get(p.booking_id) ?? null, `${PAYMENTS_SCREEN}?refund=b${p.booking_id}#refund`)}
       </div>`,
     )}`;
 }
@@ -3339,7 +3342,7 @@ function parseRefundTarget(value: unknown): RefundTarget | null {
   return match[1] === 'b' ? { bookingId: id } : { attentionId: id };
 }
 
-async function renderMoney(
+async function renderPaymentsPage(
   res: Response,
   coach: CoachRow,
   opts: { status?: number; notice?: string | null; error?: string | null; refund?: RefundTarget | null } = {},
@@ -3362,21 +3365,19 @@ async function renderMoney(
   const confirm = opts.refund ? await checkRefund(db, coach.id, opts.refund) : null;
   const confirmTarget = opts.refund ? ('bookingId' in opts.refund ? `b${opts.refund.bookingId}` : `a${opts.refund.attentionId}`) : '';
 
-  // Format dollars for display
   const formatDollars = (cents: number) => `$${(cents / 100).toFixed(2)}`;
-
   const receiveCents = netAfterPlatformFee(summary.collectedThisWeekCents);
 
   res.status(opts.status ?? 200).send(
     page(
       'Payments',
-      html`${coachHeader('money')}
+      html`${coachHeader('payments')}
         <h1>Payments</h1>
-        ${confirm ? renderRefundConfirm(confirm, { action: '/app/money/refund', keepHref: '/app/money', hidden: { target: confirmTarget } }) : raw('')}
+        ${confirm ? renderRefundConfirm(confirm, { action: '/app/payments/refund', keepHref: PAYMENTS_SCREEN, hidden: { target: confirmTarget } }) : raw('')}
         <h2>This week</h2>
         <div class="card">
-          <p class="money-figure" aria-label="Paid by parents">${formatDollars(summary.collectedThisWeekCents)}</p>
-          <p><strong>Paid by parents:</strong> ${formatDollars(summary.collectedThisWeekCents)}</p>
+          <p class="money-figure" aria-label="Paid by clients">${formatDollars(summary.collectedThisWeekCents)}</p>
+          <p><strong>Paid by clients:</strong> ${formatDollars(summary.collectedThisWeekCents)}</p>
           <p><strong>You receive, after fees:</strong> ${formatDollars(receiveCents)}</p>
           <p class="muted">${PLATFORM_FEE_DISCLOSURE}</p>
           <p><strong>Sessions booked:</strong> ${summary.bookedThisWeekCount} — ${formatDollars(summary.bookedThisWeekCents)}</p>
@@ -3384,7 +3385,7 @@ async function renderMoney(
             ? html`<p class="muted">Refunded: ${formatDollars(summary.refundedThisWeekCents)} (${summary.refundedThisWeekCount} ${summary.refundedThisWeekCount === 1 ? 'payment' : 'payments'}). Refunded bookings are not counted above.</p>`
             : raw('')}
         </div>
-        <h2>Session credits held by parents</h2>
+        <h2>Session credits held by clients</h2>
         <div class="card">
           <p><strong>${summary.outstandingCreditCount}</strong></p>
           <p class="muted">${SESSION_CREDITS_EXPLANATION}</p>
@@ -3405,24 +3406,31 @@ async function renderMoney(
   );
 }
 
-// The payments and bookings downloads behind Money's Download block.
-coachRouter.use(moneyDownloadRouter(requireAuth));
-
-coachRouter.get('/app/money', requireAuth, async (req, res) => {
+async function sendPaymentsPage(req: Request, res: Response): Promise<void> {
   const coach = await findCoachById(getDb(), res.locals.coachId as number);
   if (!coach) {
     res.redirect(303, '/signin');
     return;
   }
   const returned = typeof req.query.seller === 'string' ? req.query.seller : '';
-  await renderMoney(res, coach, {
+  await renderPaymentsPage(res, coach, {
     notice: Object.hasOwn(RETURN_NOTICES, returned) ? RETURN_NOTICES[returned] : refundNotice(req.query.notice),
     refund: parseRefundTarget(req.query.refund),
   });
+}
+
+// The payments and bookings downloads behind the Payments screen's Download block.
+coachRouter.use(moneyDownloadRouter(requireAuth));
+
+coachRouter.get('/app/payments', requireAuth, sendPaymentsPage);
+
+coachRouter.get('/app/money', requireAuth, (req, res) => {
+  const query = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
+  res.redirect(303, `${PAYMENTS_SCREEN}${query}`);
 });
 
 /** The confirmed refund of a booking's payment or of a kept payment. */
-coachRouter.post('/app/money/refund', requireAuth, async (req, res) => {
+async function postPaymentsRefund(req: Request, res: Response): Promise<void> {
   const db = getDb();
   const coach = await findCoachById(db, res.locals.coachId as number);
   if (!coach) {
@@ -3436,13 +3444,16 @@ coachRouter.post('/app/money/refund', requireAuth, async (req, res) => {
   }
   const outcome = await requestRefund(db, coach, target);
   if (outcome.kind === 'blocked') {
-    res.redirect(303, `/app/money?refund=${field(req.body, 'target')}#refund`);
+    res.redirect(303, `${PAYMENTS_SCREEN}?refund=${field(req.body, 'target')}#refund`);
     return;
   }
-  res.redirect(303, `/app/money?notice=${refundOutcomeNotice(outcome)}`);
-});
+  res.redirect(303, `${PAYMENTS_SCREEN}?notice=${refundOutcomeNotice(outcome)}`);
+}
 
-coachRouter.post('/app/money/payments', requireAuth, async (req, res) => {
+coachRouter.post('/app/money/refund', requireAuth, postPaymentsRefund);
+coachRouter.post('/app/payments/refund', requireAuth, postPaymentsRefund);
+
+async function postPaymentsConnect(req: Request, res: Response): Promise<void> {
   const coach = await findCoachById(getDb(), res.locals.coachId as number);
   if (!coach) {
     res.redirect(303, '/signin');
@@ -3455,15 +3466,14 @@ coachRouter.post('/app/money/payments', requireAuth, async (req, res) => {
     await recordSellerStatus(db, coach, status);
     if (status?.agreementVersion !== SELLER_AGREEMENT_VERSION) {
       if (field(req.body, 'agree') !== '1') {
-        await renderMoney(res, coach, { status: 422, error: 'Check the box to accept the marketplace terms.' });
+        await renderPaymentsPage(res, coach, { status: 422, error: 'Check the box to accept the marketplace terms.' });
         return;
       }
       await acceptSellerAgreement(sellerKey, SELLER_AGREEMENT_VERSION);
     }
     await markPaymentsStarted(db, coach.id);
-    // What the app already knows, so the provider's form asks for less.
     const url = await startSellerOnboarding(sellerKey, {
-      returnUrl: `${appBaseUrl()}/app/money`,
+      returnUrl: `${appBaseUrl()}${PAYMENTS_SCREEN}`,
       email: coach.email,
       profile: {
         phone: coach.phone,
@@ -3474,8 +3484,11 @@ coachRouter.post('/app/money/payments', requireAuth, async (req, res) => {
     });
     res.redirect(303, url);
   } catch {
-    await renderMoney(res, coach, { status: 502, error: 'Payments could not start. Try again in a minute.' });
+    await renderPaymentsPage(res, coach, { status: 502, error: 'Payments could not start. Try again in a minute.' });
   }
-});
+}
+
+coachRouter.post('/app/money/payments', requireAuth, postPaymentsConnect);
+coachRouter.post('/app/payments/payments', requireAuth, postPaymentsConnect);
 
 export { requireAuth, formatLocal };

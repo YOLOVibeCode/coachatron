@@ -450,7 +450,7 @@ test('an owed session with no amount is listed as owed, stays out of the totals,
       const open = paySection(await rosterPage(base, cookie, `?pay=${sam.id}`));
       assert.match(open, /1 owed session has no amount set, so it is not in the total/);
       assert.match(open, /Mark the owed session paid</, 'no dollar figure when none is set');
-      const money = await (await fetch(`${base}/app/money`, { headers: { cookie } })).text();
+      const money = await (await fetch(`${base}/app/payments`, { headers: { cookie } })).text();
       assert.doesNotMatch(money, /You owe assistants/);
     });
     const [row] = await payRows(db, seed.coach.id);
@@ -527,7 +527,7 @@ test('another coach cannot see or change these rows', async () => {
         assert.doesNotMatch(page, /Sam Lee/);
         assert.doesNotMatch(page, /Assistant pay/);
       }
-      const money = await (await fetch(`${base}/app/money`, { headers: { cookie } })).text();
+      const money = await (await fetch(`${base}/app/payments`, { headers: { cookie } })).text();
       assert.doesNotMatch(money, /You owe assistants/);
 
       for (const [path, body] of [
@@ -566,16 +566,16 @@ test('Money shows one line for what assistants are owed, only above zero, and it
 
     await withServer(async (base) => {
       const cookie = await signIn(db, seed.coach.id);
-      const money = async () => (await fetch(`${base}/app/money`, { headers: { cookie } })).text();
+      const money = async () => (await fetch(`${base}/app/payments`, { headers: { cookie } })).text();
       const figures = (page: string) => [
-        /Paid by parents:<\/strong> \$[\d.]+/.exec(page)?.[0],
+        /Paid by clients:<\/strong> \$[\d.]+/.exec(page)?.[0],
         /Sessions booked:<\/strong> \d+ — \$[\d.]+/.exec(page)?.[0],
       ];
 
       const upcoming = await money();
       assert.doesNotMatch(upcoming, /You owe assistants/, 'nothing is owed for an upcoming session');
       const before = figures(upcoming);
-      assert.deepEqual(before, ['Paid by parents:</strong> $0.00', 'Sessions booked:</strong> 0 — $0.00']);
+      assert.deepEqual(before, ['Paid by clients:</strong> $0.00', 'Sessions booked:</strong> 0 — $0.00']);
 
       await happened(db, seed.sessionId);
       const owed = await money();
@@ -609,7 +609,7 @@ test('an assistant taken off the roster keeps their history, and what they are o
       assert.match(section, /Sam Lee/);
       assert.match(section, /No longer on your roster/);
       assert.match(section, /Owed \$80/);
-      assert.match((await (await fetch(`${base}/app/money`, { headers: { cookie } })).text()), /You owe assistants \$80/);
+      assert.match((await (await fetch(`${base}/app/payments`, { headers: { cookie } })).text()), /You owe assistants \$80/);
 
       const [row] = await payRows(db, seed.coach.id);
       assert.equal((await post(base, `/app/roster/pay/${row.id}/paid`, cookie, { note: 'Final' })).status, 303);
@@ -837,7 +837,7 @@ test('Money writes the owed total as the roster does, and an amount above $10,00
     assert.equal(row.amount_cents, 1_200_000);
     await withServer(async (base) => {
       const cookie = await signIn(db, seed.coach.id);
-      const money = await (await fetch(`${base}/app/money`, { headers: { cookie } })).text();
+      const money = await (await fetch(`${base}/app/payments`, { headers: { cookie } })).text();
       assert.match(money, /You owe assistants \$12000<\/a>/);
       assert.doesNotMatch(money, /\$12000\.00/);
       assert.equal((await post(base, `/app/roster/pay/${row.id}/amount`, cookie, { amount_dollars: '12000' })).status, 303);

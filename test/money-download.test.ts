@@ -186,14 +186,14 @@ test('each state of a payment reads in plain words, with what was refunded and w
         postPaymentEvent(base, { type, paymentId: `ns_pay_${ref}`, amountCents: 3500, ...extra });
 
       relay.refundStatus = 'pending';
-      assert.equal((await refund('onway')).headers.get('location'), '/app/money?notice=refund-pending');
+      assert.equal((await refund('onway')).headers.get('location'), '/app/payments?notice=refund-pending');
       relay.refundStatus = 'succeeded';
-      assert.equal((await refund('refunded')).headers.get('location'), '/app/money?notice=refund-refunded');
-      assert.equal((await refund('both')).headers.get('location'), '/app/money?notice=refund-refunded');
+      assert.equal((await refund('refunded')).headers.get('location'), '/app/payments?notice=refund-refunded');
+      assert.equal((await refund('both')).headers.get('location'), '/app/payments?notice=refund-refunded');
       relay.refundError = { status: 404, code: 'NOT_FOUND' };
-      assert.equal((await refund('failed')).headers.get('location'), '/app/money?notice=refund-failed');
+      assert.equal((await refund('failed')).headers.get('location'), '/app/payments?notice=refund-failed');
       relay.refundError = { status: 503, code: 'DOWN' };
-      assert.equal((await refund('noanswer')).headers.get('location'), '/app/money?notice=refund-unavailable');
+      assert.equal((await refund('noanswer')).headers.get('location'), '/app/payments?notice=refund-unavailable');
       relay.refundError = null;
 
       assert.equal((await event('marketplace.purchase.disputed', 'disputed', { disputeId: 'ns_dsp_1' })).status, 200);
@@ -524,8 +524,8 @@ test('for the same days, the payments file adds up to what Money shows as collec
       // Cancelled inside the window: the payment stays with the coach, used.
       await db.query('update coach set cancel_window_hours = 168 where id = $1', [seed.coach.id]);
       assert.equal((await cancel(late)).status, 303);
-      assert.equal((await postForm(base, '/app/money/refund', cookie, { target: `b${refunded}` })).headers.get('location'), '/app/money?notice=refund-refunded');
-      assert.equal((await postForm(base, '/app/money/refund', cookie, { target: `b${two}` })).headers.get('location'), '/app/money?notice=refund-refunded');
+      assert.equal((await postForm(base, '/app/money/refund', cookie, { target: `b${refunded}` })).headers.get('location'), '/app/payments?notice=refund-refunded');
+      assert.equal((await postForm(base, '/app/money/refund', cookie, { target: `b${two}` })).headers.get('location'), '/app/payments?notice=refund-refunded');
       // A booking paid with one of the package's credits: no new payment.
       await db.query(
         `insert into booking (session_id, athlete_name, contact_phone, status, payment_source, credit_id, price_cents)
@@ -579,10 +579,10 @@ test('for the same days, the payments file adds up to what Money shows as collec
       assert.deepEqual(rows.filter((r) => r.Bought === 'not booked').map((r) => r.Amount), ['20.00']);
 
       // The screen itself, unless the week turned over while this ran.
-      const money = await getPage(base, '/app/money', cookie);
+      const money = await getPage(base, '/app/payments', cookie);
       if (mondayUtc(new Date()).getTime() === monday.getTime()) {
         const dollars = (c: number) => `$${(c / 100).toFixed(2)}`;
-        assert.ok(money.includes(`Paid by parents:</strong> ${dollars(summary.collectedThisWeekCents)}`), 'collected on the screen');
+        assert.ok(money.includes(`Paid by clients:</strong> ${dollars(summary.collectedThisWeekCents)}`), 'collected on the screen');
         assert.ok(money.includes(`Refunded: ${dollars(total(refundedRows, 'Refunded amount'))} (${refundedRows.length} payments)`), 'refunded on the screen');
       }
 
@@ -638,7 +638,7 @@ test('a range the product does not take gets the branded 400 page, and is not co
         assert.match(page, /no more than 366 days apart/);
         assert.ok(page.includes('choose &quot;Custom dates&quot;') || page.includes('choose "Custom dates"'), 'tells the coach to choose Custom dates');
         if (/range=(this-month|last-year)&from/.test(query)) assert.ok(page.includes('Custom dates'), 'says to choose Custom dates');
-        assert.ok(page.includes('href="/app/money#download"'), 'a way back to Payments');
+        assert.ok(page.includes('href="/app/payments#download"'), 'a way back to Payments');
         assert.match(page, /Back to Payments/);
       }
     }
@@ -724,7 +724,7 @@ test('a range with more rows than a file takes is refused whole, never cut short
       assert.match(page, /<title>That range is too long — Coachatron<\/title>/);
       assert.ok(page.includes(`more than 50,000 ${kind}`), 'says how many a file takes');
       assert.match(page, /Choose a shorter range/);
-      assert.ok(page.includes('href="/app/money#download"'));
+      assert.ok(page.includes('href="/app/payments#download"'));
     }
   });
 });
@@ -735,7 +735,7 @@ test('Money has a Download block: one range, custom dates, and a button for each
   await withServer(async (base) => {
     const cookie = await coachCookie(db, seed.coach.id);
     const before = new Date();
-    const res = await fetch(`${base}/app/money`, { headers: { cookie } });
+    const res = await fetch(`${base}/app/payments`, { headers: { cookie } });
     assert.equal(res.status, 200);
     assert.equal(res.headers.get('cache-control'), 'no-store');
     const money = await res.text();
@@ -755,7 +755,7 @@ test('Money has a Download block: one range, custom dates, and a button for each
     assert.match(block, /<label for="download_from">From<\/label>\s*<input id="download_from" name="from" type="date" \/>/);
     assert.match(block, /<label for="download_to">To \(up to 366 days\)<\/label>\s*<input id="download_to" name="to" type="date" \/>/);
     assert.match(block, /<button type="submit" class="ghost">Download payments<\/button>/);
-    assert.ok(block.includes('What parents paid, listed by the day they paid.'));
+    assert.ok(block.includes('What clients paid, listed by the day they paid.'));
     assert.match(block, /<button type="submit" class="ghost" formaction="\/app\/money\/download\/bookings\.csv">Download bookings<\/button>/);
     assert.ok(block.includes('Who booked what, listed by the day of the session.'));
     assert.match(block, /<p id="download_feedback" class="muted" role="status"><\/p>/);

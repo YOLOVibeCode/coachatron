@@ -460,7 +460,7 @@ export function describeRefundBlock(block: RefundBlock): string {
     case 'paid_with_credit':
       return 'This booking used a session credit. To refund it, refund the payment the credit came from.';
     case 'credits_used':
-      return `${block.used} of the ${block.sessions} sessions this payment bought ${block.used === 1 ? 'was' : 'were'} used, so it cannot be refunded in full here. Talk with the parent, and contact Coachatron support if you want to refund part of it.`;
+      return `${block.used} of the ${block.sessions} sessions this payment bought ${block.used === 1 ? 'was' : 'were'} used, so it cannot be refunded in full here. Talk with the client, and contact Coachatron support if you want to refund part of it.`;
     case 'in_progress':
       return 'A refund of this payment is already on its way.';
     case 'refunded':
@@ -954,9 +954,9 @@ function money(cents: number | null): string {
 }
 
 const TOLD: Record<string, string> = {
-  text: 'The parent was told by text.',
-  email: 'The parent was told by email.',
-  'text+email': 'The parent was told by text and email.',
+  text: 'The client was told by text.',
+  email: 'The client was told by email.',
+  'text+email': 'The client was told by text and email.',
 };
 
 const FAILURE: Record<string, string> = {
@@ -974,7 +974,7 @@ function askedByCancel(item: AskedByCancel): boolean {
 }
 
 /** How Money marks a refund a parent's cancel in time asked for. */
-export const ASKED_BY_CANCEL = 'The parent cancelled in time, and your booking policy refunds that to their card.';
+export const ASKED_BY_CANCEL = 'The client cancelled in time, and your booking policy refunds that to their card.';
 
 /** One or two plain sentences for the coach about a refund. */
 export function describeRefund(
@@ -993,7 +993,7 @@ function describeRefundItself(
   switch (item.status) {
     case 'requested':
       if (item.error_code === 'unavailable' && askedByCancel(item)) {
-        return `The refund of ${amount} could not be confirmed yet and is still being tried. The parent's session credit stays held until it is.`;
+        return `The refund of ${amount} could not be confirmed yet and is still being tried. The client's session credit stays held until it is.`;
       }
       return item.error_code === 'unavailable'
         ? `The refund of ${amount} has not gone through yet: payments did not answer. Try again in a minute.`
@@ -1005,11 +1005,11 @@ function describeRefundItself(
     case 'failed': {
       const why = FAILURE[item.error_code ?? ''] ?? '';
       if (item.refunded_at !== null) {
-        return `The refund of ${amount} did not reach the parent after all. The booking and its credits were already released, so contact the parent, and try again.`;
+        return `The refund of ${amount} did not reach the client after all. The booking and its credits were already released, so contact the client, and try again.`;
       }
       // The cancel stands either way: its payment is a session credit the
       // parent holds until a refund goes through.
-      const left = askedByCancel(item) ? 'The booking stays cancelled, and the parent holds a session credit for it instead.' : 'Nothing else changed.';
+      const left = askedByCancel(item) ? 'The booking stays cancelled, and the client holds a session credit for it instead.' : 'Nothing else changed.';
       return `The refund of ${amount} did not go through.${why ? ` ${why}` : ''} ${left}`;
     }
     case 'refunded': {
@@ -1019,7 +1019,7 @@ function describeRefundItself(
       if (item.credits_used > 0) {
         parts.push(`${item.credits_used} ${item.credits_used === 1 ? 'session it bought was' : 'sessions it bought were'} already used.`);
       }
-      parts.push(TOLD[item.parent_told ?? ''] ?? 'The parent could not be told: please let them know.');
+      parts.push(TOLD[item.parent_told ?? ''] ?? 'The client could not be told: please let them know.');
       return parts.join(' ');
     }
     default:
@@ -1120,7 +1120,7 @@ export function purchaseLabel(paymentSource: string | null): string {
  * parent's cancel in time asked for says so. */
 export function refundLabel(item: Pick<RefundRow, 'status' | 'error_code' | 'refunded_at'> & AskedByCancel): string {
   const label = refundStateLabel(item);
-  return askedByCancel(item) ? `${label} (parent cancelled in time)` : label;
+  return askedByCancel(item) ? `${label} (client cancelled in time)` : label;
 }
 
 function refundStateLabel(item: Pick<RefundRow, 'status' | 'error_code' | 'refunded_at'>): string {
