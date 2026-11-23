@@ -36,7 +36,7 @@ export const landingRouter = Router();
 
 const TITLE = 'Say your week. Start taking bookings.';
 const DESCRIPTION =
-  'Tell us your week in plain words. You get a link parents can book and pay on, in about five minutes, on your phone.';
+  'Tell us your week in plain words. You get a link clients can book and pay on, in about five minutes, on your phone.';
 // Every time says am or pm: a bare hour is read as pm (src/domain/setup.ts),
 // so "Saturday at 9" would mean 9pm.
 const WEEK_EXAMPLE = LANDING_WEEK_EXAMPLE;
@@ -69,6 +69,53 @@ rec.onstart=function(){listening=true;btn.setAttribute("aria-pressed","true");if
 rec.onend=function(){listening=false;btn.setAttribute("aria-pressed","false");if(status&&status.textContent==="Listening… tap to stop")status.textContent="";};
 rec.onerror=function(){listening=false;btn.setAttribute("aria-pressed","false");btn.hidden=true;if(status)status.textContent="Voice isn't available here. You can type it instead.";};
 rec.onresult=function(ev){var chunk="";for(var i=ev.resultIndex;i<ev.results.length;i++)chunk+=ev.results[i][0].transcript;if(chunk){var base=ta.value;ta.value=base+(base&&!/\\s$/.test(base)?" ":"")+chunk;}};
+})();</script>`);
+
+const MOBILE_CTA_SCRIPT = raw(`<script>(function(){
+var mobile=window.matchMedia("(max-width: 899px)");
+var cta=document.getElementById("landing-mobile-cta");
+var anchor=document.getElementById("week-cta");
+var week=document.getElementById("week");
+if(!cta||!anchor)return;
+var heroInView=true;
+var keyboardOpen=false;
+function setVisible(on){
+  cta.classList.toggle("is-visible",on);
+  cta.setAttribute("aria-hidden",on?"false":"true");
+  document.body.classList.toggle("landing-mobile-cta-on",on);
+}
+function refreshKeyboard(){
+  var vv=window.visualViewport;
+  keyboardOpen=!!(vv&&vv.height<window.innerHeight-120);
+}
+function update(){
+  if(!mobile.matches||keyboardOpen||document.activeElement===week){
+    setVisible(false);
+    return;
+  }
+  setVisible(!heroInView);
+}
+if("IntersectionObserver"in window){
+  new IntersectionObserver(function(entries){heroInView=entries[0].isIntersecting;update();},{threshold:0}).observe(anchor);
+}else{
+  function scrollFallback(){
+    var r=anchor.getBoundingClientRect();
+    heroInView=r.bottom>0&&r.top<window.innerHeight;
+    update();
+  }
+  window.addEventListener("scroll",scrollFallback,{passive:true});
+  scrollFallback();
+}
+if(window.visualViewport){
+  window.visualViewport.addEventListener("resize",function(){refreshKeyboard();update();});
+}
+if(week){
+  week.addEventListener("focus",function(){setVisible(false);});
+  week.addEventListener("blur",function(){refreshKeyboard();update();});
+}
+mobile.addEventListener("change",update);
+refreshKeyboard();
+update();
 })();</script>`);
 
 function renderLanding(): string {
@@ -105,7 +152,7 @@ function renderLanding(): string {
               </div>
               <p id="week-voice-status" class="voice-status" aria-live="polite"></p>
             </div>
-            <button type="submit">Set it up</button>
+            <button type="submit" id="week-cta">Set it up</button>
           </form>
           <p class="form-alt">Prefer forms? <a href="/signin">Set up with a form instead</a></p>
           ${sms
@@ -126,7 +173,7 @@ function renderLanding(): string {
         <ol>
           <li><strong>Say it</strong><span>One box, or one text. What you coach, how long, how many, the price, your days.</span></li>
           <li><strong>Check it</strong><span>We show what we understood and ask about anything missing. We never guess a price. Nothing goes live until you tap Publish.</span></li>
-          <li><strong>Share it</strong><span>Parents pick a time and pay. No app. No account.</span></li>
+          <li><strong>Share it</strong><span>Clients pick a time and pay. No app. No account.</span></li>
         </ol>
       </section>
       <section class="faq" id="faq">
@@ -136,7 +183,7 @@ function renderLanding(): string {
           <dd>No. One box, or one text, and you're started.</dd>
           <dt>Do I need a password?</dt>
           <dd>No. Your email or phone is the sign-in.</dd>
-          <dt>Do parents need an app?</dt>
+          <dt>Do clients need an app?</dt>
           <dd>No. They pick a time and pay on your link.</dd>
         </dl>
       </section>
@@ -145,12 +192,20 @@ function renderLanding(): string {
         <p class="price-lede">Free to start. 5% when they pay.</p>
         <p>Money goes straight to your own account. We never hold it. Card processing is extra, on top.</p>
       </section>
+      <section class="landing-close" aria-label="Get started">
+        <p>Ready? Say your week.</p>
+        <a class="action" href="#week">Set it up</a>
+      </section>
       <footer class="colophon">
         <p>Already set up? <a href="/signin">Sign in</a></p>
         <p>Prefer forms? <a href="/signin">Set up with a form instead</a></p>
       </footer>
     </div>
-    ${VOICE_SCRIPT}`,
+    <div class="landing-mobile-cta" id="landing-mobile-cta" aria-hidden="true">
+      <a href="#week">Set it up</a>
+    </div>
+    ${VOICE_SCRIPT}
+    ${MOBILE_CTA_SCRIPT}`,
     { canonicalPath: '/' },
   );
 }

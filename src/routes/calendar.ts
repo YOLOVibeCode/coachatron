@@ -97,7 +97,7 @@ export function renderCalendarBlock(token: string | null, state: string): SafeHt
   return html`${heading}
     <div class="card calendar-feed">
       ${state === 'replaced' && notice ? html`<p>${notice}</p>` : raw('')}
-      <p class="muted">Your sessions show in your calendar app and stay current. The link is private. It shows each session's name, time, place and how many are booked, and names no athlete or parent. Share it with no one.</p>
+      <p class="muted">Your sessions show in your calendar app and stay current. The link is private. It shows each session's name, time, place and how many are booked, and names no athlete or client. Share it with no one.</p>
       <a class="action ghost" href="${calendarWebcalUrl(token)}">Add to calendar</a>
       <label for="calendar-link">Or copy the link</label>
       <input id="calendar-link" type="text" readonly value="${calendarFeedUrl(token)}" onfocus="this.select()" />

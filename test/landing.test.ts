@@ -67,20 +67,27 @@ async function signInWithStart(
   startCookie: string,
   profile: Record<string, string>,
 ): Promise<Response> {
+  const phone = `+1${digits}`;
   await fetch(`${base}/signin/otp`, {
     method: "POST",
     headers: { "content-type": "application/json", cookie: startCookie },
-    body: JSON.stringify({ phone: digits, sms_consent: "1" }),
+    body: JSON.stringify({ contact: digits, sms_consent: "1" }),
     redirect: "manual",
   });
-  const phone = `+1${digits}`;
   const code = /code is (\d{6})/.exec(
     relay.sms.filter((m) => m.to === phone).at(-1)!.body,
   )![1];
-  return fetch(`${base}/signin/verify`, {
+  const verify = await fetch(`${base}/signin/verify`, {
     method: "POST",
     headers: { "content-type": "application/json", cookie: startCookie },
-    body: JSON.stringify({ phone, code, ...profile }),
+    body: JSON.stringify({ to: phone, code }),
+    redirect: "manual",
+  });
+  const flow = joinCookies(startCookie, cookieNamed(verify, "cx_signin"));
+  return fetch(`${base}/signin/profile`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie: flow },
+    body: JSON.stringify({ name: profile.name, tz: profile.tz, extra: profile.email }),
     redirect: "manual",
   });
 }
@@ -101,7 +108,7 @@ test("GET / returns 200 with no database, and the box posts to /start", async ()
     assert.match(body, /href="\/terms"/);
     assert.equal((body.match(/Prefer forms\?/g) ?? []).length, 2);
     assert.match(body, /form-alt/);
-    assert.match(body, /What parents see, built from your words/);
+    assert.match(body, /What clients see, built from your words/);
     assert.match(body, /45 min · Private/);
     assert.match(body, /\$70/);
     assert.match(body, /10-pack/);
@@ -137,6 +144,15 @@ test("landing header, hero, sections, voice control, and footer sign-in", async 
     assert.match(body, /Voice isn't available here/);
     assert.match(body, /Already set up\? <a href="\/signin">Sign in<\/a>/);
     assert.doesNotMatch(body, /Tap the mic on your keyboard/);
+    assert.match(body, /class="landing-close"/);
+    assert.match(body, /Ready\? Say your week\./);
+    assert.match(body, /landing-close[\s\S]*href="#week">Set it up</);
+    assert.match(body, /id="week-cta"/);
+    assert.match(body, /id="landing-mobile-cta"/);
+    assert.match(body, /IntersectionObserver/);
+    assert.match(body, /visualViewport/);
+    assert.match(body, /landing-mobile-cta[\s\S]*min-height:\s*54px/);
+    assert.match(body, /mailto:support@coachatron\.com">Contact</);
   });
 });
 
@@ -189,7 +205,7 @@ test("typed journey: landing box, phone, draft, Publish, live link", async () =>
         assert.ok(startCookie);
 
         const signin = await (await fetch(`${base}/signin`, { headers: { cookie: startCookie! } })).text();
-        assert.match(signin, /Saved\. Now your email or mobile/);
+        assert.match(signin, /Saved\. We/);
 
         const verify = await signInWithStart(
           base,

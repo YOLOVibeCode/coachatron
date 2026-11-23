@@ -24,8 +24,8 @@ test('the pricing screen lists a plan as a one-time pack', async () => {
       assert.equal(res.status, 200);
       const body = await res.text();
       assert.match(body, /One-time packs/);
-      assert.match(body, /4 sessions, one-time/);
-      assert.match(body, /Sessions in the pack/);
+      assert.match(body, /4 sessions · \$120 · \$30\.00 per session · Sessions do not expire/);
+      assert.match(body, /Number of sessions/);
       assert.doesNotMatch(body, RECURRING);
     });
   });
@@ -64,7 +64,16 @@ test('the setup preview shows a plan as a one-time pack', () => {
     },
     [],
   );
-  const coach = { id: 1, handle: 'dana', name: 'Dana', email: '', phone: '+1', tz: 'America/Chicago', connect_recipient_key: null };
+  const coach = {
+    id: 1,
+    handle: 'dana',
+    name: 'Dana',
+    email: '',
+    phone: '+1',
+    tz: 'America/Chicago',
+    connect_recipient_key: null,
+    texts_consent_prompt_dismissed_at: null,
+  };
   const preview = renderSetupPreview(plan, coach, new Date('2026-10-20T12:00:00Z')).value;
   assert.match(preview, /Four pack: 4 sessions for \$120, one-time/);
   assert.doesNotMatch(preview, RECURRING);

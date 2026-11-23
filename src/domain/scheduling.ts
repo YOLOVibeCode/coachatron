@@ -1,5 +1,6 @@
 import type { DbClient } from '../db/client.js';
 import { resolveTypedPlace } from './locations.js';
+import { takesSpotSql } from './pricing.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const offsetFormats = new Map<string, Intl.DateTimeFormat>();
@@ -311,4 +312,17 @@ export async function deactivateSlot(db: DbClient, coachId: number, slotId: numb
     [slotId, now.toISOString()],
   );
   return Number(kept.rows[0]?.n ?? '0');
+}
+
+/** Takes a retired session type off the calendar: its weekly slots stop and
+ * its upcoming sessions nobody has a spot in are cancelled, so parents can
+ * no longer book them. A session that gained a spot in the meantime stays. */
+export async function clearTypeSchedule(db: DbClient, sessionTypeId: number, now: Date): Promise<void> {
+  await db.query('update weekly_slot set active = false where session_type_id = $1 and active = true', [sessionTypeId]);
+  await db.query(
+    `update session s set status = 'cancelled'
+     where s.session_type_id = $1 and s.status = 'scheduled' and s.starts_at_utc > $2
+       and not exists (select 1 from booking b where b.session_id = s.id and ${takesSpotSql('b')})`,
+    [sessionTypeId, now.toISOString()],
+  );
 }

@@ -1,6 +1,7 @@
 import type { DbClient } from '../../src/db/client.js';
 import { createCoach, type CoachRow } from '../../src/domain/auth.js';
 import { grantSmsConsent } from '../../src/domain/sms-consent.js';
+import { weekWindowUtc } from '../../src/lib/week.js';
 import crypto from 'node:crypto';
 
 export interface SeededSession {
@@ -52,6 +53,16 @@ export async function seedCoachWithSession(
   );
 
   return { coach, sessionTypeId, sessionId: sessionResult.rows[0].id, priceCents, capacity };
+}
+
+/** The Schedule URL whose week holds the session: Schedule shows one
+ * Monday-to-Sunday week, so a session "tomorrow" is next week on a Sunday. */
+export async function scheduleUrlFor(db: DbClient, sessionId: number): Promise<string> {
+  const row = (
+    await db.query<{ starts_at_utc: string | Date; tz: string }>('select starts_at_utc, tz from session where id = $1', [sessionId])
+  ).rows[0];
+  const { to } = weekWindowUtc(new Date(), row.tz, 0);
+  return new Date(row.starts_at_utc) < to ? '/app/schedule' : '/app/schedule?week=1';
 }
 
 export async function seedPackage(db: DbClient, coachId: number, credits: number, priceCents: number): Promise<number> {

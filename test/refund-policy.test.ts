@@ -150,7 +150,7 @@ test("a late cancel of a package's own booking is refunded whole, the same as a 
 
       const cookie = await coachCookie(db, seed.coach.id);
       const done = await postForm(base, '/app/money/refund', cookie, { target: `b${lateId}` });
-      assert.equal(done.headers.get('location'), '/app/money?notice=refund-refunded');
+      assert.equal(done.headers.get('location'), '/app/payments?notice=refund-refunded');
       assert.equal(await bookingStatus(db, lateId), 'refunded');
     });
     assert.equal(relay.refundCalls, 1);

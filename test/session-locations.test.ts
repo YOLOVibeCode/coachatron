@@ -694,7 +694,7 @@ test('with parents booked the coach first sees who is texted and the words; the 
 
       const question = await coach.page(`${detail}?place=${park.id}`);
       assert.match(question, /<strong>Move [^<]+ to Riverside Park\?<\/strong>/);
-      const words = /2 parents are booked\. 1 of them gets this text: "(Coachatron: Goalkeeper Group [^"]+\. Now at Riverside Park\.)" The other sees the new place on their booking page\./.exec(question);
+      const words = /2 clients are booked\. 1 of them gets this text: "(Coachatron: Goalkeeper Group [^"]+\. Now at Riverside Park\.)" The other sees the new place on their booking page\./.exec(question);
       assert.ok(words, question);
       assert.match(question, /<input type="hidden" name="confirm" value="1" \/>/);
       assert.match(question, new RegExp(`<a class="action ghost" href="${detail}">Keep Field 3</a>`));
@@ -718,7 +718,7 @@ test('with parents booked the coach first sees who is texted and the words; the 
       assert.deepEqual(logged.rows, [{ to_phone: texts, template: 'broadcast', status: 'sent', coach_id: seed.coach.id }]);
       assert.match(
         await coach.page(`${detail}?placed=1.2`),
-        /Location changed\. Texted 1 of 2 parents\. The rest see the new place on their booking page\./,
+        /Location changed\. Texted 1 of 2 clients\. The rest see the new place on their booking page\./,
       );
 
       // A second tap of the same change sends nothing more.
@@ -752,7 +752,7 @@ test('the session update is one segment that keeps the place whole, whatever the
   );
 });
 
-// ---- 9. What parents see ----
+// ---- 9. What clients see ----
 
 test("parents see the session's own place on the coach's page, the booking form, checkout, the manage page, the confirmation and the reminder", async () => {
   await withRelay(async (relay) => {
@@ -770,12 +770,13 @@ test("parents see the session's own place on the coach's page, the booking form,
     await withServer(async (base) => {
       const handle = seed.coach.handle;
       const list = await (await fetch(`${base}/c/${handle}`)).text();
-      assert.equal(list.match(/<div class="meta"><span>Riverside Park, 120 River Rd<\/span><\/div>/g)?.length, 1, 'on its own session only');
+      assert.equal((list.match(/Riverside Park, 120 River Rd/g) ?? []).length, 1, 'on its own session only');
 
       const form = await (await fetch(`${base}/c/${handle}/sessions/${seed.sessionId}/book`)).text();
-      assert.match(form, /<p class="muted">[^<]+ · Riverside Park, 120 River Rd — \$35\.00<\/p>/);
+      assert.match(form, /<p class="muted">[^<]+ · Riverside Park, 120 River Rd — \$35/);
       const bareForm = await (await fetch(`${base}/c/${handle}/sessions/${bare.rows[0].id}/book`)).text();
-      assert.match(bareForm, /<p class="muted">[^<·]+ — \$35\.00<\/p>/, 'a session with no place says none');
+      assert.match(bareForm, /— \$35 per person/, 'a session with no place says none');
+      assert.doesNotMatch(bareForm, /Riverside Park/);
 
       const b = await bookOnline(base, handle, seed.sessionId, 'Alex', '5551112222', { contact_email: 'alex.parent@example.com' });
       assert.ok(b.key);

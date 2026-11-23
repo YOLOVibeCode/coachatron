@@ -77,14 +77,19 @@ test('the Pricing screen states the default policy and lets the coach change it'
     const cookie = `cx_session=${await createCoachSession(db, seed.coach.id)}`;
     const pricing = await (await fetch(`${base}/app/pricing`, { headers: { cookie } })).text();
     assert.match(pricing, /<h2 id="policy">Booking policy<\/h2>/);
-    assert.match(pricing, /No-show:<\/strong> the booking(?:'|&#39;)s credit is used/);
-    assert.match(pricing, /cancels more than 24 hours before a session gets their credit back/);
+    assert.match(pricing, /If a child does not show up/);
+    assert.match(pricing, /If a client cancels in time/);
+    assert.match(pricing, /must cancel more than 24 hours before a session/);
     assert.match(pricing, /book up to 2 children at once/);
+    assert.match(pricing, /A credit for another session/);
+    assert.match(pricing, /Edit policy/);
     assert.match(pricing, /name="cancel_window_hours"[^>]*value="24"/);
 
     const saved = await post(base, '/app/pricing/policy', { cancel_window_hours: '48', children_per_booking: '3' }, cookie);
     assert.equal(saved.status, 303);
-    const after = await (await fetch(`${base}/app/pricing`, { headers: { cookie } })).text();
+    assert.match(saved.headers.get('location') ?? '', /policy=saved/);
+    const after = await (await fetch(`${base}${saved.headers.get('location')}`, { headers: { cookie } })).text();
+    assert.match(after, /Policy saved/);
     assert.match(after, /more than 48 hours before a session/);
     assert.match(after, /book up to 3 children at once/);
 

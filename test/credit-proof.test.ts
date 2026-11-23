@@ -338,7 +338,15 @@ test('a checkout code is not a sign-in code, and asking for one leaves a live si
       const withSignInCode = await postCheckout(base, seed.coach.handle, b.key, { mode: 'verify_code', code: signInCode });
       assert.equal(withSignInCode.status, 401, 'the sign-in code does not unlock credits');
 
-      const signedIn = await form(base, '/signin/verify', { to: PHONE, code: signInCode, name: 'Pat' });
+      const verify = await form(base, '/signin/verify', { to: PHONE, code: signInCode });
+      assert.equal(verify.status, 303);
+      const pending = (verify.headers.getSetCookie?.() ?? []).map((c) => c.split(';')[0]).join('; ');
+      const signedIn = await fetch(`${base}/signin/profile`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: pending },
+        body: new URLSearchParams({ name: 'Pat', tz: 'America/Chicago' }),
+        redirect: 'manual',
+      });
       assert.equal(signedIn.status, 303, 'the sign-in code still works');
       assert.match(signedIn.headers.get('set-cookie') ?? '', /cx_session=/);
       assert.equal((await postCheckout(base, seed.coach.handle, b.key, { mode: 'verify_code', code: creditCode })).status, 303);

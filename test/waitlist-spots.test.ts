@@ -88,7 +88,7 @@ test('a backup coach opens spots for the waitlist in order, by text or by email'
     assert.equal(relay.sms.filter((m) => m.to === CAL.phone).length, 0, 'only as many as there are spots');
 
     const told = relay.sms.find((m) => m.to === seed.coach.phone && /is your backup coach/.test(m.body));
-    assert.match(told!.body, /2 waitlisted parents were offered a spot\./);
+    assert.match(told!.body, /2 waitlisted clients were offered a spot\./);
 
     const holds = await db.query<{ status: string; minutes: number }>(
       `select status, round(extract(epoch from (hold_expires_at - now())) / 60)::int as minutes
@@ -124,7 +124,7 @@ test('a second group draws from the full session’s waitlist', async () => {
     );
     assert.deepEqual(held.rows.map((b) => [b.session_id, b.athlete_name]), [[groupId, 'Ann First']]);
     assert.ok(relay.sms.some((m) => m.to === ANN.phone && /spot opened/.test(m.body)));
-    assert.ok(relay.sms.some((m) => m.to === seed.coach.phone && /took the second group\. 1 waitlisted parent was offered a spot\./.test(m.body)));
+    assert.ok(relay.sms.some((m) => m.to === seed.coach.phone && /took the second group\. 1 waitlisted client was offered a spot\./.test(m.body)));
   });
 });
 
@@ -364,7 +364,7 @@ test('the coach hears how many parents were offered a spot, once for a parent wi
       ['Amy First', 'offered'],
     ]);
     const told = relay.sms.find((m) => m.to === seed.coach.phone && /is your backup coach/.test(m.body));
-    assert.match(told!.body, /1 waitlisted parent was offered a spot\./);
+    assert.match(told!.body, /1 waitlisted client was offered a spot\./);
   });
 });
 

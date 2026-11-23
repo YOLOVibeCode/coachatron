@@ -235,7 +235,13 @@ test('a mobile sign-in code needs no box; the box records consent once the code 
       assert.equal(checked.status, 303);
       assert.equal(await hasActiveConsent(db, '+15550008889'), false, 'not until the code proves the number');
       const code = /code is (\d{6})/.exec(relay.sms.at(-1)!.body)![1];
-      assert.equal((await post('/signin/verify', { to: '+15550008889', code, name: 'Box Ticked' })).status, 303);
+      const verify = await post('/signin/verify', { to: '+15550008889', code });
+      assert.equal(verify.status, 303);
+      const pending = verify.headers.getSetCookie?.().find((c) => c.startsWith('cx_signin='))?.split(';')[0];
+      assert.equal(
+        (await post('/signin/profile', { name: 'Box Ticked', tz: 'America/Chicago' }, pending ?? '')).status,
+        303,
+      );
       assert.equal(await hasActiveConsent(db, '+15550008889'), true);
       const proof = await db.query<{ source: string }>("select source from sms_consent where phone = '+15550008889'");
       assert.equal(proof.rows[0].source, '/signin/otp');
@@ -260,6 +266,11 @@ test('a coach who signed in by text without the box can turn texts on later', as
     await withServer(async (base) => {
       const schedule = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
       assert.match(schedule, /action="\/app\/phone\/consent"/);
+      assert.match(schedule, /class="sms-consent-gated"/);
+      assert.match(schedule, /Turn on texts<\/button>/);
+      assert.match(schedule, /<button type="submit" class="ghost" disabled>Turn on texts<\/button>/);
+      assert.match(schedule, /action="\/app\/phone\/consent\/dismiss"/);
+      assert.match(schedule, /Not now/);
 
       const post = (body: Record<string, string>) =>
         fetch(`${base}/app/phone/consent`, {
@@ -272,6 +283,26 @@ test('a coach who signed in by text without the box can turn texts on later', as
       assert.equal(await hasActiveConsent(db, phone), false);
       assert.equal((await post({ sms_consent: '1' })).headers.get('location'), '/app/schedule?phone=done');
       assert.equal(await hasActiveConsent(db, phone), true);
+    });
+  });
+});
+
+test('a coach can dismiss the turn-on-texts card until they opt in', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const seed = await seedCoachWithSession(db);
+    const phone = seed.coach.phone as string;
+    await db.query('delete from sms_consent where phone = $1', [phone]);
+    const cookie = `cx_session=${await createCoachSession(db, seed.coach.id)}`;
+    await withServer(async (base) => {
+      const dismiss = await fetch(`${base}/app/phone/consent/dismiss`, {
+        method: 'POST',
+        headers: { cookie },
+        redirect: 'manual',
+      });
+      assert.equal(dismiss.status, 303);
+      const hidden = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
+      assert.doesNotMatch(hidden, /action="\/app\/phone\/consent"/);
     });
   });
 });
@@ -334,6 +365,7 @@ test('every public page links /sms and names the operator in the footer', async 
     for (const path of ['/', '/signin', '/privacy', '/terms', '/sms']) {
       const html = await (await fetch(`${base}${path}`)).text();
       assert.match(html, /href="\/sms"/, path);
+      assert.match(html, /mailto:support@coachatron\.com">Contact</, path);
       const footer = html.slice(html.lastIndexOf('<footer class="site-footer">'));
       assert.ok(footer.includes(OPERATOR), path);
     }

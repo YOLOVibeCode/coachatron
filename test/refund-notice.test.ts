@@ -60,7 +60,7 @@ test('a parent who chose no texts and gave no email is not contacted, and the co
       const bookingId = (await db.query<{ id: number }>("select id from booking where charge_id = 'ns_pay_quiet'")).rows[0].id;
       const cookie = await coachCookie(db, seed.coach.id);
       await postForm(base, `/app/sessions/${seed.sessionId}/bookings/${bookingId}/refund`, cookie);
-      assert.match(await getPage(base, '/app/money', cookie), /The parent could not be told: please let them know\./);
+      assert.match(await getPage(base, '/app/payments', cookie), /The client could not be told: please let them know\./);
     });
     assert.equal(refundTexts(relay).length, 0);
     assert.equal(relay.emails.filter((e) => /^Refund from/.test(e.subject)).length, 0);

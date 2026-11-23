@@ -66,7 +66,8 @@ test('Schedule: grouped list, week nav, edit panel, account sign-out, session ro
       assert.match(schedule, /<form method="post" action="\/signout">/);
 
       const types = await (await fetch(`${base}/app/session-types`, { headers: { cookie } })).text();
-      assert.match(types, /1 athlete/);
+      assert.match(types, /one-on-one/);
+      assert.doesNotMatch(types, /1 athletes|1 spots/);
       assert.match(types, /<form method="post" action="\/signout">/);
     });
   });
@@ -84,7 +85,7 @@ test('Schedule: payments banner blocks share until payments are ready', async ()
     await withServer(async (base) => {
       const schedule = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
       assert.match(schedule, /payments-banner/);
-      assert.match(schedule, /Parents can(&#39;|')t book until payments are set up/);
+      assert.match(schedule, /Clients can(&#39;|')t book until payments are set up/);
       assert.match(schedule, /Copy link<\/button>/);
       assert.match(schedule, /<button type="button" class="ghost" disabled>Copy link<\/button>/);
       assert.match(schedule, /<span class="action ghost" aria-disabled="true">Share your link<\/span>/);
