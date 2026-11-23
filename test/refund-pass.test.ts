@@ -104,7 +104,7 @@ test('a package bought for two children can be refunded: both bookings end and i
       const [mia, leo] = await children(db);
       const cookie = await coachCookie(db, seed.coach.id);
 
-      const confirm = await getPage(base, `/app/money?refund=b${mia.id}`, cookie);
+      const confirm = await getPage(base, `/app/payments?refund=b${mia.id}`, cookie);
       assert.match(confirm, /Refund \$300\?/);
       assert.doesNotMatch(confirm, /sessions this payment bought (?:was|were) used/);
       assert.match(confirm, /Mia and Leo's bookings are cancelled and the spots are free again\./);
@@ -115,7 +115,7 @@ test('a package bought for two children can be refunded: both bookings end and i
       assert.match(fromLeo, /Refund \$300\?/);
 
       const done = await postForm(base, '/app/money/refund', cookie, { target: `b${leo.id}` });
-      assert.equal(done.headers.get('location'), '/app/money?notice=refund-refunded');
+      assert.equal(done.headers.get('location'), '/app/payments?notice=refund-refunded');
       assert.equal(relay.refunds.length, 1);
       assert.deepEqual((await children(db)).map((c) => c.status), ['refunded', 'refunded']);
       const credit = await db.query<{ remaining: number }>('select remaining from credit where id = $1', [mia.credit_id]);
@@ -141,14 +141,14 @@ test("a child's cancel that became a credit is withdrawn with the refund; a spen
       assert.ok(leoCredit);
       const cookie = await coachCookie(db, seed.coach.id);
 
-      const confirm = await getPage(base, `/app/money?refund=b${mia.id}`, cookie);
+      const confirm = await getPage(base, `/app/payments?refund=b${mia.id}`, cookie);
       assert.match(confirm, /Refund \$70\?/);
       assert.match(confirm, /Mia's booking is cancelled and the spot is free again\./);
       assert.match(confirm, /The 1 unused session credit it bought is withdrawn\./);
 
       // Once Leo's credit is spent, the payment's sessions were used.
       await db.query('update credit set remaining = 0 where id = $1', [leoCredit]);
-      const used = await getPage(base, `/app/money?refund=b${mia.id}`, cookie);
+      const used = await getPage(base, `/app/payments?refund=b${mia.id}`, cookie);
       assert.match(used, /1 of the 2 sessions this payment bought was used/);
       const blocked = await postForm(base, '/app/money/refund', cookie, { target: `b${mia.id}` });
       assert.equal(blocked.status, 303);
@@ -212,11 +212,11 @@ test("Money lists a pass's payment once, with every child and the whole amount",
       await payForTwo(base, seed.coach.handle, seed.sessionId, 'ch_pass_list', 7000);
       const [mia] = await children(db);
       const cookie = await coachCookie(db, seed.coach.id);
-      const money = readable(await (await fetch(`${base}/app/money`, { headers: { cookie } })).text());
+      const money = readable(await (await fetch(`${base}/app/payments`, { headers: { cookie } })).text());
       const cards = money.match(/class="card recent-payment"/g) ?? [];
       assert.equal(cards.length, 1, 'one payment');
       assert.match(money, /<strong>Mia and Leo<\/strong> · \$70/);
-      assert.ok(money.includes(`/app/money?refund=b${mia.id}#refund`));
+      assert.ok(money.includes(`/app/payments?refund=b${mia.id}#refund`));
     });
   });
 });

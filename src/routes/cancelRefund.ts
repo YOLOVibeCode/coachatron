@@ -21,13 +21,13 @@ const CHOICES: Array<[CancelGives, string]> = [
 /** The third field of the booking-policy form, next to the cancellation
  * window and the children limit. */
 export function cancelGivesField(policy: Pick<BookingPolicy, 'cancelGives'>): SafeHtml {
-  return html`<label for="cancel_gives">When a parent cancels in time</label>
+  return html`<label for="cancel_gives">When a client cancels in time</label>
     <select id="cancel_gives" name="cancel_gives">
       ${CHOICES.map(([value, label]) =>
         value === policy.cancelGives ? html`<option value="${value}" selected>${label}</option>` : html`<option value="${value}">${label}</option>`,
       )}
     </select>
-    <p class="muted">For a drop-in paid by card. A credit stays on the parent's account for a future session. A refund returns the full payment to their card, including Coachatron's ${APP_FEE_BPS / 100}% fee; the card company keeps its own processing fee. Bookings already made keep whichever choice was in place when they paid.</p>`;
+    <p class="muted">For a drop-in paid by card. A credit stays on the client's account for a future session. A refund returns the full payment to their card, including Coachatron's ${APP_FEE_BPS / 100}% fee; the card company keeps its own processing fee. Bookings already made keep whichever choice was in place when they paid.</p>`;
 }
 
 /** What the policy card says a paid drop-in cancelled in time becomes. */
@@ -37,7 +37,7 @@ export function cancelGivesSummary(policy: Pick<BookingPolicy, 'cancelGives'>): 
 
 /** The card's closing line: how card refunds are made under the choice. */
 export function cardRefundsNote(policy: Pick<BookingPolicy, 'cancelGives'>): string {
-  const yours = "You can refund any payment yourself, from Money or the session's screen.";
+  const yours = "You can refund any payment yourself, from Payments or the session's screen.";
   return policy.cancelGives === 'refund'
     ? `A refund is of a whole payment: children paid for together are refunded once each of their bookings is cancelled in time, and until then a cancelled booking gets a session credit. ${yours}`
     : `Card refunds are separate. ${yours}`;

@@ -46,7 +46,7 @@ test('the pricing page lists package details with edit and delete', async () => 
     const cookie = `cx_session=${await createCoachSession(db, seed.coach.id)}`;
     await withServer(async (base) => {
       const html = await (await fetch(`${base}/app/pricing`, { headers: { cookie } })).text();
-      assert.match(html, /Prepaid sessions parents buy up front/);
+      assert.match(html, /Prepaid sessions clients buy up front/);
       assert.match(html, /Session credits from the pack never expire/);
       assert.match(html, /10 sessions/);
       assert.match(html, /\$150/);

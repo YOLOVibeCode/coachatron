@@ -1,6 +1,6 @@
 import type { Request, Response, Router } from 'express';
 import { getDb } from '../db/client.js';
-import { coachNav, html, page, raw, type SafeHtml } from '../lib/html.js';
+import { coachHeader, html, page, raw, SESSION_CREDITS_EXPLANATION, type SafeHtml } from '../lib/html.js';
 import { formatCoachDollars } from '../lib/time.js';
 import { dollarsToCents, LIMITS, rowId, wholeNumber } from '../lib/input.js';
 import {
@@ -315,9 +315,9 @@ function renderPolicySection(policy: BookingPolicy, contactChannel: ClientContac
     <div class="card policy">
       <ul>
         <li><strong>If a child does not show up:</strong> the session credit or payment for that booking is used. You can give it back from the session screen.</li>
-        <li><strong>If a parent cancels in time:</strong> they must cancel ${window}. Their session credit comes back. ${inTimePaid}${late}</li>
-        <li><strong>Children per booking:</strong> a parent can book up to ${children} ${children === 1 ? 'child' : 'children'} at once. Each child takes a spot and uses one credit or one drop-in payment.</li>
-        <li><strong>Refunds to a card:</strong> you can refund a whole payment from Money or a session's screen.</li>
+        <li><strong>If a client cancels in time:</strong> they must cancel ${window}. Their session credit comes back. ${inTimePaid}${late}</li>
+        <li><strong>Children per booking:</strong> a client can book up to ${children} ${children === 1 ? 'child' : 'children'} at once. Each child takes a spot and uses one credit or one drop-in payment.</li>
+        <li><strong>Refunds to a card:</strong> you can refund a whole payment from Payments or a session's screen.</li>
       </ul>
       <details class="policy-edit"${editing ? raw(' open') : raw('')}>
         <summary class="action ghost">Edit policy</summary>
@@ -382,7 +382,7 @@ async function renderPricingPage(coachId: number, state: PricingViewState = {}):
       </div>
       <details>
         <summary class="ghost" style="margin-top:8px;font-family:ui-sans-serif,system-ui,sans-serif;font-size:0.9rem;color:var(--alert);cursor:pointer;">Delete</summary>
-        <p class="muted">Remove ${p.name}? Parents who already bought it keep their credits.</p>
+        <p class="muted">Remove ${p.name}? Clients who already bought it keep their credits.</p>
         <form method="post" action="/app/pricing/package/${p.id}/delete">
           <button type="submit" class="ghost">Yes, remove this package</button>
         </form>
@@ -412,7 +412,7 @@ async function renderPricingPage(coachId: number, state: PricingViewState = {}):
       </div>
       <details>
         <summary class="ghost" style="margin-top:8px;font-family:ui-sans-serif,system-ui,sans-serif;font-size:0.9rem;color:var(--alert);cursor:pointer;">Delete</summary>
-        <p class="muted">Remove ${p.name}? Parents who already bought it keep their credits.</p>
+        <p class="muted">Remove ${p.name}? Clients who already bought it keep their credits.</p>
         <form method="post" action="/app/pricing/plan/${p.id}/delete">
           <button type="submit" class="ghost">Yes, remove this pack</button>
         </form>
@@ -422,10 +422,11 @@ async function renderPricingPage(coachId: number, state: PricingViewState = {}):
 
   return page(
     'Pricing',
-    html`${coachNav('pricing')}
+    html`${coachHeader('pricing')}
       <h1>Pricing & credits</h1>
+      <p class="muted">${SESSION_CREDITS_EXPLANATION}</p>
       <h2>Session packages</h2>
-      <p class="muted">Prepaid sessions parents buy up front. You can set credits to expire after a set number of days.</p>
+      <p class="muted">Prepaid sessions clients buy up front. You can set credits to expire after a set number of days.</p>
       ${packagesList.length === 0 ? html`<p class="muted">No packages yet.</p>` : packageCards}
       <details class="pricing-create"${state.openCreatePackage ? raw(' open') : raw('')}>
         <summary>+ New package</summary>
@@ -439,7 +440,7 @@ async function renderPricingPage(coachId: number, state: PricingViewState = {}):
       </details>
 
       <h2>One-time packs</h2>
-      <p class="muted">Charged once when a parent buys. Session credits from the pack never expire.</p>
+      <p class="muted">Charged once when a client buys. Session credits from the pack never expire.</p>
       ${plansList.length === 0 ? html`<p class="muted">No one-time packs yet.</p>` : planCards}
       <details class="pricing-create"${state.openCreatePlan ? raw(' open') : raw('')}>
         <summary>+ New one-time pack</summary>

@@ -72,7 +72,7 @@ test('starting payments saves that the coach started, and the return from onboar
       assert.equal(started?.charges_enabled, false);
 
       relay.enableCharges('coachatron', coach.handle);
-      const back = await fetch(`${base}/app/money?seller=connected`, { headers: { cookie } });
+      const back = await fetch(`${base}/app/payments?seller=connected`, { headers: { cookie } });
       assert.equal(back.status, 200);
       const row = await getPaymentsRow(db, coach.id);
       assert.equal(row?.charges_enabled, true);

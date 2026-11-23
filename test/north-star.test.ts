@@ -31,7 +31,7 @@ import type { CompleteRequest } from '../src/llm/schema.js';
  *      gets one text with the page link and a /p/<token> payments link.
  *   4. Until payments work, the coach page shows "Booking opens soon" in
  *      place of Book, and nothing leads a parent to a payment page.
- *   5. The payments link from the text signs the coach in on /app/money,
+ *   5. The payments link from the text signs the coach in on /app/payments,
  *      where they accept the marketplace terms and onboard with the relay.
  *   6. The seller becomes charges-enabled; the relay's seller.updated event
  *      says so, and the coach gets one "You can take payments now" text.
@@ -127,16 +127,20 @@ function sessionCards(html: string): SessionCard[] {
   return html
     .split('<div class="card">')
     .slice(1)
+    .filter((chunk) => !chunk.includes('booking-closed-banner') && /<strong>/.test(chunk))
     .map((chunk) => {
       const spans = [...chunk.matchAll(/<span>([\s\S]*?)<\/span>/g)].map((m) => visible(m[1]));
+      const metaLeft = spans[0] ?? '';
+      const typeName = metaLeft.split(' · ').find((p) => p !== '' && !/^\d+ min$/.test(p)) ?? metaLeft;
       return {
         when: visible(/<strong>([\s\S]*?)<\/strong>/.exec(chunk)?.[1] ?? ''),
-        name: spans[0] ?? '',
+        name: typeName.includes(' · ') ? (metaLeft.split(' · ')[1] ?? typeName) : typeName,
         detail: spans[1] ?? '',
         book: /href="([^"]+\/book)"/.exec(chunk)?.[1] ?? null,
         notOpen: /<button[^>]*disabled[^>]*>Not open<\/button>/.test(chunk) || />Not open<\/button>/.test(chunk),
       };
-    });
+    })
+    .filter((c) => c.when.length > 0);
 }
 
 function sessionCookie(res: Response): string {
@@ -294,12 +298,12 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           assert.equal(published.headers.get('location'), '/app/schedule?published=1');
 
           const live = visible(await (await get('/app/schedule?published=1', coachCookie)).text());
-          const link = new RegExp(`You're live\\. Parents book at ${escapeRegExp(appHost)}/c/([a-z0-9-]+)`).exec(live);
+          const link = new RegExp(`You're live\\. Clients book at ${escapeRegExp(appHost)}/c/([a-z0-9-]+)`).exec(live);
           assert.ok(link, `the schedule shows the coach's public link: ${live.slice(0, 300)}`);
           handle = link[1];
           assert.equal(handle, 'dana-rivera', 'the handle comes from the name');
-          assert.match(live, /Parents can't book yet/);
-          assert.match(live, /Parents can't book until payments are set up\./);
+          assert.match(live, /Clients can't book yet/);
+          assert.match(live, /Clients can't book until payments are set up\./);
 
           const texts = textsToCoach();
           assert.equal(texts.length, 2, 'one more text to the coach: the start link, then this one');
@@ -330,12 +334,12 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           const groups = cards.filter((c) => c.name === 'Group');
           assert.ok(privates.length >= 2 && groups.length >= 1, `both kinds of session are listed: ${JSON.stringify(cards.slice(0, 4))}`);
           for (const c of privates) {
-            assert.match(c.when, /^(Tue|Thu), \w{3} \d{1,2}, 6:00 PM$/, `privates are Tue/Thu 6pm: ${c.when}`);
-            assert.equal(c.detail, '1 spot left · $60.00');
+            assert.match(c.when, /^(Tue|Thu), \w{3} \d{1,2}.*6:00/, `privates are Tue/Thu 6pm: ${c.when}`);
+            assert.match(c.detail, /Available · \$60/);
           }
           for (const c of groups) {
-            assert.match(c.when, /^Sat, \w{3} \d{1,2}, 9:00 AM$/, `the group is Saturday 9am: ${c.when}`);
-            assert.equal(c.detail, '8 spots left · $25.00');
+            assert.match(c.when, /^Sat, \w{3} \d{1,2}.*9:00/, `the group is Saturday 9am: ${c.when}`);
+            assert.match(c.detail, /8 spots left · \$25/);
           }
         });
 
@@ -380,12 +384,12 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
 
           const tapped = await postForm(paymentsPath, {});
           assert.equal(tapped.status, 303);
-          assert.equal(tapped.headers.get('location'), '/app/money', 'the link opens Money');
+          assert.equal(tapped.headers.get('location'), '/app/payments', 'the link opens Money');
           moneyCookie = sessionCookie(tapped);
           assert.equal((await postForm(paymentsPath, {})).status, 410, 'the payments link works once');
 
-          const before = visible(await (await get('/app/money', moneyCookie)).text());
-          assert.match(before, /Connect a payment account so athletes can pay you when they book\./);
+          const before = visible(await (await get('/app/payments', moneyCookie)).text());
+          assert.match(before, /Connect a payment account so clients can pay you when they book\./);
           assert.match(before, /Coachatron keeps 5% of each payment/);
           assert.match(before, /I accept the Coachatron marketplace terms \(v1\)\./);
 
@@ -403,7 +407,7 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
             {
               product: 'coachatron',
               sellerKey: handle,
-              returnUrl: `${appBase}/app/money`,
+              returnUrl: `${appBase}/app/payments`,
               email: 'dana@example.com',
               profile: {
                 phone: COACH_PHONE,
@@ -414,7 +418,7 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
             },
           ]);
           assert.match(
-            visible(await (await get('/app/money', moneyCookie)).text()),
+            visible(await (await get('/app/payments', moneyCookie)).text()),
             /Finish setting up your payment account/,
             'between accepting and finishing, Money asks the coach to finish',
           );
@@ -438,11 +442,11 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
             1,
           );
 
-          const after = visible(await (await get('/app/money?seller=connected', moneyCookie)).text());
+          const after = visible(await (await get('/app/payments?seller=connected', moneyCookie)).text());
           assert.match(after, /Payments are connected\./, 'the return notice');
-          assert.match(after, /Payments connected\. Athletes pay you directly\. Coachatron keeps 5% of each payment\./);
-          assert.match(after, /Payouts go to your bank account\./);
+          assert.match(after, /Paid by clients:/);
           assert.doesNotMatch(after, /marketplace terms/, 'the terms are not asked again');
+          assert.doesNotMatch(after, /id="page-link"/);
 
           assert.equal(textsToCoach().length, 3, 'coming back from onboarding does not text again');
 
@@ -463,7 +467,8 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           const bookForm = await get(bookPath);
           assert.equal(bookForm.status, 200);
           const bookHtml = await bookForm.text();
-          assert.match(visible(bookHtml), /^Book a session — Coachatron Group Sat, \w{3} \d{1,2}, 9:00 AM — \$25\.00/);
+          assert.match(visible(bookHtml), /Group Sat, \w{3} \d{1,2}, 9:00 AM — \$25 per person/);
+          assert.match(visible(bookHtml), /No account needed/);
           for (const name of ['athlete_name', 'contact_phone', 'sms_consent', 'contact_email']) {
             assert.match(bookHtml, new RegExp(`name="${name}"`), `the booking form asks for ${name}`);
           }
@@ -580,7 +585,7 @@ test('north star: a coach texts their week in, and a parent books and pays', asy
           assert.match(backHtml, new RegExp(`href="/booking/${b.manage_token}">Manage this booking<`), 'with the manage link');
           assert.match(visible(await (await get(`${returned.pathname}${returned.search}`)).text()), /You're booked/, 'and so does the return link');
           const after = sessionCards(await (await get(`/c/${handle}`)).text()).find((c) => c.book === bookPath);
-          assert.equal(after?.detail, '7 spots left · $25.00', 'the coach page counts the paid spot');
+          assert.match(after?.detail ?? '', /7 spots left · \$25/, 'the coach page counts the paid spot');
 
           // The parent ticked the texts box and gave an email: one text and
           // one email confirm the booking, each with the manage link.

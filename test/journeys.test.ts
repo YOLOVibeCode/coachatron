@@ -99,7 +99,7 @@ test('journey 1: coach signs in, creates a session type, generates a week, gets 
       assert.equal(publicRes.status, 200);
       const publicHtml = await publicRes.text();
       assert.match(publicHtml, /Goalkeeper Group/);
-      assert.match(publicHtml, /\$35\.00/);
+      assert.match(publicHtml, /\$35/);
     });
   });
 });
@@ -146,7 +146,7 @@ test('journey 2: parent books and pays a drop-in via the fake relay', async () =
 
       // The coach's Money screen reflects the collection (SPEC.md example).
       const token = await (await import('../src/domain/auth.js')).createCoachSession(db, seed.coach.id);
-      const moneyRes = await fetch(`${base}/app/money`, { headers: { cookie: `cx_session=${token}` } });
+      const moneyRes = await fetch(`${base}/app/payments`, { headers: { cookie: `cx_session=${token}` } });
       assert.equal(moneyRes.status, 200);
       const moneyHtml = await moneyRes.text();
       assert.match(moneyHtml, /\$35\.00/);

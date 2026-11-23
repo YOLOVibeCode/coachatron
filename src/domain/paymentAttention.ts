@@ -124,7 +124,7 @@ export function describeAttention(item: Pick<AttentionItem, 'reason' | 'amount_c
     case 'session_cancelled': {
       const [, count, told] = /^credit:(\d+):(told|not-told)$/.exec(item.outcome ?? '') ?? [];
       const credits = Number(count ?? '0');
-      const given = `The session was cancelled before this payment arrived. The parent now has ${credits} session ${credits === 1 ? 'credit' : 'credits'} with you`;
+      const given = `The session was cancelled before this payment arrived. The client now has ${credits} session ${credits === 1 ? 'credit' : 'credits'} with you`;
       return told === 'told' ? `${given} and was told.` : `${given}. They could not be told: please let them know.`;
     }
     case 'session_started':

@@ -78,7 +78,7 @@ test('the Pricing screen states the default policy and lets the coach change it'
     const pricing = await (await fetch(`${base}/app/pricing`, { headers: { cookie } })).text();
     assert.match(pricing, /<h2 id="policy">Booking policy<\/h2>/);
     assert.match(pricing, /If a child does not show up/);
-    assert.match(pricing, /If a parent cancels in time/);
+    assert.match(pricing, /If a client cancels in time/);
     assert.match(pricing, /must cancel more than 24 hours before a session/);
     assert.match(pricing, /book up to 2 children at once/);
     assert.match(pricing, /A credit for another session/);
