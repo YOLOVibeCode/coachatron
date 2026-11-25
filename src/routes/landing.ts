@@ -25,6 +25,7 @@ import { recordConsent } from '../domain/sms-consent.js';
 import { clearCookie, serializeCookie } from '../lib/cookies.js';
 import {
   encodeStartCookie,
+  serializeStartCookieAfterSetup,
   START_COOKIE,
   START_COOKIE_MAX_AGE,
 } from '../lib/startCookie.js';
@@ -372,9 +373,7 @@ landingRouter.post('/start/:token', async (req, res) => {
   const session = await createCoachSession(db, coach.id);
   const cookies = [serializeCookie(SESSION_COOKIE, session, 30 * 24 * 60 * 60)];
   const result = await handleSetupMessage(db, coach, consumed.text, 'web');
-  if (result.kind !== 'draft') {
-    cookies.push(serializeCookie(START_COOKIE, encodeStartCookie(consumed.text), START_COOKIE_MAX_AGE));
-  }
+  cookies.push(serializeStartCookieAfterSetup(consumed.text, result.kind));
   res.setHeader('Set-Cookie', cookies);
   const error = result.kind === 'cap' ? '&e=cap' : result.kind === 'error' ? '&e=read' : '';
   res.redirect(303, `/app/schedule?setup=1${error}`);

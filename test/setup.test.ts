@@ -262,6 +262,85 @@ test('an open question blocks Publish until it is answered', async () => {
   });
 });
 
+test('after a failed setup, the box keeps the latest text the coach submitted', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const { cookie } = await newCoach(db);
+    const original = 'keeper group tues and thurs';
+    const edited = 'Keeper group Tuesdays and Thursdays at 6pm, an hour, 8 athletes, $35';
+    setComplete(fakeComplete(new Error('timeout')));
+    try {
+      await withServer(async (base) => {
+        const first = await post(base, '/app/setup', cookie, { text: original });
+        assert.equal(first.headers.get('location'), '/app/schedule?setup=1&e=read');
+        const start1 =
+          (first.headers.getSetCookie?.() ?? []).find((c) => c.startsWith('cx_start='))?.split(';')[0] ?? '';
+        assert.ok(start1, 'failed setup saves the week in cx_start');
+        const joined = `${cookie}; ${start1}`;
+
+        const second = await post(base, '/app/setup', joined, { text: edited });
+        assert.equal(second.headers.get('location'), '/app/schedule?setup=1&e=read');
+        const start2 =
+          (second.headers.getSetCookie?.() ?? []).find((c) => c.startsWith('cx_start='))?.split(';')[0] ?? '';
+        const page = await (
+          await fetch(`${base}/app/schedule?setup=1&e=read`, {
+            headers: { cookie: `${cookie}; ${start2}` },
+          })
+        ).text();
+        assert.ok(page.includes(`>${edited}<`), 'the textarea shows the edited week');
+        assert.ok(!page.includes(`>${original}<`), 'not the earlier attempt');
+      });
+    } finally {
+      resetComplete();
+    }
+  });
+});
+
+const CONVERSATIONAL_TUTOR_WEEK = {
+  coach_timezone: null,
+  session_types: [
+    {
+      key: 'tutor',
+      name: 'Science/Math tutor',
+      duration_min: 60,
+      capacity: 5,
+      price_cents: 1500,
+      backup_pay_cents: null,
+    },
+  ],
+  weekly: [
+    { type_key: 'tutor', weekday: 1, time_local: '17:00', location: null },
+    { type_key: 'tutor', weekday: 2, time_local: '17:00', location: null },
+    { type_key: 'tutor', weekday: 3, time_local: '17:00', location: null },
+    { type_key: 'tutor', weekday: 4, time_local: '17:00', location: null },
+    { type_key: 'tutor', weekday: 5, time_local: '17:00', location: null },
+  ],
+  packages: [],
+  plans: [],
+};
+
+test('a conversational tutor week becomes a draft, not a read error', async () => {
+  await withRelay(async () => {
+    const db = await freshDb();
+    const { cookie } = await newCoach(db);
+    setComplete(fakeComplete(CONVERSATIONAL_TUTOR_WEEK));
+    try {
+      await withServer(async (base) => {
+        const said = await post(base, '/app/setup', cookie, {
+          text: 'Science/Math tutor, available from Monday to Friday between 5PM to 8PM. Can handle 5 students, $15 per hour',
+        });
+        assert.equal(said.headers.get('location'), '/app/schedule?setup=1');
+        assert.equal(await count(db, 'setup_draft'), 1);
+        const page = await (await fetch(`${base}/app/schedule?setup=1`, { headers: { cookie } })).text();
+        assert.match(page, /Science\/Math tutor/);
+        assert.doesNotMatch(page, /couldn&#39;t read that/);
+      });
+    } finally {
+      resetComplete();
+    }
+  });
+});
+
 test('a model failure or a spent budget falls back to the forms, never a 500', async () => {
   await withRelay(async () => {
     const db = await freshDb();
