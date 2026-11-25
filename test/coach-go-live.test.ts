@@ -313,6 +313,8 @@ test('the page link stays on Schedule in a box made to copy, not on Payments', a
       assert.doesNotMatch(money, /id="page-link"/);
       const schedule = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
       assert.match(schedule, new RegExp(`<input id="page-link" type="text" readonly value="${link}"`), '/app/schedule');
+      assert.match(schedule, /<h1>This week<\/h1>/);
+      assert.match(schedule, /payments-banner/);
       assert.match(schedule, /Clients can(&#39;|')t book yet/);
       assert.match(schedule, /Clients can't book until payments are set up\./);
       assert.doesNotMatch(schedule, /<a class="action" href="sms:\?&amp;body=Book%20with%20me/);
@@ -356,7 +358,7 @@ test('Copy link says Copied only once the link is copied', async () => {
       await publishByHand(base, db, cookie);
       await db.query(
         `insert into coach_payments (coach_id, charges_enabled, test_mode, checked_at) values ($1, true, false, now())
-         on conflict (coach_id) do update set charges_enabled = true, test_mode = false, checked_at = now()`,
+         on conflict (coach_id) do update set charges_enabled = excluded.charges_enabled, test_mode = excluded.test_mode, checked_at = excluded.checked_at`,
         [coach.id],
       );
       const page = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();

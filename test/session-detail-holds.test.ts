@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { freshDb } from './helpers/db.js';
 import { withServer } from './helpers/server.js';
 import { withRelay } from './helpers/relay.js';
-import { seedBookedSession, seedCoachWithSession } from './helpers/fixtures.js';
+import { scheduleUrlFor, seedBookedSession, seedCoachWithSession } from './helpers/fixtures.js';
 import { createCoachSession } from '../src/domain/auth.js';
 import type { DbClient } from '../src/db/client.js';
 
@@ -88,8 +88,8 @@ test('Schedule counts a session\'s spots as Session detail does: booked, attende
     const cookie = `cx_session=${await createCoachSession(db, seed.coach.id)}`;
 
     await withServer(async (base) => {
-      const schedule = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
-      assert.match(schedule, / · 3 of 6 spots booked · 1 holding · /, 'Ada, Ben and Cal were sold; Fay is holding');
+      const schedule = await (await fetch(`${base}${await scheduleUrlFor(db, seed.sessionId)}`, { headers: { cookie } })).text();
+      assert.match(schedule, /class="spots">3 of 6 spots booked · 1 holding</, 'Ada, Ben and Cal were sold; Fay is holding');
       const detail = await (await fetch(`${base}/app/sessions/${seed.sessionId}`, { headers: { cookie } })).text();
       assert.match(detail, /<h2>Booked \(3\) · Holding \(1\)<\/h2>/, 'the same counts as Session detail');
     });
@@ -105,8 +105,9 @@ test('Schedule names no holds when no parent is paying', async () => {
     await pending(db, seed.sessionId, 'Jo Lapsed', '+15550007302', '-1 minute');
     const cookie = `cx_session=${await createCoachSession(db, seed.coach.id)}`;
     await withServer(async (base) => {
-      const schedule = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
-      assert.match(schedule, / · 1 of 6 spots booked · \$/);
+      const schedule = await (await fetch(`${base}${await scheduleUrlFor(db, seed.sessionId)}`, { headers: { cookie } })).text();
+      assert.match(schedule, /class="spots">1 of 6 spots booked</);
+      assert.match(schedule, /class="session-price">\$/);
       assert.doesNotMatch(schedule, /holding/);
     });
   });

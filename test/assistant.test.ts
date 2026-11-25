@@ -4,7 +4,7 @@ import { freshDb } from './helpers/db.js';
 import { withServer } from './helpers/server.js';
 import { withRelay } from './helpers/relay.js';
 import { fakeComplete } from './fakes/llm.js';
-import { seedBookedSession, seedCoachWithSession, seedRosterMember, seedWaitlistEntry } from './helpers/fixtures.js';
+import { scheduleUrlFor, seedBookedSession, seedCoachWithSession, seedRosterMember, seedWaitlistEntry } from './helpers/fixtures.js';
 import { resetComplete, setComplete } from '../src/llm/complete.js';
 import { handleCoachMessage } from '../src/domain/assistant.js';
 import { createCoachSession } from '../src/domain/auth.js';
@@ -144,10 +144,8 @@ test('model path: fake intent confirms then Yes on the schedule screen', async (
 
         const page = await fetch(`${base}/app/schedule`, { headers: { cookie: cookieFor(token) } });
         const html = await page.text();
-        assert.match(html, /schedule-edit/);
         assert.match(html, /Edit schedule/);
         assert.match(html, /placeholder="Cancel tomorrow, or add Saturday 9am"/);
-        assert.doesNotMatch(html, /<details class="schedule-edit" open/);
         assert.match(html, /Send/);
         assert.match(html, /Cancel /);
         assert.match(html, /name="answer" value="yes"/);
@@ -677,8 +675,8 @@ test('the assistant counts spots as Schedule does; WHO and a broadcast still mea
 
     const cookie = cookieFor(await createCoachSession(db, seed.coach.id));
     await withServer(async (base) => {
-      const schedule = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
-      assert.match(schedule, / · 3 of 6 spots booked · /, 'Schedule counts Ada, Ben and Cal');
+      const schedule = await (await fetch(`${base}${await scheduleUrlFor(db, seed.sessionId)}`, { headers: { cookie } })).text();
+      assert.match(schedule, /class="spots">3 of 6 spots booked/, 'Schedule counts Ada, Ben and Cal');
     });
 
     setComplete(fakeComplete(new Error('pattern only')));

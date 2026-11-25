@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { freshDb } from './helpers/db.js';
 import { withServer } from './helpers/server.js';
 import { withRelay } from './helpers/relay.js';
-import { seedBookedSession, seedCoachWithSession } from './helpers/fixtures.js';
+import { scheduleUrlFor, seedBookedSession, seedCoachWithSession } from './helpers/fixtures.js';
 import { createCoachSession } from '../src/domain/auth.js';
 import {
   createWeeklySlots,
@@ -151,7 +151,7 @@ test('weekly times screen: add with a location, list, remove; schedule links eac
         'opening the confirmation removes nothing',
       );
 
-      const schedule = await (await fetch(`${base}/app/schedule`, { headers: { cookie } })).text();
+      const schedule = await (await fetch(`${base}${await scheduleUrlFor(db, seed.sessionId)}`, { headers: { cookie } })).text();
       assert.match(schedule, /href="\/app\/sessions\/\d+"/);
       assert.match(schedule, /class="coach-nav"/);
       assert.match(schedule, /0 of 2 spots booked/);

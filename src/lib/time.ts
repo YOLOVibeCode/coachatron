@@ -76,6 +76,18 @@ export function formatTimeRange(isoUtc: string, durationMin: number, tz: string)
   return `${startFmt} – ${endFmt}`;
 }
 
+/** Day heading for grouped lists, e.g. "Mon, Nov 23". */
+export function formatDayHeading(isoUtc: string, tz: string): string {
+  const date = new Date(isoUtc);
+  if (Number.isNaN(date.getTime())) return NOT_A_TIME;
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  }).format(date);
+}
+
 export function formatCoachDollars(cents: number): string {
   if (cents % 100 === 0) return `$${cents / 100}`;
   return `$${(cents / 100).toFixed(2)}`;

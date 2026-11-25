@@ -111,7 +111,37 @@ export const POSTCARD_TOKENS_CSS = `
     font-weight: 600;
     color: var(--screen-ink);
   }
-  .schedule-edit {
+  .payments-banner {
+    background: var(--warn-bg, #fff8e6);
+    border: 1px solid var(--warn-line, #e8c96a);
+    border-radius: 14px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+  }
+  .payments-banner p { margin: 0 0 8px; font-weight: 600; }
+  .share-disabled {
+    opacity: 0.45;
+    pointer-events: none;
+    cursor: not-allowed;
+  }
+  .schedule-day-heading {
+    font-size: 0.95rem;
+    font-weight: 600;
+    margin: 16px 0 6px;
+    color: var(--screen-muted);
+  }
+  .schedule-day-heading:first-child { margin-top: 0; }
+  .session-card .session-when {
+    font-size: 0.9rem;
+    color: var(--screen-muted);
+    margin-bottom: 4px;
+  }
+  .session-card .session-price {
+    margin: 4px 0 0;
+    font-size: 0.95rem;
+    color: var(--screen-muted);
+  }
+  .schedule-edit-wrap {
     flex-shrink: 0;
     position: sticky;
     bottom: 0;
@@ -120,27 +150,27 @@ export const POSTCARD_TOKENS_CSS = `
     background: var(--screen);
     border-top: 1px solid var(--line);
   }
-  .schedule-edit-toggle {
+  .schedule-edit > summary {
     list-style: none;
     cursor: pointer;
     display: block;
     width: 100%;
+    margin-top: 0;
     text-align: center;
-    background: transparent;
-    color: var(--teal);
-    border: 1px solid var(--teal);
-    border-radius: 14px;
-    padding: 12px 16px;
-    font-family: ui-sans-serif, system-ui, sans-serif;
-    font-size: 1rem;
-    font-weight: 600;
-    margin: 0;
   }
-  .schedule-edit-toggle::-webkit-details-marker { display: none; }
-  .schedule-edit[open] .schedule-edit-toggle { margin-bottom: 10px; }
-  .schedule-edit form { margin: 0; }
-  .schedule-edit label { margin-top: 0; }
-  .schedule-edit button { margin-top: 10px; }
+  .schedule-edit > summary::-webkit-details-marker { display: none; }
+  .schedule-edit[open] > summary { margin-bottom: 10px; }
+  .schedule-edit-panel {
+    margin-top: 10px;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: var(--card);
+  }
+  .schedule-edit-panel form { margin: 0; }
+  .schedule-edit-panel label { margin-top: 0; }
+  .schedule-edit-panel button { margin-top: 10px; }
+  .schedule-edit-panel .muted { margin-top: 10px; margin-bottom: 0; }
   .setup-warnings { margin: 8px 0 0; padding-left: 1.2rem; font-family: ui-sans-serif, system-ui, sans-serif; font-size: 0.9rem; }
   .setup-field-error { margin-top: 8px; margin-bottom: 0; }
   .action.disabled, button:disabled.ghost { opacity: 0.45; pointer-events: none; cursor: default; }
@@ -423,9 +453,9 @@ export const POSTCARD_TOKENS_CSS = `
       padding: 28px 24px;
       min-height: auto;
     }
-    .schedule-edit {
+    .schedule-edit-wrap {
       margin: 16px -24px -28px;
-      padding: 12px 24px 16px;
+      padding: 12px 24px calc(12px + env(safe-area-inset-bottom, 0px));
       border-radius: 0 0 18px 18px;
     }
     .card { padding: 14px 16px; border-radius: 16px; }
@@ -433,9 +463,9 @@ export const POSTCARD_TOKENS_CSS = `
   @media (min-width: 1024px) {
     :root { --shell-max: min(720px, 100%); }
     .screen { padding: 32px 28px; }
-    .schedule-edit {
+    .schedule-edit-wrap {
       margin: 16px -28px -32px;
-      padding: 12px 28px 16px;
+      padding: 12px 28px calc(12px + env(safe-area-inset-bottom, 0px));
     }
   }
 `;

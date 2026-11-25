@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { freshDb } from './helpers/db.js';
 import { withServer } from './helpers/server.js';
 import { withRelay } from './helpers/relay.js';
-import { seedCoachWithSession } from './helpers/fixtures.js';
+import { scheduleUrlFor, seedCoachWithSession } from './helpers/fixtures.js';
 import { createCoachSession, getConnectRecipientKey } from '../src/domain/auth.js';
 
 /** Schedule and Money use one phrase for each payments step: "Connect
@@ -43,7 +43,7 @@ test('Schedule and Money name each payments step with the same words', async () 
 
       // Not started.
       assert.match(await screen('/app/payments'), /<button type="submit" class="action">Connect payments<\/button>/);
-      let schedule = await screen('/app/schedule');
+      let schedule = await screen(await scheduleUrlFor(db, seed.sessionId));
       assert.match(schedule, /Clients can(&#39;|')t book yet/);
       assert.match(schedule, /<a class="action" href="\/app\/payments">Connect payments<\/a>/);
       assert.match(schedule, /<button type="button" class="ghost" disabled>Copy link<\/button>/);

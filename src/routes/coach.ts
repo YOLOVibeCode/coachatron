@@ -70,7 +70,9 @@ import {
   type SafeHtml,
 } from '../lib/html.js';
 import { cancelReach, cancelScheduledSession, dropInCreditNote, previewSessionCancel, type CancelReach } from '../domain/cancelSession.js';
-import { DEFAULT_TZ, formatClockLocal, formatCoachDollars, formatLocal, formatTimeRange, isValidTimeZone } from '../lib/time.js';
+import { spotsBookedLabel } from '../lib/copy.js';
+import { DEFAULT_TZ, formatClockLocal, formatCoachDollars, formatDayHeading, formatLocal, formatTimeRange, isValidTimeZone } from '../lib/time.js';
+import { weekWindowUtc } from '../lib/week.js';
 import { liveHoldSql, soldSql, SOLD_BOOKING_STATUSES, takesSpotSql } from '../domain/pricing.js';
 import { clockTime, dollarsToCents, LIMITS, rowId, wholeNumber } from '../lib/input.js';
 import { canWaive, CREDIT_WITHDRAWN_SQL, waiveBooking } from '../domain/policy.js';
@@ -1871,13 +1873,13 @@ function paymentsStepCard(step: PaymentsStep) {
 /** Top-of-schedule notice when parents cannot pay yet. */
 function renderPaymentsBanner(step: PaymentsStep) {
   if (step === 'test-only') {
-    return html`<div class="card payments-banner">
+    return html`<div class="card payments-banner" role="status">
       <p><strong>Clients can't book yet</strong></p>
       <p class="muted">${TEST_ONLY_PAYMENTS}</p>
       <a class="action" href="${PAYMENTS_SCREEN}">See payments</a>
     </div>`;
   }
-  return html`<div class="card payments-banner">
+  return html`<div class="card payments-banner" role="status">
     <p><strong>Clients can't book yet</strong></p>
     <p class="muted">Clients can't book until payments are set up.</p>
     <a class="action" href="${PAYMENTS_SCREEN}">${step === 'finish' ? FINISH_CONNECTING_PAYMENTS : CONNECT_PAYMENTS}</a>
@@ -1945,6 +1947,63 @@ function renderPageLinkCard(coach: CoachRow, opts: PageLinkOpts) {
   </div>`;
 }
 
+type ScheduleSessionRow = {
+  id: number;
+  starts_at_utc: string;
+  tz: string;
+  name: string;
+  capacity: number;
+  price_cents: number;
+  duration_min: number;
+  booked: string;
+  holding: string;
+};
+
+function renderScheduleSession(s: ScheduleSessionRow): SafeHtml {
+  const booked = Number(s.booked);
+  const holding = Number(s.holding);
+  return html`<a class="card session-card" href="/app/sessions/${s.id}">
+    <div class="meta">
+      <span class="session-when">${formatTimeRange(s.starts_at_utc, s.duration_min, s.tz)}</span>
+      <span class="spots">${spotsBookedLabel(booked, s.capacity, holding)}</span>
+    </div>
+    <strong>${s.name}</strong>
+    <p class="session-price">${formatCoachDollars(s.price_cents)}</p>
+  </a>`;
+}
+
+function renderScheduleSessions(rows: ScheduleSessionRow[]): SafeHtml {
+  if (rows.length === 0) {
+    return html`<p class="muted">No sessions this week.</p>`;
+  }
+  const groups = new Map<string, ScheduleSessionRow[]>();
+  for (const s of rows) {
+    const key = formatDayHeading(s.starts_at_utc, s.tz);
+    const list = groups.get(key) ?? [];
+    list.push(s);
+    groups.set(key, list);
+  }
+  return html`${[...groups.entries()].map(
+    ([day, items]) => html`<h2 class="schedule-day-heading">${day}</h2>${items.map((s) => renderScheduleSession(s))}`,
+  )}`;
+}
+
+function renderScheduleEditPanel(): SafeHtml {
+  return html`<div class="schedule-edit-wrap">
+    <details class="schedule-edit">
+      <summary class="action ghost">Edit schedule</summary>
+      <div class="schedule-edit-panel">
+        <form method="post" action="/app/schedule/ask" onsubmit="this.querySelector('button[type=submit]').disabled=true;this.querySelector('button[type=submit]').textContent='Working…';">
+          <label for="ask">Quick change</label>
+          <input id="ask" name="text" type="text" placeholder="Cancel tomorrow, or add Saturday 9am" />
+          <button type="submit">Send</button>
+        </form>
+        <p class="muted"><a href="/app/schedule?setup=1">Describe a whole new week</a></p>
+      </div>
+    </details>
+  </div>`;
+}
+
 coachRouter.post('/app/schedule/public-page', requireAuth, async (req, res) => {
   const db = getDb();
   const coachId = res.locals.coachId as number;
@@ -1986,7 +2045,7 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
     const code = typeof req.query.e === 'string' ? req.query.e : '';
     const notice = Object.hasOwn(SETUP_NOTICES, code) ? SETUP_NOTICES[code] : null;
     const draft = await getOpenDraft(db, coachId, new Date());
-    const startText = draft ? '' : readStartText(req.headers.cookie);
+    const startText = draft && !notice ? '' : readStartText(req.headers.cookie);
     res.status(200).send(renderSetupScreen(coach, draft, notice, hasSchedule, startText));
     return;
   }
@@ -2016,30 +2075,21 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
         typeof req.query.to === 'string' ? req.query.to : '',
       );
   const emailCard = renderConfirmEmailCard(coach, typeof req.query.email === 'string' ? req.query.email : '');
-  const sessions = await db.query<{
-    id: number;
-    starts_at_utc: string;
-    tz: string;
-    name: string;
-    capacity: number;
-    price_cents: number;
-    duration_min: number;
-    booked: string;
-    holding: string;
-  }>(
-    // Counted as Session detail counts them: sold bookings (booked,
-    // attended, no-show) as booked, and parents still paying, while their
-    // hold stands, apart from them.
+  const now = new Date();
+  const weekOffset = req.query.week === '1' ? 1 : 0;
+  const weekLabel = weekOffset === 1 ? 'Next week' : 'This week';
+  const { from: weekFrom, to: weekTo } = weekWindowUtc(now, coach.tz, weekOffset);
+  const rangeFrom = weekFrom > now ? weekFrom : now;
+  const sessions = await db.query<ScheduleSessionRow>(
     `select s.id, s.starts_at_utc, s.tz, st.name, coalesce(s.capacity_override, st.capacity) as capacity, st.price_cents,
             st.duration_min,
             (select count(*) from booking b where b.session_id = s.id and ${soldSql('b')})::text as booked,
             (select count(*) from booking b where b.session_id = s.id and ${liveHoldSql('b')})::text as holding
      from session s
      join session_type st on st.id = s.session_type_id
-     where st.coach_id = $1 and s.status = 'scheduled' and s.starts_at_utc > now()
-     order by s.starts_at_utc
-     limit 50`,
-    [coachId],
+     where st.coach_id = $1 and s.status = 'scheduled' and s.starts_at_utc >= $2 and s.starts_at_utc < $3
+     order by s.starts_at_utc`,
+  [coachId, rangeFrom.toISOString(), weekTo.toISOString()],
   );
 
   const assistant = await loadScheduleAssistant(db, coachId);
@@ -2050,7 +2100,7 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
       'Schedule',
       html`<div class="screen-main">
           ${coachHeader('schedule')}
-          <h1>Coming up</h1>
+          <h1>${weekLabel}</h1>
           ${paymentsBanner}
           ${req.query.published === '1' ? await ownPlacesNote(db, coachId) : raw('')}
           ${askCard}
@@ -2068,32 +2118,20 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
                   : raw('')}
               </div>`
             : raw('')}
-          ${sessions.rows.length === 0
+          ${sessions.rows.length === 0 && !hasSchedule
             ? html`<p class="muted">No sessions yet. Add a session type and its weekly times.</p>
                 <a class="action" href="/app/session-types">Session types</a>`
-            : sessions.rows.map(
-                (s) =>
-                  html`<a class="card" href="/app/sessions/${s.id}">
-                    <strong>${formatLocal(s.starts_at_utc, s.tz)}</strong>
-                    <div class="meta"><span>${formatTimeRange(s.starts_at_utc, s.duration_min, s.tz)} · ${s.name} · ${s.booked} of ${s.capacity} spots booked${Number(s.holding) > 0 ? ` · ${s.holding} holding` : ''} · ${formatCoachDollars(s.price_cents)}</span></div>
-                  </a>`,
-              )}
+            : renderScheduleSessions(sessions.rows)}
+          ${weekOffset === 0
+            ? html`<p><a class="action ghost" href="/app/schedule?week=1">Show next week</a></p>`
+            : html`<p><a class="action ghost" href="/app/schedule">Back to this week</a></p>`}
           ${calendar}
           ${live}
           ${renderPublicPageEditCard(coach)}
-          <p><a class="action ghost" href="/app/schedule?setup=1">Add more by talking</a></p>
           ${phoneCard}
           ${emailCard}
         </div>
-        <details class="schedule-edit">
-          <summary class="schedule-edit-toggle">Edit schedule</summary>
-          <form method="post" action="/app/schedule/ask" onsubmit="this.querySelector('button[type=submit]').disabled=true;this.querySelector('button[type=submit]').textContent='Working…';">
-            <label for="ask">Change a session or add a time</label>
-            <input id="ask" name="text" type="text" placeholder="Cancel tomorrow, or add Saturday 9am" />
-            <button type="submit">Send</button>
-          </form>
-          <p class="muted"><a href="/app/schedule?setup=1">Describe a whole new week</a></p>
-        </details>`,
+        ${renderScheduleEditPanel()}`,
     ),
   );
 });
