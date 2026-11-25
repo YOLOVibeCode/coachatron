@@ -54,7 +54,7 @@ import {
   type PaymentsStep,
 } from '../domain/payments.js';
 import { clearTypeSchedule, createWeeklySlots, deactivateSlot, listWeeklySlots, type WeeklySlot } from '../domain/scheduling.js';
-import { keptOwnPlace, mountLocationRoutes, ownPlacesNote, placeFromForm, sessionPlaceSection, typeLocationsSection, weeklyPlaceFields } from './locations.js';
+import { mountLocationRoutes, ownPlacesNote, placeFromForm, sessionPlaceSection, typeLocationsSection, weeklyPlaceFields } from './locations.js';
 import {
   SMS_CONSENT_GATED_SUBMIT_SCRIPT,
   coachHeader,
@@ -117,7 +117,7 @@ import {
   type RunningCascade,
 } from '../domain/cascade.js';
 import { assistantPayRouter, renderAssistantPay, renderOwedToAssistants } from './assistantPay.js';
-import { readStartText, START_COOKIE } from '../lib/startCookie.js';
+import { readStartText, serializeStartCookieAfterSetup } from '../lib/startCookie.js';
 import {
   readReturnPath,
   readSigninPending,
@@ -256,7 +256,7 @@ async function finishSignIn(
   const startText = readStartText(req.headers.cookie);
   if (startText) {
     const result = await handleSetupMessage(db, coach, startText, 'web');
-    if (result.kind === 'draft') cookies.push(clearCookie(START_COOKIE));
+    cookies.push(serializeStartCookieAfterSetup(startText, result.kind));
     res.setHeader('Set-Cookie', cookies);
     const error = result.kind === 'cap' ? '&e=cap' : result.kind === 'error' ? '&e=read' : '';
     res.redirect(303, `/app/schedule?setup=1${error}`);
@@ -1522,22 +1522,56 @@ coachRouter.get('/app/session-types/:id/generate-week', requireAuth, async (req,
     return;
   }
   const kept = typeof req.query.kept === 'string' ? Number(req.query.kept) : 0;
-  res.status(200).send(renderWeeklyTimes(typeRows.rows[0], await listWeeklySlots(db, typeId), kept, undefined, await weeklyPlaceFields(db, typeId)));
+  const addedRaw = typeof req.query.added === 'string' ? Number(req.query.added) : 0;
+  const added = Number.isFinite(addedRaw) && addedRaw > 0 ? Math.floor(addedRaw) : 0;
+  res.status(200).send(
+    renderWeeklyTimes(typeRows.rows[0], await listWeeklySlots(db, typeId), kept, added, undefined, await weeklyPlaceFields(db, typeId)),
+  );
 });
+
+const WEEKLY_TIMES_ADD_SCRIPT = raw(`<script>(function(){
+var form=document.getElementById('weekly-times-form');
+if(!form)return;
+var btn=form.querySelector('button[type=submit]');
+function sync(){
+var n=0;
+for(var i=0;i<7;i+=1){
+var day=form.querySelector('input[name="day_'+i+'"]');
+if(!day||!day.checked)continue;
+var seen={};
+form.querySelectorAll('input[type=time]').forEach(function(t){
+if((t.name==='time_'+i||t.name.indexOf('time_'+i+'_')===0)&&t.value&&!seen[t.value]){seen[t.value]=1;n+=1;}
+});
+}
+if(!btn)return;
+if(n<1){btn.disabled=true;btn.textContent='Choose a day and time';}
+else{btn.disabled=false;btn.textContent=n===1?'Add 1 time':'Add '+n+' times';}
+}
+form.addEventListener('change',sync);
+form.addEventListener('input',sync);
+form.addEventListener('click',sync);
+sync();
+})();</script>`);
 
 function renderWeeklyTimes(
   type: { id: number; name: string; duration_min: number; capacity: number; price_cents: number },
   slots: Array<{ id: number; weekday: number; time_local: string; location_text: string | null }>,
   kept: number,
+  added = 0,
   error?: string,
   where: SafeHtml = raw(''),
 ) {
   const typeLine = `${type.name} · ${formatTypeMeta(type.duration_min, type.capacity, type.price_cents)}`;
+  const addedTimes = added === 1 ? 'time' : 'times';
   return page(
     'Weekly times',
     html`${coachHeader('types')}
+      <p><a href="/app/session-types">Session types</a></p>
       <h1>Weekly times</h1>
-      <p class="muted">${typeLine}. Sessions stay on your calendar 8 weeks ahead.</p>
+      <p class="muted">${typeLine}. Sessions are created 8 weeks ahead and kept up to date. Existing bookings are never changed.</p>
+      ${added > 0
+        ? html`<div class="card"><p><strong>Added ${added} weekly ${addedTimes}.</strong> <a href="/app/schedule">Schedule</a></p></div>`
+        : raw('')}
       ${kept > 0
         ? html`<p class="muted">${kept} upcoming ${kept === 1 ? 'session has' : 'sessions have'} bookings and stayed. Cancel ${kept === 1 ? 'it' : 'them'} from the schedule if you need to.</p>`
         : raw('')}
@@ -1551,7 +1585,7 @@ function renderWeeklyTimes(
             )}
           </ul>`
         : raw('')}
-      <form method="post" action="/app/session-types/${type.id}/generate-week">
+      <form id="weekly-times-form" method="post" action="/app/session-types/${type.id}/generate-week">
         <p class="muted">Tick each day you run it, then pick its start time.</p>
         ${WEEKDAY_LABELS.map(
           (label, i) =>
@@ -1565,10 +1599,11 @@ function renderWeeklyTimes(
             </div>`,
         )}
         ${where}
-        <button type="submit">Add weekly times</button>
+        <button type="submit" disabled>Choose a day and time</button>
       </form>
       ${error ? html`<p class="error">${error}</p>` : raw('')}
-      ${WEEKLY_TIMES_SCRIPT}`,
+      ${WEEKLY_TIMES_SCRIPT}
+      ${WEEKLY_TIMES_ADD_SCRIPT}`,
   );
 }
 
@@ -1640,7 +1675,7 @@ coachRouter.post('/app/session-types/:id/generate-week', requireAuth, async (req
   const locationText = place.ok ? place.text : null;
   const current = await listWeeklySlots(db, typeId);
   const where = await weeklyPlaceFields(db, typeId);
-  const refuse = (message: string) => res.status(422).send(renderWeeklyTimes(typeRows.rows[0], current, 0, message, where));
+  const refuse = (message: string) => res.status(422).send(renderWeeklyTimes(typeRows.rows[0], current, 0, 0, message, where));
   if (!place.ok) {
     refuse(place.error);
     return;
@@ -1686,11 +1721,10 @@ coachRouter.post('/app/session-types/:id/generate-week', requireAuth, async (req
     return;
   }
 
-  const saved = await createWeeklySlots(db, typeId, tz, slots, new Date());
+  await createWeeklySlots(db, typeId, tz, slots, new Date());
   const coach = await findCoachById(db, coachId);
   if (coach) await notePublished(db, coach);
-  // A new place the type had no room to save is explained on this screen.
-  res.redirect(303, keptOwnPlace(saved) ? `/app/session-types/${typeId}/generate-week` : '/app/schedule');
+  res.redirect(303, `/app/session-types/${typeId}/generate-week?added=${slots.length}`);
 });
 
 coachRouter.get('/app/session-types/:id/slots/:slotId/remove', requireAuth, async (req, res) => {
@@ -1749,7 +1783,7 @@ mountLocationRoutes(coachRouter, requireAuth);
 // screen: a coach with nothing on the calendar sees "Tell me your week".
 
 const SETUP_NOTICES: Record<string, string> = {
-  read: "I couldn't read that. Try again, or set up with a form instead.",
+  read: "I couldn't read that. Fix or add detail in the box below and tap Set it up again, or set up with a form instead.",
   cap: "That's all the reading I can do today. Set up with a form instead for now.",
   stale: 'That setup already went live or was cleared.',
 };
@@ -1758,30 +1792,32 @@ const SETUP_NOTICES: Record<string, string> = {
 const SETUP_EXAMPLE =
   'Keeper group Tuesdays and Thursdays at 6pm at Field 3, an hour, 8 kids, $35. Backup coach gets $80. Privates Saturday at 9am, 10am and 11am, 45 minutes, $70. 10-pack for $300.';
 
+const SETUP_DISCARD_CONFIRM =
+  "return confirm('Start over clears this draft. Your published schedule stays. Continue?')";
+
 function renderSetupScreen(
   coach: CoachRow,
   draft: SetupDraft | null,
   notice: string | null,
   hasSchedule: boolean,
   startText = '',
-  formError: string | null = null,
 ) {
   const questions = draft?.questions ?? [];
   const ready = draft !== null && questions.length === 0;
   const label = !draft ? 'Describe your week' : questions.length > 0 ? questions[0] : 'Change anything? Just say it.';
   const submit = !draft ? 'Set it up' : questions.length > 0 ? 'Answer' : 'Update';
-  const setupError = formError ?? notice;
   return page(
     'Edit schedule',
     html`${coachHeader('schedule')}
       <h1>Edit schedule</h1>
-      ${hasSchedule ? html`<p class="muted">This adds to your current schedule. Start over clears only this draft.</p>` : raw('')}
+      ${hasSchedule
+        ? html`<p class="muted">Set it up adds to your current schedule. Tap Publish when the preview looks right.</p>`
+        : raw('')}
       ${draft
-        ? renderSetupPreview(draft.plan, coach, new Date(), draft.warnings ?? [])
-        : html`<p class="muted">Say what you coach, how long, how many athletes, the price, and your days and times.</p>`}
+        ? renderSetupPreview(draft.plan, coach, new Date(), draft.warnings)
+        : html`<p class="muted">Tap the mic on your keyboard and talk. Say what you coach, how long, how many athletes, the price, and your days and times.</p>`}
       ${questions.length > 0
-        ? html`<p class="muted"><strong>Still need:</strong></p>
-            <ul class="setup-questions">${questions.map((q) => html`<li>${q}</li>`)}</ul>`
+        ? html`<ul class="setup-questions">${questions.map((q) => html`<li>${q}</li>`)}</ul>`
         : raw('')}
       ${ready
         ? html`<form method="post" action="/app/setup/publish">
@@ -1789,14 +1825,14 @@ function renderSetupScreen(
             <button type="submit">Publish</button>
           </form>`
         : raw('')}
-      <form method="post" action="/app/setup">
+      <form id="setup-form" method="post" action="/app/setup">
         <label for="setup-text">${label}</label>
         <textarea id="setup-text" name="text" rows="6" required placeholder="${SETUP_EXAMPLE}">${startText}</textarea>
-        ${setupError ? html`<p class="error">${setupError}</p>` : raw('')}
+        ${notice ? html`<p class="error setup-field-error">${notice}</p>` : raw('')}
         <button type="submit"${ready ? raw(' class="ghost"') : raw('')}>${submit}</button>
       </form>
       ${draft
-        ? html`<form method="post" action="/app/setup/discard">
+        ? html`<form method="post" action="/app/setup/discard"${hasSchedule ? raw(` onsubmit="${SETUP_DISCARD_CONFIRM}"`) : raw('')}>
             <input type="hidden" name="id" value="${draft.id}" />
             <button type="submit" class="ghost">Start over</button>
           </form>`
@@ -2009,7 +2045,7 @@ coachRouter.get('/app/schedule', requireAuth, async (req, res) => {
     const code = typeof req.query.e === 'string' ? req.query.e : '';
     const notice = Object.hasOwn(SETUP_NOTICES, code) ? SETUP_NOTICES[code] : null;
     const draft = await getOpenDraft(db, coachId, new Date());
-    const startText = draft ? '' : readStartText(req.headers.cookie);
+    const startText = draft && !notice ? '' : readStartText(req.headers.cookie);
     res.status(200).send(renderSetupScreen(coach, draft, notice, hasSchedule, startText));
     return;
   }
@@ -2410,14 +2446,9 @@ coachRouter.post('/app/setup', requireAuth, async (req, res) => {
     return;
   }
   const result = await handleSetupMessage(db, coach, text, 'web');
-  if (result.kind === 'draft') {
-    res.redirect(303, '/app/schedule?setup=1');
-    return;
-  }
-  const hasSchedule = await coachHasSchedule(db, coach.id);
-  const draft = await getOpenDraft(db, coach.id, new Date());
-  const formError = result.kind === 'cap' ? SETUP_NOTICES.cap : SETUP_NOTICES.read;
-  res.status(422).send(renderSetupScreen(coach, draft, null, hasSchedule, text, formError));
+  res.setHeader('Set-Cookie', serializeStartCookieAfterSetup(text, result.kind));
+  const error = result.kind === 'cap' ? '&e=cap' : result.kind === 'error' ? '&e=read' : '';
+  res.redirect(303, `/app/schedule?setup=1${error}`);
 });
 
 coachRouter.post('/app/setup/publish', requireAuth, async (req, res) => {

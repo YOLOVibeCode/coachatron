@@ -1,6 +1,7 @@
 /** The typed week from the landing page, carried through sign-in as an
  * HttpOnly cookie so the model never runs for an anonymous visitor. */
 
+import { clearCookie, serializeCookie } from './cookies.js';
 import { parseCookies } from './cookies.js';
 
 export const START_COOKIE = 'cx_start';
@@ -31,4 +32,12 @@ export function decodeStartCookie(value: string | undefined): string {
 
 export function readStartText(cookieHeader: string | undefined): string {
   return decodeStartCookie(parseCookies(cookieHeader)[START_COOKIE]);
+}
+
+export type StartCookieSetupOutcome = 'draft' | 'cap' | 'error';
+
+/** After setup: keep the latest submitted week on failure; drop it once a draft exists. */
+export function serializeStartCookieAfterSetup(text: string, outcome: StartCookieSetupOutcome): string {
+  if (outcome === 'draft') return clearCookie(START_COOKIE);
+  return serializeCookie(START_COOKIE, encodeStartCookie(text), START_COOKIE_MAX_AGE);
 }

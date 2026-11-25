@@ -152,7 +152,7 @@ export async function weeklyPlaceFields(db: DbClient, sessionTypeId: number): Pr
     ${full
       ? html`<p class="muted">This session type has all the saved locations it keeps. <a href="${editHref(sessionTypeId)}">Change them</a> to use a new place.</p>`
       : html`<label for="location">${locations.length > 0 ? 'Or a new place' : 'Where (optional)'}</label>
-          <input id="location" name="location" maxlength="${LOCATION_LIMITS.nameChars}" placeholder="Field 3" />
+          <input id="location" name="location" maxlength="${LOCATION_LIMITS.nameChars}" placeholder="e.g. Field 3, or Zoom link" />
           ${locations.length > 0
             ? html`<p class="muted">A new place is saved to this session type's locations. <a href="${editHref(sessionTypeId)}">Rename or remove them</a>.</p>`
             : raw('')}`}`;

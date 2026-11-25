@@ -123,23 +123,48 @@ test('Jam tutoring week extracts to preview with both types and package', async 
   });
 });
 
-test('setup POST keeps typed text when the model fails', async () => {
+test('setup keeps typed text when the model fails, even with a draft open', async () => {
   await withRelay(async () => {
     const db = await freshDb();
     const seed = await seedCoachWithSession(db);
     const cookie = `cx_session=${await createCoachSession(db, seed.coach.id)}`;
-    setComplete(fakeComplete(new Error('timeout')));
+    const failNext = { on: true };
+    setComplete(
+      fakeComplete(() => {
+        if (failNext.on) throw new Error('timeout');
+        return JAM_TUTOR_WEEK;
+      }),
+    );
+    const submit = (base: string, text: string) =>
+      fetch(`${base}/app/setup`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie },
+        body: JSON.stringify({ text }),
+        redirect: 'manual',
+      });
+    const startCookie = (res: Response) =>
+      (res.headers.getSetCookie?.() ?? []).find((c) => c.startsWith('cx_start='))?.split(';')[0] ?? '';
     try {
       await withServer(async (base) => {
-        const res = await fetch(`${base}/app/setup`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', cookie },
-          body: JSON.stringify({ text: JAM_TUTOR_TEXT }),
-        });
-        assert.equal(res.status, 422);
-        const body = await res.text();
-        assert.match(body, /couldn&#39;t read that/);
-        assert.match(body, /elementary students on Tuesdays/);
+        const failed = await submit(base, JAM_TUTOR_TEXT);
+        assert.equal(failed.headers.get('location'), '/app/schedule?setup=1&e=read');
+        const page = await (
+          await fetch(`${base}/app/schedule?setup=1&e=read`, { headers: { cookie: `${cookie}; ${startCookie(failed)}` } })
+        ).text();
+        assert.match(page, /class="error setup-field-error">I couldn&#39;t read that/);
+        assert.match(page, /elementary students on Tuesdays/);
+
+        failNext.on = false;
+        assert.equal((await submit(base, JAM_TUTOR_TEXT)).headers.get('location'), '/app/schedule?setup=1');
+        failNext.on = true;
+        const followUp = 'make the Saturday sessions 90 minutes';
+        const again = await submit(base, followUp);
+        assert.equal(again.headers.get('location'), '/app/schedule?setup=1&e=read');
+        const withDraft = await (
+          await fetch(`${base}/app/schedule?setup=1&e=read`, { headers: { cookie: `${cookie}; ${startCookie(again)}` } })
+        ).text();
+        assert.match(withDraft, /Elementary Group/, 'the open draft still shows');
+        assert.ok(withDraft.includes(`>${followUp}</textarea>`), 'the failed follow-up stays in the box');
       });
     } finally {
       resetComplete();
